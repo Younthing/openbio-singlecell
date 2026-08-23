@@ -8,6 +8,7 @@ from .nodes_correction import CORRECTION_NODE_CLASSES
 from .nodes_data import DATA_NODE_CLASSES
 from .nodes_differential import DIFFERENTIAL_NODE_CLASSES
 from .nodes_embedding import EMBEDDING_NODE_CLASSES
+from .nodes_enrichment import ENRICHMENT_NODE_CLASSES
 from .nodes_input import INPUT_NODE_CLASSES
 from .nodes_integration import INTEGRATION_NODE_CLASSES
 from .nodes_output import OUTPUT_NODE_CLASSES
@@ -29,6 +30,7 @@ NODE_CLASSES: list[type[io.ComfyNode]] = [
     *COMMUNICATION_NODE_CLASSES,
     *TRAJECTORY_NODE_CLASSES,
     *DIFFERENTIAL_NODE_CLASSES,
+    *ENRICHMENT_NODE_CLASSES,
     *POPULATION_NODE_CLASSES,
     *RESULT_NODE_CLASSES,
     *OUTPUT_NODE_CLASSES,
