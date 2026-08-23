@@ -72,6 +72,61 @@ class OpenBioSingleCellLog1p(io.ComfyNode):
         return io.NodeOutput(output)
 
 
+class OpenBioSingleCellNormalizeToLayer(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellNormalizeToLayer",
+            display_name="Normalize to Layer",
+            category=CATEGORY,
+            description="Normalize an expression matrix into a named layer without replacing adata.X.",
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.Combo.Input("source", options=["X", "layer"], default="X"),
+                io.String.Input("source_layer", default="counts"),
+                io.Float.Input("target_sum", default=10000.0, min=0.0, step=1000.0),
+                io.Boolean.Input("log1p", default=True),
+                io.String.Input("output_layer", default="log1p_norm", advanced=True),
+            ],
+            outputs=[AnnDataType.Output(display_name="adata")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        source: str = "X",
+        source_layer: str = "counts",
+        target_sum: float = 10000.0,
+        log1p: bool = True,
+        output_layer: str = "log1p_norm",
+    ) -> io.NodeOutput:
+        science = dependencies.require_scientific_dependencies()
+        if not output_layer.strip():
+            raise ValueError("Normalize output_layer cannot be empty.")
+        if source == "layer" and source_layer not in adata.layers:
+            raise ValueError(f"Normalize source layer not found: {source_layer!r}")
+
+        started_at = time.perf_counter()
+        cells, genes = int(adata.n_obs), int(adata.n_vars)
+        output = adata.copy()
+        matrix = output.X if source == "X" else output.layers[source_layer]
+        work = science.ad.AnnData(X=matrix.copy(), obs=output.obs.copy(), var=output.var.copy())
+        science.sc.pp.normalize_total(work, target_sum=target_sum or None, inplace=True)
+        if log1p:
+            science.sc.pp.log1p(work)
+        output.layers[output_layer.strip()] = work.X.copy()
+        parameters = {
+            "source": source,
+            "source_layer": source_layer,
+            "target_sum": target_sum,
+            "log1p": log1p,
+            "output_layer": output_layer.strip(),
+        }
+        finish_adata(output, "normalize_to_layer", parameters, cells, genes, started_at)
+        return io.NodeOutput(output)
+
+
 class OpenBioSingleCellHighlyVariableGenes(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -82,7 +137,14 @@ class OpenBioSingleCellHighlyVariableGenes(io.ComfyNode):
             inputs=[
                 AnnDataType.Input("adata"),
                 io.Int.Input("n_top_genes", default=2000, min=1, max=2**31 - 1),
-                io.Combo.Input("flavor", options=["seurat", "cell_ranger"], default="seurat"),
+                io.Combo.Input(
+                    "flavor",
+                    options=["seurat", "cell_ranger", "seurat_v3", "seurat_v3_paper", "pearson_residuals"],
+                    default="seurat",
+                ),
+                io.Combo.Input("source", options=["X", "layer"], default="X"),
+                io.String.Input("layer_name", default="log1p_norm"),
+                io.String.Input("batch_key", default=""),
                 io.Boolean.Input("subset", default=False),
             ],
             outputs=[AnnDataType.Output(display_name="adata")],
@@ -94,20 +156,41 @@ class OpenBioSingleCellHighlyVariableGenes(io.ComfyNode):
         adata: AnnData,
         n_top_genes: int = 2000,
         flavor: str = "seurat",
+        source: str = "X",
+        layer_name: str = "log1p_norm",
+        batch_key: str = "",
         subset: bool = False,
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        science.sc.pp.highly_variable_genes(
+        if source == "layer" and layer_name not in output.layers:
+            raise ValueError(f"Highly Variable Genes layer not found: {layer_name!r}")
+        if batch_key and batch_key not in output.obs:
+            raise ValueError(f"Highly Variable Genes batch column not found in obs: {batch_key!r}")
+        hvg = (
+            science.sc.experimental.pp.highly_variable_genes
+            if flavor == "pearson_residuals"
+            else science.sc.pp.highly_variable_genes
+        )
+        hvg(
             output,
+            layer=layer_name if source == "layer" else None,
             n_top_genes=n_top_genes,
             flavor=flavor,
+            batch_key=batch_key or None,
             subset=subset,
             inplace=True,
         )
-        parameters = {"n_top_genes": n_top_genes, "flavor": flavor, "subset": subset}
+        parameters = {
+            "n_top_genes": n_top_genes,
+            "flavor": flavor,
+            "source": source,
+            "layer_name": layer_name,
+            "batch_key": batch_key,
+            "subset": subset,
+        }
         finish_adata(output, "highly_variable_genes", parameters, cells, genes, started_at)
         return io.NodeOutput(output)
 
@@ -142,6 +225,7 @@ class OpenBioSingleCellScale(io.ComfyNode):
 PREPROCESS_NODE_CLASSES = [
     OpenBioSingleCellNormalizeTotal,
     OpenBioSingleCellLog1p,
+    OpenBioSingleCellNormalizeToLayer,
     OpenBioSingleCellHighlyVariableGenes,
     OpenBioSingleCellScale,
 ]
