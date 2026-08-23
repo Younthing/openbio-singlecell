@@ -16,6 +16,7 @@ from .nodes_output import OUTPUT_NODE_CLASSES
 from .nodes_population import POPULATION_NODE_CLASSES
 from .nodes_preprocess import PREPROCESS_NODE_CLASSES
 from .nodes_qc import QC_NODE_CLASSES
+from .nodes_regulatory import REGULATORY_NODE_CLASSES
 from .nodes_results import RESULT_NODE_CLASSES
 from .nodes_trajectory import TRAJECTORY_NODE_CLASSES
 from .nodes_velocity import VELOCITY_NODE_CLASSES
@@ -35,6 +36,7 @@ NODE_CLASSES: list[type[io.ComfyNode]] = [
     *CNV_NODE_CLASSES,
     *DIFFERENTIAL_NODE_CLASSES,
     *ENRICHMENT_NODE_CLASSES,
+    *REGULATORY_NODE_CLASSES,
     *POPULATION_NODE_CLASSES,
     *RESULT_NODE_CLASSES,
     *OUTPUT_NODE_CLASSES,
