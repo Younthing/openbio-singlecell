@@ -27,6 +27,7 @@ class OpenBioSingleCellPCA(io.ComfyNode):
                 AnnDataType.Input("adata"),
                 io.Int.Input("n_comps", default=50, min=1, max=4096),
                 io.Boolean.Input("use_hvg", default=True),
+                io.String.Input("layer_name", default=""),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
             ],
             outputs=[AnnDataType.Output(display_name="adata")],
@@ -38,6 +39,7 @@ class OpenBioSingleCellPCA(io.ComfyNode):
         adata: AnnData,
         n_comps: int = 50,
         use_hvg: bool = True,
+        layer_name: str = "",
         random_seed: int = 0,
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
@@ -45,17 +47,25 @@ class OpenBioSingleCellPCA(io.ComfyNode):
             raise ValueError(
                 "PCA with use_hvg enabled requires var['highly_variable']; run Highly Variable Genes first."
             )
+        if layer_name and layer_name not in adata.layers:
+            raise ValueError(f"PCA layer not found: {layer_name!r}")
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
         science.sc.pp.pca(
             output,
             n_comps=n_comps,
+            layer=layer_name or None,
             mask_var="highly_variable" if use_hvg else None,
             svd_solver="arpack",
             random_state=random_seed,
         )
-        parameters = {"n_comps": n_comps, "use_hvg": use_hvg, "random_seed": random_seed}
+        parameters = {
+            "n_comps": n_comps,
+            "use_hvg": use_hvg,
+            "layer_name": layer_name,
+            "random_seed": random_seed,
+        }
         finish_adata(
             output,
             "pca",
@@ -84,6 +94,8 @@ class OpenBioSingleCellNeighbors(io.ComfyNode):
                     options=["cosine", "euclidean", "correlation", "manhattan"],
                     default="cosine",
                 ),
+                io.String.Input("use_rep", default=""),
+                io.String.Input("key_added", default="", advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
             ],
             outputs=[AnnDataType.Output(display_name="adata")],
@@ -96,6 +108,8 @@ class OpenBioSingleCellNeighbors(io.ComfyNode):
         n_neighbors: int = 15,
         n_pcs: int = 50,
         metric: str = "cosine",
+        use_rep: str = "",
+        key_added: str = "",
         random_seed: int = 0,
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
@@ -106,13 +120,17 @@ class OpenBioSingleCellNeighbors(io.ComfyNode):
             output,
             n_neighbors=n_neighbors,
             n_pcs=n_pcs,
+            use_rep=use_rep or None,
             metric=metric,
             random_state=random_seed,
+            key_added=key_added or None,
         )
         parameters = {
             "n_neighbors": n_neighbors,
             "n_pcs": n_pcs,
             "metric": metric,
+            "use_rep": use_rep,
+            "key_added": key_added,
             "random_seed": random_seed,
         }
         finish_adata(
@@ -138,6 +156,7 @@ class OpenBioSingleCellUMAP(io.ComfyNode):
                 AnnDataType.Input("adata"),
                 io.Float.Input("min_dist", default=0.5, min=0.0, max=1.0, step=0.05),
                 io.Float.Input("spread", default=1.0, min=0.000001, step=0.1),
+                io.String.Input("neighbors_key", default="neighbors", advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
             ],
             outputs=[AnnDataType.Output(display_name="adata")],
@@ -149,6 +168,7 @@ class OpenBioSingleCellUMAP(io.ComfyNode):
         adata: AnnData,
         min_dist: float = 0.5,
         spread: float = 1.0,
+        neighbors_key: str = "neighbors",
         random_seed: int = 0,
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
@@ -159,9 +179,15 @@ class OpenBioSingleCellUMAP(io.ComfyNode):
             output,
             min_dist=min_dist,
             spread=spread,
+            neighbors_key=neighbors_key,
             random_state=random_seed,
         )
-        parameters = {"min_dist": min_dist, "spread": spread, "random_seed": random_seed}
+        parameters = {
+            "min_dist": min_dist,
+            "spread": spread,
+            "neighbors_key": neighbors_key,
+            "random_seed": random_seed,
+        }
         finish_adata(
             output,
             "umap",
@@ -184,7 +210,8 @@ class OpenBioSingleCellLeiden(io.ComfyNode):
             inputs=[
                 AnnDataType.Input("adata"),
                 io.Float.Input("resolution", default=1.0, min=0.000001, step=0.1),
-                io.String.Input("key_added", default="leiden"),
+                io.String.Input("key_added", default="leiden", advanced=True),
+                io.String.Input("neighbors_key", default="neighbors", advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
             ],
             outputs=[AnnDataType.Output(display_name="adata")],
@@ -196,6 +223,7 @@ class OpenBioSingleCellLeiden(io.ComfyNode):
         adata: AnnData,
         resolution: float = 1.0,
         key_added: str = "leiden",
+        neighbors_key: str = "neighbors",
         random_seed: int = 0,
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
@@ -208,6 +236,7 @@ class OpenBioSingleCellLeiden(io.ComfyNode):
             output,
             resolution=resolution,
             key_added=key_added,
+            neighbors_key=neighbors_key,
             random_state=random_seed,
             flavor="igraph",
             n_iterations=2,
@@ -216,6 +245,7 @@ class OpenBioSingleCellLeiden(io.ComfyNode):
         parameters = {
             "resolution": resolution,
             "key_added": key_added,
+            "neighbors_key": neighbors_key,
             "random_seed": random_seed,
         }
         finish_adata(

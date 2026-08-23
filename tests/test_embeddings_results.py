@@ -74,17 +74,19 @@ def test_dimension_reduction_chain_is_copy_on_write(adata):
     scaled = prepare_embedding_input(adata)
     scaled_history = copy.deepcopy(scaled.uns["openbio_singlecell"]["analysis_history"])
 
-    pca = output_value(OpenBioSingleCellPCA.execute(scaled, 3, True, 0))
+    pca = output_value(OpenBioSingleCellPCA.execute(scaled, n_comps=3, use_hvg=True, random_seed=0))
     assert "X_pca" not in scaled.obsm
     assert scaled.uns["openbio_singlecell"]["analysis_history"] == scaled_history
 
-    neighbors = output_value(OpenBioSingleCellNeighbors.execute(pca, 5, 3, "cosine", 0))
+    neighbors = output_value(
+        OpenBioSingleCellNeighbors.execute(pca, n_neighbors=5, n_pcs=3, metric="cosine", random_seed=0)
+    )
     assert "connectivities" not in pca.obsp
 
-    umap = output_value(OpenBioSingleCellUMAP.execute(neighbors, 0.5, 1.0, 0))
+    umap = output_value(OpenBioSingleCellUMAP.execute(neighbors, min_dist=0.5, spread=1.0, random_seed=0))
     assert "X_umap" not in neighbors.obsm
 
-    leiden = output_value(OpenBioSingleCellLeiden.execute(umap, 1.0, "leiden", 0))
+    leiden = output_value(OpenBioSingleCellLeiden.execute(umap, resolution=1.0, key_added="leiden", random_seed=0))
     assert "leiden" not in umap.obs
 
     assert pca.obsm["X_pca"].shape == (adata.n_obs, 3)
@@ -96,10 +98,10 @@ def test_dimension_reduction_chain_is_copy_on_write(adata):
 
 def test_embedding_preconditions_are_clear(adata):
     with pytest.raises(ValueError, match="Highly Variable Genes first"):
-        OpenBioSingleCellPCA.execute(adata, 3, True, 0)
+        OpenBioSingleCellPCA.execute(adata, n_comps=3, use_hvg=True, random_seed=0)
 
     with pytest.raises(ValueError, match="cannot be empty"):
-        OpenBioSingleCellLeiden.execute(adata, 1.0, "", 0)
+        OpenBioSingleCellLeiden.execute(adata, resolution=1.0, key_added="", random_seed=0)
 
 
 @pytest.mark.parametrize(
