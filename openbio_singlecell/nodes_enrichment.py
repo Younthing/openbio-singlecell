@@ -294,6 +294,108 @@ class OpenBioSingleCellGSVAScores(io.ComfyNode):
         return io.NodeOutput(output)
 
 
+class OpenBioSingleCellGenePanelScores(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellGenePanelScores",
+            display_name="Gene Panel Scores",
+            category=CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input("gene_sets_file", default="openbio-singlecell/gene_sets.csv"),
+                io.Combo.Input("source", options=["X", "raw", "layer"], default="raw"),
+                io.String.Input("layer_name", default="counts"),
+                io.String.Input("source_column", default="geneset", advanced=True),
+                io.String.Input("target_column", default="genesymbol", advanced=True),
+                io.String.Input("output_prefix", default="score_", advanced=True),
+                io.Int.Input("ctrl_size", default=50, min=1, max=2**31 - 1, advanced=True),
+                io.Int.Input("n_bins", default=25, min=2, max=2**31 - 1, advanced=True),
+                io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
+            ],
+            outputs=[AnnDataType.Output(display_name="adata")],
+        )
+
+    @classmethod
+    def validate_inputs(cls, gene_sets_file: str, **kwargs: Any) -> bool | str:
+        try:
+            resolve_input_path(gene_sets_file, extensions=GENE_SET_EXTENSIONS)
+        except (ValueError, FileNotFoundError, OSError) as exc:
+            return str(exc)
+        return True
+
+    @classmethod
+    def fingerprint_inputs(cls, gene_sets_file: str, **kwargs: Any) -> Any:
+        return input_file_fingerprint(gene_sets_file, GENE_SET_EXTENSIONS)
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        gene_sets_file: str = "openbio-singlecell/gene_sets.csv",
+        source: str = "raw",
+        layer_name: str = "counts",
+        source_column: str = "geneset",
+        target_column: str = "genesymbol",
+        output_prefix: str = "score_",
+        ctrl_size: int = 50,
+        n_bins: int = 25,
+        random_seed: int = 0,
+    ) -> io.NodeOutput:
+        science = dependencies.require_scientific_dependencies()
+        network = _read_gene_sets(gene_sets_file, source_column, target_column, science)
+        started_at = time.perf_counter()
+        cells, genes = int(adata.n_obs), int(adata.n_vars)
+        output = adata.copy()
+        work = _expression_adata(output, source, layer_name)
+        warnings: list[str] = []
+        score_columns: list[str] = []
+
+        for panel, rows in network.groupby(source_column, sort=False):
+            panel_genes = [gene for gene in rows[target_column].astype(str) if gene in work.var_names]
+            if not panel_genes:
+                warnings.append(f"Gene panel {panel!r} has no genes in the selected expression source.")
+                continue
+            score_name = f"{output_prefix}{panel}"
+            science.sc.tl.score_genes(
+                work,
+                gene_list=panel_genes,
+                score_name=score_name,
+                ctrl_size=ctrl_size,
+                n_bins=n_bins,
+                random_state=random_seed,
+                use_raw=False,
+            )
+            output.obs[score_name] = work.obs[score_name].reindex(output.obs_names)
+            score_columns.append(score_name)
+
+        if not score_columns:
+            raise ValueError("No gene panel could be scored against the selected expression source.")
+        parameters = {
+            "gene_sets_file": gene_sets_file,
+            "source": source,
+            "layer_name": layer_name,
+            "source_column": source_column,
+            "target_column": target_column,
+            "output_prefix": output_prefix,
+            "ctrl_size": ctrl_size,
+            "n_bins": n_bins,
+            "score_columns": score_columns,
+            "random_seed": random_seed,
+        }
+        finish_adata(
+            output,
+            "gene_panel_scores",
+            parameters,
+            cells,
+            genes,
+            started_at,
+            random_seed=random_seed,
+            warnings=warnings,
+        )
+        return io.NodeOutput(output)
+
+
 class OpenBioSingleCellPathwayScoreTTest(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -683,6 +785,7 @@ class OpenBioSingleCellDrugGSEA(io.ComfyNode):
 ENRICHMENT_NODE_CLASSES = [
     OpenBioSingleCellAUCellScores,
     OpenBioSingleCellGSVAScores,
+    OpenBioSingleCellGenePanelScores,
     OpenBioSingleCellPathwayScoreTTest,
     OpenBioSingleCellRankedGSEA,
     OpenBioSingleCellDGIdbAnnotation,
@@ -699,6 +802,7 @@ __all__ = [
     "OpenBioSingleCellDrugGSEA",
     "OpenBioSingleCellDrugHypergeometric",
     "OpenBioSingleCellDrugScores",
+    "OpenBioSingleCellGenePanelScores",
     "OpenBioSingleCellGSVAScores",
     "OpenBioSingleCellPathwayScoreTTest",
     "OpenBioSingleCellRankedGSEA",

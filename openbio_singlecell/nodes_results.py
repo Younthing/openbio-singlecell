@@ -7,6 +7,7 @@ from comfy_api.latest import io
 
 from . import dependencies
 from .analysis_utils import figure_to_png, make_result
+from .contracts import SingleCellResult
 from .node_types import AnnDataType, SingleCellResultType
 
 if TYPE_CHECKING:
@@ -230,4 +231,200 @@ class OpenBioSingleCellUMAPPlot(io.ComfyNode):
         return io.NodeOutput(result)
 
 
-RESULT_NODE_CLASSES = [OpenBioSingleCellMarkerGenes, OpenBioSingleCellUMAPPlot]
+class OpenBioSingleCellFilterMarkerGenes(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellFilterMarkerGenes",
+            display_name="Filter Marker Genes",
+            category=DIFFERENTIAL_CATEGORY,
+            inputs=[
+                SingleCellResultType.Input("result"),
+                io.Float.Input("min_logfc", default=1.0, step=0.1),
+                io.Float.Input("min_pct_in_group", default=0.25, min=0.0, max=1.0, step=0.05),
+                io.Float.Input("max_pct_rest", default=0.5, min=0.0, max=1.0, step=0.05),
+                io.Float.Input("max_p_adj", default=0.05, min=0.0, max=1.0, step=0.01),
+            ],
+            outputs=[SingleCellResultType.Output(display_name="result")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        result: SingleCellResult,
+        min_logfc: float = 1.0,
+        min_pct_in_group: float = 0.25,
+        max_pct_rest: float = 0.5,
+        max_p_adj: float = 0.05,
+    ) -> io.NodeOutput:
+        science = dependencies.require_scientific_dependencies()
+        required = {"logFC", "pct_in_group", "pct_rest", "p_adj"}
+        if result.kind != "table" or not isinstance(result.table, science.pd.DataFrame):
+            raise ValueError("Filter Marker Genes requires a table result from Marker Genes.")
+        missing = sorted(required.difference(result.table.columns))
+        if missing:
+            raise ValueError(f"Marker result is missing columns: {missing}")
+
+        started_at = time.perf_counter()
+        table = result.table.copy()
+        table = table[
+            (science.pd.to_numeric(table["logFC"], errors="coerce") >= min_logfc)
+            & (science.pd.to_numeric(table["pct_in_group"], errors="coerce") >= min_pct_in_group)
+            & (science.pd.to_numeric(table["pct_rest"], errors="coerce") <= max_pct_rest)
+            & (science.pd.to_numeric(table["p_adj"], errors="coerce") <= max_p_adj)
+        ].reset_index(drop=True)
+        parameters = {
+            "min_logfc": min_logfc,
+            "min_pct_in_group": min_pct_in_group,
+            "max_pct_rest": max_pct_rest,
+            "max_p_adj": max_p_adj,
+        }
+        filtered = make_result(
+            kind="table",
+            title=f"Filtered {result.title}",
+            operation="filter_marker_genes",
+            parameters=parameters,
+            description="Marker genes filtered by fold change, prevalence, and adjusted p-value.",
+            warnings=[],
+            input_cells=result.input_cells,
+            input_genes=result.input_genes,
+            started_at=started_at,
+            random_seed=result.random_seed,
+            table=table,
+        )
+        return io.NodeOutput(filtered)
+
+
+class OpenBioSingleCellMarkerExpressionPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellMarkerExpressionPlot",
+            display_name="Marker Expression Plot",
+            category=PLOT_CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input("genes", default=""),
+                io.String.Input("groupby", default="leiden"),
+                io.Combo.Input(
+                    "plot_type", options=["dotplot", "matrixplot", "tracksplot", "violin"], default="dotplot"
+                ),
+                io.Combo.Input("source", options=["X", "raw", "layer"], default="raw"),
+                io.String.Input("layer_name", default="log1p_norm"),
+                io.Combo.Input("standard_scale", options=["none", "var", "group"], default="var", advanced=True),
+                io.Boolean.Input("dendrogram", default=False, advanced=True),
+                io.Boolean.Input("log", default=False, advanced=True),
+            ],
+            outputs=[SingleCellResultType.Output(display_name="result")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        genes: str = "",
+        groupby: str = "leiden",
+        plot_type: str = "dotplot",
+        source: str = "raw",
+        layer_name: str = "log1p_norm",
+        standard_scale: str = "var",
+        dendrogram: bool = False,
+        log: bool = False,
+    ) -> io.NodeOutput:
+        science = dependencies.require_scientific_dependencies()
+        gene_names = list(dict.fromkeys(gene.strip() for gene in genes.split(",") if gene.strip()))
+        if not gene_names:
+            raise ValueError("Marker Expression Plot requires at least one comma-separated gene.")
+        if groupby not in adata.obs:
+            raise ValueError(f"Marker plot group column not found in obs: {groupby!r}")
+        expression = adata.raw.var_names if source == "raw" and adata.raw is not None else adata.var_names
+        if source == "raw" and adata.raw is None:
+            raise ValueError("Marker plot source 'raw' was selected, but adata.raw is unavailable.")
+        if source == "layer" and layer_name not in adata.layers:
+            raise ValueError(f"Marker plot layer not found: {layer_name!r}")
+        missing = [gene for gene in gene_names if gene not in expression]
+        if missing:
+            raise ValueError(f"Marker plot genes not found in the selected expression source: {missing}")
+
+        started_at = time.perf_counter()
+        plot_kwargs = {
+            "use_raw": source == "raw",
+            "layer": layer_name if source == "layer" else None,
+            "log": log,
+            "show": False,
+        }
+        if plot_type == "dotplot":
+            plot = science.sc.pl.dotplot(
+                adata,
+                gene_names,
+                groupby,
+                standard_scale=None if standard_scale == "none" else standard_scale,
+                dendrogram=dendrogram,
+                return_fig=True,
+                **plot_kwargs,
+            )
+            plot.make_figure()
+            figure = plot.fig
+        elif plot_type == "matrixplot":
+            plot = science.sc.pl.matrixplot(
+                adata,
+                gene_names,
+                groupby,
+                standard_scale=None if standard_scale == "none" else standard_scale,
+                dendrogram=dendrogram,
+                return_fig=True,
+                **plot_kwargs,
+            )
+            plot.make_figure()
+            figure = plot.fig
+        elif plot_type == "tracksplot":
+            axes = science.sc.pl.tracksplot(
+                adata,
+                gene_names,
+                groupby,
+                dendrogram=dendrogram,
+                **plot_kwargs,
+            )
+            figure = next(iter(axes.values())).figure
+        else:
+            axis = science.sc.pl.violin(
+                adata,
+                gene_names,
+                groupby=groupby,
+                multi_panel=len(gene_names) > 1,
+                stripplot=False,
+                **plot_kwargs,
+            )
+            figure = axis.fig if hasattr(axis, "fig") else axis.figure
+
+        parameters = {
+            "genes": gene_names,
+            "groupby": groupby,
+            "plot_type": plot_type,
+            "source": source,
+            "layer_name": layer_name,
+            "standard_scale": standard_scale,
+            "dendrogram": dendrogram,
+            "log": log,
+        }
+        plotted = make_result(
+            kind="plot",
+            title=f"{plot_type}: {', '.join(gene_names)} by {groupby}",
+            operation="marker_expression_plot",
+            parameters=parameters,
+            description="Marker expression rendered with Scanpy without modifying AnnData.",
+            warnings=[],
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+            started_at=started_at,
+            png=figure_to_png(figure),
+        )
+        return io.NodeOutput(plotted)
+
+
+RESULT_NODE_CLASSES = [
+    OpenBioSingleCellMarkerGenes,
+    OpenBioSingleCellUMAPPlot,
+    OpenBioSingleCellFilterMarkerGenes,
+    OpenBioSingleCellMarkerExpressionPlot,
+]
