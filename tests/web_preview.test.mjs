@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { normalizeSingleCellPayload } from "../web/single_cell_result_renderer.mjs";
+import {
+    createSingleCellPreview,
+    normalizeSingleCellPayload,
+} from "../web/single_cell_result_renderer.mjs";
 
 test("accepts each discriminated result kind", () => {
     for (const kind of ["summary", "table", "plot"]) {
@@ -45,4 +48,40 @@ test("normalizes untrusted collection fields", () => {
     assert.equal(payload.total_rows, 0);
     assert.deepEqual(payload.warnings, []);
     assert.equal(payload.elapsed_seconds, null);
+});
+
+test("preview state is idempotent without modifying the node instance", () => {
+    const originalDocument = globalThis.document;
+    const widgets = [];
+    const node = {
+        addDOMWidget(...args) {
+            widgets.push(args);
+        },
+    };
+    const initialKeys = Reflect.ownKeys(node);
+    globalThis.document = {
+        createElement(tag) {
+            return {
+                tag,
+                className: "",
+                textContent: "",
+                children: [],
+                appendChild(child) {
+                    this.children.push(child);
+                },
+            };
+        },
+    };
+
+    try {
+        const first = createSingleCellPreview(node);
+        const second = createSingleCellPreview(node);
+
+        assert.equal(second, first);
+        assert.equal(widgets.length, 1);
+        assert.deepEqual(Reflect.ownKeys(node), initialKeys);
+    } finally {
+        if (originalDocument === undefined) delete globalThis.document;
+        else globalThis.document = originalDocument;
+    }
 });

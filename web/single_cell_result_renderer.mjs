@@ -1,6 +1,6 @@
 const RESULT_KINDS = new Set(["summary", "table", "plot"]);
-const PREVIEW_PROPERTY = "__openbioSingleCellPreview";
 const WIDGET_NAME = "openbio_singlecell_preview";
+const previewRoots = new WeakMap();
 
 function asText(value) {
     return value == null ? "" : String(value);
@@ -87,7 +87,8 @@ function renderTable(root, payload) {
 }
 
 export function createSingleCellPreview(node) {
-    if (node[PREVIEW_PROPERTY]) return node[PREVIEW_PROPERTY];
+    const existing = previewRoots.get(node);
+    if (existing) return existing;
 
     const root = document.createElement("section");
     root.className = "openbio-sc-preview";
@@ -98,7 +99,7 @@ export function createSingleCellPreview(node) {
         serialize: false,
         hideOnZoom: false,
     });
-    node[PREVIEW_PROPERTY] = root;
+    previewRoots.set(node, root);
     return root;
 }
 
