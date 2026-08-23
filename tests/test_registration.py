@@ -59,6 +59,9 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellCNVStructure",
     "OpenBioSingleCellPseudobulk",
     "OpenBioSingleCellPseudobulkEdgeR",
+    "OpenBioSingleCellSchistNestedModel",
+    "OpenBioSingleCellMiloDifferentialAbundance",
+    "OpenBioSingleCellTasccodaDifferentialComposition",
     "OpenBioSingleCellAUCellScores",
     "OpenBioSingleCellGSVAScores",
     "OpenBioSingleCellPathwayScoreTTest",
@@ -129,10 +132,10 @@ def test_extension_loads_without_scientific_dependencies():
         from openbio_singlecell import dependencies
         from openbio_singlecell.extension import NODE_CLASSES, comfy_entrypoint
 
-        assert len(NODE_CLASSES) == 67
+        assert len(NODE_CLASSES) == 70
         extension = asyncio.run(comfy_entrypoint())
         asyncio.run(extension.on_load())
-        assert len(asyncio.run(extension.get_node_list())) == 67
+        assert len(asyncio.run(extension.get_node_list())) == 70
         assert attempted == []
 
         try:
