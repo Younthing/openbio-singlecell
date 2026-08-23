@@ -82,6 +82,52 @@ class OpenBioSingleCellUseExpressionLayer(io.ComfyNode):
         return io.NodeOutput(output)
 
 
+class OpenBioSingleCellNormalizeGeneNames(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellNormalizeGeneNames",
+            display_name="Normalize Gene Names",
+            category=CATEGORY,
+            description="Replace text in AnnData var_names and optionally make the result unique.",
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input("pattern", default=r"\."),
+                io.String.Input("replacement", default="-"),
+                io.Boolean.Input("regex", default=True),
+                io.Boolean.Input("make_unique", default=True, advanced=True),
+            ],
+            outputs=[AnnDataType.Output(display_name="adata")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        pattern: str = r"\.",
+        replacement: str = "-",
+        regex: bool = True,
+        make_unique: bool = True,
+    ) -> io.NodeOutput:
+        if not pattern:
+            raise ValueError("Gene-name replacement pattern cannot be empty.")
+
+        started_at = time.perf_counter()
+        cells, genes = int(adata.n_obs), int(adata.n_vars)
+        output = adata.copy()
+        output.var_names = output.var_names.astype(str).str.replace(pattern, replacement, regex=regex)
+        if make_unique:
+            output.var_names_make_unique()
+        parameters = {
+            "pattern": pattern,
+            "replacement": replacement,
+            "regex": regex,
+            "make_unique": make_unique,
+        }
+        finish_adata(output, "normalize_gene_names", parameters, cells, genes, started_at)
+        return io.NodeOutput(output)
+
+
 class OpenBioSingleCellSnapshotExpression(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -340,6 +386,7 @@ class OpenBioSingleCellMapGeneIdsFromGTF(io.ComfyNode):
 
 DATA_NODE_CLASSES = [
     OpenBioSingleCellUseExpressionLayer,
+    OpenBioSingleCellNormalizeGeneNames,
     OpenBioSingleCellSnapshotExpression,
     OpenBioSingleCellSubsetObservations,
     OpenBioSingleCellMergeObservationAnnotations,
