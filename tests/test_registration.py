@@ -88,6 +88,7 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellDrugGSEA",
     "OpenBioSingleCellCollecTRIULM",
     "OpenBioSingleCellRankTFActivities",
+    "OpenBioSingleCellRunPySCENIC",
     "OpenBioSingleCellImportPySCENICResults",
     "OpenBioSingleCellSCENICRegulonSpecificity",
     "OpenBioSingleCellSCENICActivityBinarization",

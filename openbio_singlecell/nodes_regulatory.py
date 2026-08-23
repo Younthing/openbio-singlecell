@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import importlib
+import subprocess
+import sys
+import tempfile
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from comfy_api.latest import io
 
 from . import dependencies
-from .analysis_utils import finish_adata, make_result
+from .analysis_utils import finish_adata, make_result, matrix_totals_and_nonzero
 from .files import input_file_fingerprint, resolve_input_path
 from .node_types import AnnDataType, SingleCellResultType
 
@@ -18,6 +22,7 @@ if TYPE_CHECKING:
 CATEGORY = "openbio/single-cell/regulatory"
 EXPRESSION_SOURCES = ["X", "raw", "layer"]
 RANKING_METHODS = ["wilcoxon", "t-test_overestim_var"]
+PYSCENIC_GRN_METHODS = ["grnboost2", "genie3"]
 
 
 def _require_optional_dependency(name: str) -> Any:
@@ -49,6 +54,78 @@ def _expression_adata(adata: AnnData, source: str, layer_name: str) -> AnnData:
             raise ValueError(f"Expression layer not found: {layer_name!r}")
         work.X = adata.layers[layer_name].copy()
     return work
+
+
+def _resource_names(value: str, description: str) -> tuple[str, ...]:
+    names = tuple(name.strip() for line in value.splitlines() for name in line.split(",") if name.strip())
+    if not names:
+        raise ValueError(f"{description} cannot be empty.")
+    return names
+
+
+def _resolve_pyscenic_resources(
+    tf_list_file: str,
+    ranking_database_files: str,
+    motif_annotations_file: str,
+) -> tuple[str, tuple[str, ...], str]:
+    tf_path = resolve_input_path(tf_list_file, extensions=(".txt",))
+    ranking_paths = tuple(
+        resolve_input_path(name, extensions=(".feather",))
+        for name in _resource_names(ranking_database_files, "Ranking database files")
+    )
+    motif_path = resolve_input_path(motif_annotations_file, extensions=(".tbl",))
+    return tf_path, ranking_paths, motif_path
+
+
+def _run_pyscenic_cli(arguments: list[str], working_directory: str) -> None:
+    command = [sys.executable, "-m", "pyscenic.cli.pyscenic", *arguments]
+    completed = subprocess.run(
+        command,
+        cwd=working_directory,
+        check=False,
+        capture_output=True,
+        text=True,
+        errors="replace",
+    )
+    if completed.returncode == 0:
+        return
+
+    details = completed.stderr.strip() or completed.stdout.strip() or "pySCENIC produced no diagnostic output."
+    raise RuntimeError(f"pySCENIC {arguments[0]} failed (exit {completed.returncode}):\n{details[-4000:]}")
+
+
+def _attach_pyscenic_results(
+    adata: AnnData,
+    loom_path: str,
+    regulons_path: str,
+    activity_key: str,
+    science: dependencies.ScientificDependencies,
+) -> None:
+    loompy = _require_optional_dependency("loompy")
+    scenic_utils = _require_optional_dependency("pyscenic.utils")
+    scenic_transform = _require_optional_dependency("pyscenic.transform")
+    scenic_export = _require_optional_dependency("pyscenic.export")
+
+    connection = loompy.connect(loom_path, mode="r", validate=False)
+    try:
+        auc_matrix = science.pd.DataFrame(
+            connection.ca.RegulonsAUC,
+            index=science.pd.Index(connection.ca.CellID.astype(str)),
+        )
+    finally:
+        connection.close()
+
+    observation_ids = science.pd.Index(adata.obs_names.astype(str))
+    if not observation_ids.isin(auc_matrix.index).all():
+        missing_count = int((~observation_ids.isin(auc_matrix.index)).sum())
+        raise ValueError(f"pySCENIC output is missing {missing_count} AnnData observations.")
+    auc_matrix = auc_matrix.reindex(observation_ids)
+    auc_matrix.index = adata.obs_names
+
+    motifs = scenic_utils.load_motifs(regulons_path)
+    regulons = scenic_transform.df2regulons(motifs)
+    scenic_export.add_scenic_metadata(adata, auc_matrix, regulons)
+    adata.obsm[activity_key] = auc_matrix.copy()
 
 
 class OpenBioSingleCellCollecTRIULM(io.ComfyNode):
@@ -194,6 +271,220 @@ class OpenBioSingleCellRankTFActivities(io.ComfyNode):
         return io.NodeOutput(result)
 
 
+class OpenBioSingleCellRunPySCENIC(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellRunPySCENIC",
+            display_name="Run pySCENIC",
+            category=CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.Combo.Input("source", options=EXPRESSION_SOURCES, default="X"),
+                io.String.Input("layer_name", default="log1p_norm"),
+                io.String.Input(
+                    "tf_list_file",
+                    display_name="TF list",
+                    default="",
+                    placeholder="openbio-singlecell/allTFs_hg38.txt",
+                    tooltip="TF list under the ComfyUI input directory.",
+                ),
+                io.String.Input(
+                    "ranking_database_files",
+                    display_name="Ranking databases",
+                    default="",
+                    multiline=True,
+                    placeholder="One .feather file per line",
+                    tooltip="One or more cisTarget ranking databases under the ComfyUI input directory.",
+                ),
+                io.String.Input(
+                    "motif_annotations_file",
+                    display_name="Motif annotations",
+                    default="",
+                    placeholder="openbio-singlecell/motifs-v9-nr.hgnc-m0.001-o0.0.tbl",
+                    tooltip="Motif-to-TF annotations under the ComfyUI input directory.",
+                ),
+                io.Combo.Input("grn_method", options=PYSCENIC_GRN_METHODS, default="grnboost2"),
+                io.Boolean.Input("mask_dropouts", default=True),
+                io.Float.Input("auc_threshold", default=0.05, min=0.0, max=1.0, step=0.01),
+                io.Int.Input("num_workers", default=4, min=1, max=1024, advanced=True),
+                io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
+                io.String.Input("activity_key", default="scenic_auc", advanced=True),
+            ],
+            outputs=[AnnDataType.Output(display_name="adata")],
+        )
+
+    @classmethod
+    def validate_inputs(
+        cls,
+        tf_list_file: str,
+        ranking_database_files: str,
+        motif_annotations_file: str,
+        **kwargs: Any,
+    ) -> bool | str:
+        try:
+            _resolve_pyscenic_resources(tf_list_file, ranking_database_files, motif_annotations_file)
+        except (ValueError, FileNotFoundError, OSError) as exc:
+            return str(exc)
+        return True
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        tf_list_file: str,
+        ranking_database_files: str,
+        motif_annotations_file: str,
+        **kwargs: Any,
+    ) -> Any:
+        ranking_files = _resource_names(ranking_database_files, "Ranking database files")
+        return (
+            input_file_fingerprint(tf_list_file, (".txt",)),
+            tuple(input_file_fingerprint(name, (".feather",)) for name in ranking_files),
+            input_file_fingerprint(motif_annotations_file, (".tbl",)),
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        source: str = "X",
+        layer_name: str = "log1p_norm",
+        tf_list_file: str = "",
+        ranking_database_files: str = "",
+        motif_annotations_file: str = "",
+        grn_method: str = "grnboost2",
+        mask_dropouts: bool = True,
+        auc_threshold: float = 0.05,
+        num_workers: int = 4,
+        random_seed: int = 0,
+        activity_key: str = "scenic_auc",
+    ) -> io.NodeOutput:
+        science = dependencies.require_scientific_dependencies()
+        activity_key = _required_name(activity_key, "pySCENIC activity key")
+        tf_path, ranking_paths, motif_path = _resolve_pyscenic_resources(
+            tf_list_file,
+            ranking_database_files,
+            motif_annotations_file,
+        )
+        _require_optional_dependency("pyscenic.cli.pyscenic")
+        loompy = _require_optional_dependency("loompy")
+
+        if adata.n_obs == 0 or adata.n_vars == 0:
+            raise ValueError("pySCENIC requires a non-empty AnnData object.")
+        if not adata.obs_names.is_unique or not adata.var_names.is_unique:
+            raise ValueError("pySCENIC requires unique observation and variable names.")
+
+        started_at = time.perf_counter()
+        cells, genes = int(adata.n_obs), int(adata.n_vars)
+        output = adata.copy()
+        work = _expression_adata(output, source, layer_name)
+        if work.X is None:
+            raise ValueError("The selected pySCENIC expression source has no matrix.")
+
+        tf_names = {
+            line.strip()
+            for line in Path(tf_path).read_text(encoding="utf-8-sig").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        if not tf_names:
+            raise ValueError("The pySCENIC TF list is empty.")
+        if not work.var_names.isin(tf_names).any():
+            raise ValueError("No genes in the selected expression source occur in the pySCENIC TF list.")
+
+        total_counts, detected_genes = matrix_totals_and_nonzero(work.X, axis=1)
+        row_attributes = {"Gene": science.np.asarray(work.var_names.astype(str))}
+        column_attributes = {
+            "CellID": science.np.asarray(work.obs_names.astype(str)),
+            "nGene": science.np.asarray(detected_genes).ravel(),
+            "nUMI": science.np.asarray(total_counts).ravel(),
+        }
+
+        with tempfile.TemporaryDirectory(prefix="openbio_pyscenic_") as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            input_loom = temporary_path / "expression.loom"
+            adjacency_csv = temporary_path / "adjacencies.csv"
+            regulons_csv = temporary_path / "regulons.csv"
+            final_loom = temporary_path / "aucell.loom"
+            loompy.create(str(input_loom), work.X.transpose(), row_attributes, column_attributes)
+
+            _run_pyscenic_cli(
+                [
+                    "grn",
+                    str(input_loom),
+                    tf_path,
+                    "-o",
+                    str(adjacency_csv),
+                    "--method",
+                    grn_method,
+                    "--num_workers",
+                    str(num_workers),
+                    "--seed",
+                    str(random_seed),
+                ],
+                temporary_directory,
+            )
+
+            ctx_arguments = [
+                "ctx",
+                str(adjacency_csv),
+                *ranking_paths,
+                "--annotations_fname",
+                motif_path,
+                "--expression_mtx_fname",
+                str(input_loom),
+                "--output",
+                str(regulons_csv),
+                "--num_workers",
+                str(num_workers),
+            ]
+            if mask_dropouts:
+                ctx_arguments.append("--mask_dropouts")
+            _run_pyscenic_cli(ctx_arguments, temporary_directory)
+
+            _run_pyscenic_cli(
+                [
+                    "aucell",
+                    str(input_loom),
+                    str(regulons_csv),
+                    "--auc_threshold",
+                    str(auc_threshold),
+                    "--output",
+                    str(final_loom),
+                    "--num_workers",
+                    str(num_workers),
+                    "--seed",
+                    str(random_seed),
+                ],
+                temporary_directory,
+            )
+
+            _attach_pyscenic_results(output, str(final_loom), str(regulons_csv), activity_key, science)
+
+        parameters = {
+            "source": source,
+            "layer_name": layer_name,
+            "tf_list_file": tf_list_file,
+            "ranking_database_files": list(_resource_names(ranking_database_files, "Ranking database files")),
+            "motif_annotations_file": motif_annotations_file,
+            "grn_method": grn_method,
+            "mask_dropouts": mask_dropouts,
+            "auc_threshold": auc_threshold,
+            "num_workers": num_workers,
+            "activity_key": activity_key,
+            "random_seed": random_seed,
+        }
+        finish_adata(
+            output,
+            "run_pyscenic",
+            parameters,
+            cells,
+            genes,
+            started_at,
+            random_seed=random_seed,
+        )
+        return io.NodeOutput(output)
+
+
 class OpenBioSingleCellImportPySCENICResults(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -238,34 +529,10 @@ class OpenBioSingleCellImportPySCENICResults(io.ComfyNode):
         activity_key = _required_name(activity_key, "pySCENIC activity key")
         loom_path = resolve_input_path(final_loom_file, extensions=(".loom",))
         regulons_path = resolve_input_path(regulons_csv, extensions=(".csv",))
-        loompy = _require_optional_dependency("loompy")
-        scenic_utils = _require_optional_dependency("pyscenic.utils")
-        scenic_transform = _require_optional_dependency("pyscenic.transform")
-        scenic_export = _require_optional_dependency("pyscenic.export")
-
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
-        connection = loompy.connect(loom_path, mode="r", validate=False)
-        try:
-            auc_matrix = science.pd.DataFrame(
-                connection.ca.RegulonsAUC,
-                index=science.pd.Index(connection.ca.CellID.astype(str)),
-            )
-        finally:
-            connection.close()
-
         output = adata.copy()
-        observation_ids = science.pd.Index(output.obs_names.astype(str))
-        if not observation_ids.isin(auc_matrix.index).all():
-            missing_count = int((~observation_ids.isin(auc_matrix.index)).sum())
-            raise ValueError(f"pySCENIC loom is missing {missing_count} AnnData observations.")
-        auc_matrix = auc_matrix.reindex(observation_ids)
-        auc_matrix.index = output.obs_names
-
-        motifs = scenic_utils.load_motifs(regulons_path)
-        regulons = scenic_transform.df2regulons(motifs)
-        scenic_export.add_scenic_metadata(output, auc_matrix, regulons)
-        output.obsm[activity_key] = auc_matrix.copy()
+        _attach_pyscenic_results(output, loom_path, regulons_path, activity_key, science)
 
         parameters = {
             "final_loom_file": final_loom_file,
@@ -480,6 +747,7 @@ class OpenBioSingleCellSCENICTFModules(io.ComfyNode):
 REGULATORY_NODE_CLASSES = [
     OpenBioSingleCellCollecTRIULM,
     OpenBioSingleCellRankTFActivities,
+    OpenBioSingleCellRunPySCENIC,
     OpenBioSingleCellImportPySCENICResults,
     OpenBioSingleCellSCENICRegulonSpecificity,
     OpenBioSingleCellSCENICActivityBinarization,
@@ -492,6 +760,7 @@ __all__ = [
     "OpenBioSingleCellCollecTRIULM",
     "OpenBioSingleCellImportPySCENICResults",
     "OpenBioSingleCellRankTFActivities",
+    "OpenBioSingleCellRunPySCENIC",
     "OpenBioSingleCellSCENICActivityBinarization",
     "OpenBioSingleCellSCENICRegulonSpecificity",
     "OpenBioSingleCellSCENICTFModules",
