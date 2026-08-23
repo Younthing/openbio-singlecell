@@ -43,7 +43,8 @@ class OpenBioSingleCellPseudobulk(io.ComfyNode):
                 AnnDataType.Input("adata"),
                 io.String.Input("sample_key", default="sample"),
                 io.String.Input("groupby", default="cell_type"),
-                io.String.Input("counts_layer", default="counts"),
+                io.Combo.Input("source", options=["X", "layer"], default="layer"),
+                io.String.Input("layer_name", default="counts"),
                 io.Combo.Input("mode", options=["sum", "mean"], default="sum"),
                 io.Int.Input("min_cells", default=10, min=1, max=2**31 - 1),
                 io.Int.Input("min_counts", default=1000, min=0, max=2**31 - 1),
@@ -57,7 +58,8 @@ class OpenBioSingleCellPseudobulk(io.ComfyNode):
         adata: AnnData,
         sample_key: str = "sample",
         groupby: str = "cell_type",
-        counts_layer: str = "counts",
+        source: str = "layer",
+        layer_name: str = "counts",
         mode: str = "sum",
         min_cells: int = 10,
         min_counts: int = 1000,
@@ -66,8 +68,11 @@ class OpenBioSingleCellPseudobulk(io.ComfyNode):
             raise ValueError(f"Pseudobulk sample column not found in obs: {sample_key!r}")
         if groupby not in adata.obs:
             raise ValueError(f"Pseudobulk group column not found in obs: {groupby!r}")
-        if counts_layer not in adata.layers:
-            raise ValueError(f"Pseudobulk counts layer not found: {counts_layer!r}")
+        if source not in {"X", "layer"}:
+            raise ValueError(f"Unsupported pseudobulk expression source: {source!r}")
+        layer_name = layer_name.strip()
+        if source == "layer" and layer_name not in adata.layers:
+            raise ValueError(f"Pseudobulk expression layer not found: {layer_name!r}")
 
         pertpy = _require_pertpy()
         started_at = time.perf_counter()
@@ -76,16 +81,18 @@ class OpenBioSingleCellPseudobulk(io.ComfyNode):
             adata,
             target_col=sample_key,
             groups_col=groupby,
-            layer_key=counts_layer,
+            layer_key=layer_name if source == "layer" else None,
             mode=mode,
             min_cells=min_cells,
             min_counts=min_counts,
         )
-        output.layers["counts"] = output.X.copy()
+        if mode == "sum":
+            output.layers["counts"] = output.X.copy()
         parameters = {
             "sample_key": sample_key,
             "groupby": groupby,
-            "counts_layer": counts_layer,
+            "source": source,
+            "layer_name": layer_name,
             "mode": mode,
             "min_cells": min_cells,
             "min_counts": min_counts,

@@ -18,6 +18,7 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellLoad10xH5",
     "OpenBioSingleCellAnnDataSummary",
     "OpenBioSingleCellUseExpressionLayer",
+    "OpenBioSingleCellSnapshotExpression",
     "OpenBioSingleCellSubsetObservations",
     "OpenBioSingleCellMergeObservationAnnotations",
     "OpenBioSingleCellMapGeneIdsFromGTF",

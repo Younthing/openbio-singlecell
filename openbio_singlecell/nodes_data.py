@@ -82,6 +82,47 @@ class OpenBioSingleCellUseExpressionLayer(io.ComfyNode):
         return io.NodeOutput(output)
 
 
+class OpenBioSingleCellSnapshotExpression(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellSnapshotExpression",
+            display_name="Snapshot Expression",
+            category=CATEGORY,
+            description="Copy the current X matrix into an AnnData layer, raw, or both.",
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.Combo.Input("destination", options=["layer", "raw", "layer_and_raw"], default="layer"),
+                io.String.Input("layer_name", default="counts", advanced=True),
+            ],
+            outputs=[AnnDataType.Output(display_name="adata")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        destination: str = "layer",
+        layer_name: str = "counts",
+    ) -> io.NodeOutput:
+        if destination not in {"layer", "raw", "layer_and_raw"}:
+            raise ValueError(f"Unsupported expression snapshot destination: {destination!r}")
+        layer_name = layer_name.strip()
+        if destination in {"layer", "layer_and_raw"} and not layer_name:
+            raise ValueError("Expression snapshot layer name cannot be empty.")
+
+        started_at = time.perf_counter()
+        cells, genes = int(adata.n_obs), int(adata.n_vars)
+        output = adata.copy()
+        if destination in {"layer", "layer_and_raw"}:
+            output.layers[layer_name] = output.X.copy()
+        if destination in {"raw", "layer_and_raw"}:
+            output.raw = output.copy()
+        parameters = {"destination": destination, "layer_name": layer_name}
+        finish_adata(output, "snapshot_expression", parameters, cells, genes, started_at)
+        return io.NodeOutput(output)
+
+
 class OpenBioSingleCellSubsetObservations(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -299,6 +340,7 @@ class OpenBioSingleCellMapGeneIdsFromGTF(io.ComfyNode):
 
 DATA_NODE_CLASSES = [
     OpenBioSingleCellUseExpressionLayer,
+    OpenBioSingleCellSnapshotExpression,
     OpenBioSingleCellSubsetObservations,
     OpenBioSingleCellMergeObservationAnnotations,
     OpenBioSingleCellMapGeneIdsFromGTF,
