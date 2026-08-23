@@ -85,7 +85,7 @@ class OpenBioSingleCellNormalizeToLayer(io.ComfyNode):
                 io.Combo.Input("source", options=["X", "layer"], default="X"),
                 io.String.Input("source_layer", default="counts"),
                 io.Float.Input("target_sum", default=10000.0, min=0.0, step=1000.0),
-                io.Boolean.Input("log1p", default=True),
+                io.Combo.Input("transform", options=["none", "log1p", "sqrt"], default="log1p"),
                 io.String.Input("output_layer", default="log1p_norm", advanced=True),
             ],
             outputs=[AnnDataType.Output(display_name="adata")],
@@ -98,7 +98,7 @@ class OpenBioSingleCellNormalizeToLayer(io.ComfyNode):
         source: str = "X",
         source_layer: str = "counts",
         target_sum: float = 10000.0,
-        log1p: bool = True,
+        transform: str = "log1p",
         output_layer: str = "log1p_norm",
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
@@ -113,14 +113,16 @@ class OpenBioSingleCellNormalizeToLayer(io.ComfyNode):
         matrix = output.X if source == "X" else output.layers[source_layer]
         work = science.ad.AnnData(X=matrix.copy(), obs=output.obs.copy(), var=output.var.copy())
         science.sc.pp.normalize_total(work, target_sum=target_sum or None, inplace=True)
-        if log1p:
+        if transform == "log1p":
             science.sc.pp.log1p(work)
+        elif transform == "sqrt":
+            work.X = work.X.sqrt() if science.sparse.issparse(work.X) else science.np.sqrt(work.X)
         output.layers[output_layer.strip()] = work.X.copy()
         parameters = {
             "source": source,
             "source_layer": source_layer,
             "target_sum": target_sum,
-            "log1p": log1p,
+            "transform": transform,
             "output_layer": output_layer.strip(),
         }
         finish_adata(output, "normalize_to_layer", parameters, cells, genes, started_at)
@@ -203,6 +205,7 @@ class OpenBioSingleCellHighlyVariableGenes(io.ComfyNode):
                 io.Combo.Input("source", options=["X", "layer"], default="X"),
                 io.String.Input("layer_name", default="log1p_norm"),
                 io.String.Input("batch_key", default=""),
+                io.String.Input("always_keep_genes", default=""),
                 io.Boolean.Input("subset", default=False),
             ],
             outputs=[AnnDataType.Output(display_name="adata")],
@@ -217,6 +220,7 @@ class OpenBioSingleCellHighlyVariableGenes(io.ComfyNode):
         source: str = "X",
         layer_name: str = "log1p_norm",
         batch_key: str = "",
+        always_keep_genes: str = "",
         subset: bool = False,
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
@@ -227,6 +231,7 @@ class OpenBioSingleCellHighlyVariableGenes(io.ComfyNode):
             raise ValueError(f"Highly Variable Genes layer not found: {layer_name!r}")
         if batch_key and batch_key not in output.obs:
             raise ValueError(f"Highly Variable Genes batch column not found in obs: {batch_key!r}")
+        requested_keep = list(dict.fromkeys(gene.strip() for gene in always_keep_genes.split(",") if gene.strip()))
         hvg = (
             science.sc.experimental.pp.highly_variable_genes
             if flavor == "pearson_residuals"
@@ -238,18 +243,26 @@ class OpenBioSingleCellHighlyVariableGenes(io.ComfyNode):
             n_top_genes=n_top_genes,
             flavor=flavor,
             batch_key=batch_key or None,
-            subset=subset,
+            subset=False,
             inplace=True,
         )
+        present_keep = [gene for gene in requested_keep if gene in output.var_names]
+        if present_keep:
+            output.var.loc[present_keep, "highly_variable"] = True
+        if subset:
+            output = output[:, output.var["highly_variable"].astype(bool)].copy()
+        missing_keep = [gene for gene in requested_keep if gene not in output.var_names]
         parameters = {
             "n_top_genes": n_top_genes,
             "flavor": flavor,
             "source": source,
             "layer_name": layer_name,
             "batch_key": batch_key,
+            "always_keep_genes": requested_keep,
             "subset": subset,
         }
-        finish_adata(output, "highly_variable_genes", parameters, cells, genes, started_at)
+        warnings = [f"Requested keep genes were not found: {missing_keep}"] if missing_keep else []
+        finish_adata(output, "highly_variable_genes", parameters, cells, genes, started_at, warnings=warnings)
         return io.NodeOutput(output)
 
 
