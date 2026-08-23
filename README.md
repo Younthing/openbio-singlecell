@@ -12,7 +12,7 @@
 - `scanpy[leiden]>=1.12.3,<1.13`
 - `anndata>=0.13.2,<0.14`
 
-Notebook-derived optional nodes import their own libraries only when executed. Install the relevant packages in the ComfyUI Python environment for Harmony, scVI, CellTypist, decoupler, pertpy, LIANA, scVelo, infercnvpy, Schist, or pySCENIC analyses.
+Notebook-derived optional nodes import their own libraries only when executed. Install the relevant packages in the ComfyUI Python environment for Harmony, scVI, CellTypist, decoupler, pertpy, LIANA, scVelo, infercnvpy, Schist, OmicVerse cNMF, Cassiopeia, or pySCENIC/loompy analyses.
 
 The exact source pairing is recorded in `release_manifest.json`.
 
@@ -158,7 +158,8 @@ Additional arguments are forwarded to ComfyUI. ComfyUI's own requirements must a
 - Single-cell result values use `result` ports and the plugin-owned `OPENBIO_SINGLE_CELL_RESULT` wire type.
 - Modifying nodes copy their input before changing it; read-only nodes do not copy it.
 - AnnData transforms output only `adata`; tables and plots output only `result`; preview and save nodes are terminal and have no data output.
-- Frequently tuned analysis choices stay visible. Random seeds, internal storage keys, output column names, and iteration limits are advanced inputs.
+- Frequently tuned analysis choices, expression sources, grouping columns, and result-defining thresholds stay visible. Random seeds, internal storage keys, output column names, and iteration limits are advanced inputs.
+- Dataset-specific condition, tumor, cluster, and cell-type values are never supplied as defaults; nodes that need them require an explicit value.
 - Inputs are limited to relative paths under the ComfyUI `input` directory and are checked again at the read boundary.
 - Temporary plots are written below `temp/openbio-singlecell`; ComfyUI clears its temp directory at startup.
 - CSV, PNG, and H5AD files are only made permanent by explicit output nodes and are written below `output/openbio-singlecell`.
@@ -166,7 +167,7 @@ Additional arguments are forwarded to ComfyUI. ComfyUI's own requirements must a
 
 ## Scope and limitations
 
-The current in-memory workflow includes layer-aware preprocessing, batch correction, Harmony/scVI integration, annotation, pseudobulk differential analysis, enrichment, LIANA communication, abundance testing, regulatory activity, PAGA/DPT, RNA velocity, and inferCNV. The pack does not declare a maximum AnnData size and does not yet provide AnnData backed mode, out-of-core processing, automatic disk caching, ATAC, spatial analysis, or notebook stages implemented only in R. Scale and GSVA may densify data as their underlying libraries normally do. A running scientific operation may finish before a stop request takes effect; stopping prevents later nodes from starting.
+The current in-memory workflow includes 10x study loading, QC, expression snapshots, layer-aware preprocessing, Harmony/scVI integration, clustering, annotation, pseudobulk differential analysis, enrichment, LIANA communication, compositional abundance testing, OmicVerse cNMF, pySCENIC, Cassiopeia lineage analysis, PAGA/DPT, RNA velocity, and inferCNV. The pack does not declare a maximum AnnData size and does not yet provide AnnData backed mode, out-of-core processing, automatic disk caching, ATAC, or spatial analysis. Notebook stages implemented only in R, destructive file organization, publication-only plots, the empty Geneformer notebook, and the import-only spatial notebook are intentionally not represented as nodes. Scale and GSVA may densify data as their underlying libraries normally do. A running scientific operation may finish before a stop request takes effect; stopping prevents later nodes from starting.
 
 ## Offline behavior
 

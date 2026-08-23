@@ -3,7 +3,9 @@
 ## Unreleased
 
 - Add notebook-derived AnnData preparation, QC correction, Harmony/scVI, clustering, annotation, pseudobulk, enrichment, communication, abundance, regulatory, trajectory, RNA velocity, and inferCNV nodes.
+- Complete the notebook-backed Python workflows for pySCENIC, Cassiopeia plasticity, cNMF assignment, Augur state, scVI posterior/MDE, velocity gene ranking, sample composition, and gene-set analysis.
 - Keep frequently tuned analysis choices visible while moving storage keys, output column names, seeds, and iteration limits to advanced inputs.
+- Require dataset-specific labels explicitly and enforce the single-output `adata`/`result` node contracts in registration tests.
 
 ## 0.1.0 - 2026-08-23
 
