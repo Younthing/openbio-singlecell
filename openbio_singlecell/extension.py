@@ -7,6 +7,7 @@ from comfy_api.latest import ComfyExtension, io
 from . import dependencies
 from .nodes_embedding import EMBEDDING_NODE_CLASSES
 from .nodes_input import INPUT_NODE_CLASSES
+from .nodes_output import OUTPUT_NODE_CLASSES
 from .nodes_preprocess import PREPROCESS_NODE_CLASSES
 from .nodes_qc import QC_NODE_CLASSES
 from .nodes_results import RESULT_NODE_CLASSES
@@ -17,6 +18,7 @@ NODE_CLASSES: list[type[io.ComfyNode]] = [
     *PREPROCESS_NODE_CLASSES,
     *EMBEDDING_NODE_CLASSES,
     *RESULT_NODE_CLASSES,
+    *OUTPUT_NODE_CLASSES,
 ]
 
 

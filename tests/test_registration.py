@@ -30,6 +30,10 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellLeiden",
     "OpenBioSingleCellMarkerGenes",
     "OpenBioSingleCellUMAPPlot",
+    "OpenBioSingleCellPreviewResult",
+    "OpenBioSingleCellSaveH5AD",
+    "OpenBioSingleCellExportCSV",
+    "OpenBioSingleCellSavePNG",
 }
 
 
@@ -68,7 +72,7 @@ def test_extension_loads_without_scientific_dependencies():
         from openbio_singlecell.extension import NODE_CLASSES, comfy_entrypoint
 
         assert not dependencies.AVAILABLE
-        assert len(NODE_CLASSES) == 18
+        assert len(NODE_CLASSES) == 22
 
         try:
             dependencies.require_scientific_dependencies()
@@ -81,7 +85,7 @@ def test_extension_loads_without_scientific_dependencies():
 
         extension = asyncio.run(comfy_entrypoint())
         asyncio.run(extension.on_load())
-        assert len(asyncio.run(extension.get_node_list())) == 18
+        assert len(asyncio.run(extension.get_node_list())) == 22
         """
     )
     environment = os.environ.copy()

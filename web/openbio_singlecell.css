@@ -1,0 +1,76 @@
+.openbio-sc-preview {
+    box-sizing: border-box;
+    width: 100%;
+    max-height: 420px;
+    overflow: auto;
+    padding: 8px;
+    border: 1px solid var(--border-color, #454545);
+    border-radius: 6px;
+    background: var(--comfy-input-bg, #222);
+    color: var(--input-text, #ddd);
+    font-size: 11px;
+}
+
+.openbio-sc-preview__empty,
+.openbio-sc-preview__meta,
+.openbio-sc-preview__hint {
+    margin: 0;
+}
+
+.openbio-sc-preview__title {
+    font-size: 12px;
+}
+
+.openbio-sc-preview__meta,
+.openbio-sc-preview__hint {
+    margin-top: 4px;
+    opacity: 0.72;
+}
+
+.openbio-sc-preview__summary {
+    margin: 8px 0 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font: inherit;
+}
+
+.openbio-sc-preview__table-wrap {
+    max-height: 300px;
+    margin-top: 8px;
+    overflow: auto;
+}
+
+.openbio-sc-preview__table {
+    width: max-content;
+    min-width: 100%;
+    border-collapse: collapse;
+    font-size: inherit;
+}
+
+.openbio-sc-preview__header-cell {
+    position: sticky;
+    top: 0;
+    padding: 4px 6px;
+    border-bottom: 1px solid #666;
+    background: var(--comfy-input-bg, #222);
+    text-align: left;
+}
+
+.openbio-sc-preview__body-cell {
+    padding: 3px 6px;
+    border-bottom: 1px solid #3f3f3f;
+    white-space: nowrap;
+}
+
+.openbio-sc-preview__warnings {
+    margin-top: 8px;
+}
+
+.openbio-sc-preview__section-title {
+    display: block;
+}
+
+.openbio-sc-preview__warning-list {
+    margin: 4px 0 0 18px;
+    padding: 0;
+}
