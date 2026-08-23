@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Any
 from comfy_api.latest import io
 
 from . import dependencies
-from .analysis_utils import figure_to_png, finish_adata, make_result
-from .node_types import AnnDataType, SingleCellResultType
+from .analysis_utils import figure_to_png, finish_adata, make_plot_result, make_table_result
+from .node_types import AnnDataType, PlotResultType, TableResultType
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -159,15 +159,14 @@ class OpenBioSingleCellLianaResults(io.ComfyNode):
                 AnnDataType.Input("adata"),
                 io.String.Input("result_key", default="liana_res", advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
     def execute(cls, adata: AnnData, result_key: str = "liana_res") -> io.NodeOutput:
         started_at = time.perf_counter()
         table = _liana_table(adata, result_key).copy(deep=True).reset_index(drop=True)
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title="LIANA communication results",
             operation="liana_results",
             parameters={"result_key": result_key},
@@ -199,7 +198,7 @@ class OpenBioSingleCellLianaDotPlot(io.ComfyNode):
                 io.Float.Input("figure_width", default=12.0, min=1.0, max=100.0, step=1.0, advanced=True),
                 io.Float.Input("figure_height", default=8.0, min=1.0, max=100.0, step=1.0, advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[PlotResultType.Output(display_name="plot")],
         )
 
     @classmethod
@@ -250,8 +249,7 @@ class OpenBioSingleCellLianaDotPlot(io.ComfyNode):
             "figure_width": figure_width,
             "figure_height": figure_height,
         }
-        result = make_result(
-            kind="plot",
+        result = make_plot_result(
             title=f"LIANA {method.replace('_', ' ')} dot plot",
             operation="liana_dot_plot",
             parameters=parameters,

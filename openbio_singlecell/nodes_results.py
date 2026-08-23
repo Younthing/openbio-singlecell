@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING, Any
 from comfy_api.latest import io
 
 from . import dependencies
-from .analysis_utils import figure_to_png, make_result
-from .contracts import SingleCellResult
-from .node_types import AnnDataType, SingleCellResultType
+from .analysis_utils import figure_to_png, make_plot_result, make_table_result
+from .contracts import TableResult
+from .node_types import AnnDataType, PlotResultType, TableResultType
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -58,7 +58,7 @@ class OpenBioSingleCellMarkerGenes(io.ComfyNode):
                 io.Boolean.Input("pts", default=True, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -125,8 +125,7 @@ class OpenBioSingleCellMarkerGenes(io.ComfyNode):
             "pts": pts,
             "random_seed": random_seed,
         }
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title=f"Marker genes by {groupby}",
             operation="marker_genes",
             parameters=parameters,
@@ -154,7 +153,7 @@ class OpenBioSingleCellUMAPPlot(io.ComfyNode):
                 io.Float.Input("point_size", default=10.0, min=0.1, max=1000.0, step=1.0),
                 io.String.Input("color_map", default="viridis", advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[PlotResultType.Output(display_name="plot")],
         )
 
     @classmethod
@@ -217,8 +216,7 @@ class OpenBioSingleCellUMAPPlot(io.ComfyNode):
         axis.set_title(f"UMAP colored by {color}" if color else "UMAP")
         png = figure_to_png(figure)
         parameters = {"color": color, "point_size": point_size, "color_map": color_map}
-        result = make_result(
-            kind="plot",
+        result = make_plot_result(
             title=axis.get_title(),
             operation="umap_plot",
             parameters=parameters,
@@ -240,19 +238,19 @@ class OpenBioSingleCellFilterMarkerGenes(io.ComfyNode):
             display_name="Filter Marker Genes",
             category=DIFFERENTIAL_CATEGORY,
             inputs=[
-                SingleCellResultType.Input("result"),
+                TableResultType.Input("table"),
                 io.Float.Input("min_logfc", default=1.0, step=0.1),
                 io.Float.Input("min_pct_in_group", default=0.25, min=0.0, max=1.0, step=0.05),
                 io.Float.Input("max_pct_rest", default=0.5, min=0.0, max=1.0, step=0.05),
                 io.Float.Input("max_p_adj", default=0.05, min=0.0, max=1.0, step=0.01),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
     def execute(
         cls,
-        result: SingleCellResult,
+        table: TableResult,
         min_logfc: float = 1.0,
         min_pct_in_group: float = 0.25,
         max_pct_rest: float = 0.5,
@@ -260,19 +258,19 @@ class OpenBioSingleCellFilterMarkerGenes(io.ComfyNode):
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
         required = {"logFC", "pct_in_group", "pct_rest", "p_adj"}
-        if result.kind != "table" or not isinstance(result.table, science.pd.DataFrame):
+        if not isinstance(table.table, science.pd.DataFrame):
             raise ValueError("Filter Marker Genes requires a table result from Marker Genes.")
-        missing = sorted(required.difference(result.table.columns))
+        missing = sorted(required.difference(table.table.columns))
         if missing:
             raise ValueError(f"Marker result is missing columns: {missing}")
 
         started_at = time.perf_counter()
-        table = result.table.copy()
-        table = table[
-            (science.pd.to_numeric(table["logFC"], errors="coerce") >= min_logfc)
-            & (science.pd.to_numeric(table["pct_in_group"], errors="coerce") >= min_pct_in_group)
-            & (science.pd.to_numeric(table["pct_rest"], errors="coerce") <= max_pct_rest)
-            & (science.pd.to_numeric(table["p_adj"], errors="coerce") <= max_p_adj)
+        frame = table.table.copy()
+        frame = frame[
+            (science.pd.to_numeric(frame["logFC"], errors="coerce") >= min_logfc)
+            & (science.pd.to_numeric(frame["pct_in_group"], errors="coerce") >= min_pct_in_group)
+            & (science.pd.to_numeric(frame["pct_rest"], errors="coerce") <= max_pct_rest)
+            & (science.pd.to_numeric(frame["p_adj"], errors="coerce") <= max_p_adj)
         ].reset_index(drop=True)
         parameters = {
             "min_logfc": min_logfc,
@@ -280,18 +278,17 @@ class OpenBioSingleCellFilterMarkerGenes(io.ComfyNode):
             "max_pct_rest": max_pct_rest,
             "max_p_adj": max_p_adj,
         }
-        filtered = make_result(
-            kind="table",
-            title=f"Filtered {result.title}",
+        filtered = make_table_result(
+            title=f"Filtered {table.title}",
             operation="filter_marker_genes",
             parameters=parameters,
             description="Marker genes filtered by fold change, prevalence, and adjusted p-value.",
             warnings=[],
-            input_cells=result.input_cells,
-            input_genes=result.input_genes,
+            input_cells=table.input_cells,
+            input_genes=table.input_genes,
             started_at=started_at,
-            random_seed=result.random_seed,
-            table=table,
+            random_seed=table.random_seed,
+            table=frame,
         )
         return io.NodeOutput(filtered)
 
@@ -316,7 +313,7 @@ class OpenBioSingleCellMarkerExpressionPlot(io.ComfyNode):
                 io.Boolean.Input("dendrogram", default=False, advanced=True),
                 io.Boolean.Input("log", default=False, advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[PlotResultType.Output(display_name="plot")],
         )
 
     @classmethod
@@ -408,8 +405,7 @@ class OpenBioSingleCellMarkerExpressionPlot(io.ComfyNode):
             "dendrogram": dendrogram,
             "log": log,
         }
-        plotted = make_result(
-            kind="plot",
+        plotted = make_plot_result(
             title=f"{plot_type}: {', '.join(gene_names)} by {groupby}",
             operation="marker_expression_plot",
             parameters=parameters,
@@ -437,7 +433,7 @@ class OpenBioSingleCellPCAMetadataAssociations(io.ComfyNode):
                 io.Float.Input("alpha", default=0.05, min=0.0, max=1.0, step=0.01),
                 io.String.Input("p_adjust_method", default="fdr_bh", advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -483,8 +479,7 @@ class OpenBioSingleCellPCAMetadataAssociations(io.ComfyNode):
             "alpha": alpha,
             "p_adjust_method": p_adjust_method,
         }
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title=f"Metadata associations with {use_rep}",
             operation="pca_metadata_associations",
             parameters=parameters,

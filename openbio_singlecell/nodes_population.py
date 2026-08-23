@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING, Any
 from comfy_api.latest import io
 
 from . import dependencies
-from .analysis_utils import figure_to_png, finish_adata, make_result
-from .node_types import AnnDataType, SingleCellResultType
+from .analysis_utils import figure_to_png, finish_adata, make_plot_result, make_table_result
+from .node_types import AnnDataType, PlotResultType, TableResultType
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -169,7 +169,7 @@ class OpenBioSingleCellAugurResults(io.ComfyNode):
                 io.Combo.Input("result_table", options=AUGUR_RESULT_TABLES, default="summary_metrics"),
                 io.String.Input("result_key", default="augurpy_results", advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -188,8 +188,7 @@ class OpenBioSingleCellAugurResults(io.ComfyNode):
             raise ValueError(f"Augur result table {result_table!r} not found in uns[{result_key!r}].")
         started_at = time.perf_counter()
         table = science.pd.DataFrame(stored[result_table]).reset_index()
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title=f"Augur {result_table.replace('_', ' ')}",
             operation="augur_results",
             parameters={"result_table": result_table, "result_key": result_key},
@@ -218,7 +217,7 @@ class OpenBioSingleCellCellTypeCorrelation(io.ComfyNode):
                 io.String.Input("color_map", default="RdYlBu", advanced=True),
                 io.Boolean.Input("show_numbers", default=False, advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[PlotResultType.Output(display_name="plot")],
         )
 
     @classmethod
@@ -265,8 +264,7 @@ class OpenBioSingleCellCellTypeCorrelation(io.ComfyNode):
             "color_map": color_map,
             "show_numbers": show_numbers,
         }
-        result = make_result(
-            kind="plot",
+        result = make_plot_result(
             title=f"Cell type correlation by {groupby}",
             operation="cell_type_correlation",
             parameters=parameters,

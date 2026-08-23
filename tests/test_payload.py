@@ -1,37 +1,20 @@
 from __future__ import annotations
 
-from openbio_singlecell.contracts import SingleCellResult
+import inspect
+import time
+from dataclasses import FrozenInstanceError
+
+import pytest
+
+from openbio_singlecell.analysis_utils import make_plot_result, make_summary_result, make_table_result
+from openbio_singlecell.contracts import PlotResult, SummaryResult, TableResult
 from openbio_singlecell.payload import MAX_COLUMNS, MAX_ROWS, result_to_payload
 
-
-class FakeFrame:
-    def __init__(self, rows, columns):
-        self._rows = rows
-        self.columns = columns
-        self.iloc = FakeIndexer(self)
-
-    def __len__(self):
-        return len(self._rows)
-
-    def itertuples(self, index=False, name=None):
-        return iter(tuple(row) for row in self._rows)
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
-class FakeIndexer:
-    def __init__(self, frame):
-        self.frame = frame
-
-    def __getitem__(self, key):
-        row_slice, column_slice = key
-        return FakeFrame(
-            [row[column_slice] for row in self.frame._rows[row_slice]],
-            self.frame.columns[column_slice],
-        )
-
-
-def make_result(**kwargs):
-    values = dict(
-        kind="summary",
+def result_fields():
+    return dict(
         title="result",
         parameters={},
         description="description",
@@ -42,17 +25,28 @@ def make_result(**kwargs):
         elapsed_seconds=0.25,
         source={},
     )
-    values.update(kwargs)
-    return SingleCellResult(**values)
 
 
-def test_table_payload_is_bounded_and_normalizes_nonfinite_values():
+def factory_fields():
+    return dict(
+        title="result",
+        operation="test_result",
+        parameters={},
+        description="description",
+        warnings=[],
+        input_cells=1,
+        input_genes=1,
+        started_at=time.perf_counter(),
+    )
+
+
+def test_table_payload_is_bounded_and_normalizes_nonfinite_values(science):
     rows = [[row * 1000 + column for column in range(70)] for row in range(105)]
     rows[0][0] = float("nan")
     rows[0][1] = float("inf")
-    table = FakeFrame(rows, [f"column_{index}" for index in range(70)])
+    table = science.pd.DataFrame(rows, columns=[f"column_{index}" for index in range(70)])
 
-    payload = result_to_payload(make_result(kind="table", table=table))
+    payload = result_to_payload(TableResult(table=table, **result_fields()))
 
     assert len(payload["columns"]) == MAX_COLUMNS
     assert len(payload["rows"]) == MAX_ROWS
@@ -67,8 +61,78 @@ def test_summary_collections_and_strings_are_bounded():
         "long": "x" * 5000,
         **{f"key_{index}": index for index in range(100)},
     }
-    payload = result_to_payload(make_result(summary=summary))
+    payload = result_to_payload(SummaryResult(summary=summary, **result_fields()))
 
     assert len(payload["summary"]["values"]) == 65
     assert len(payload["summary"]["long"]) <= 2000
     assert payload["summary"]["…"] == "truncated"
+
+
+def test_specific_factories_construct_the_concrete_result_types(science):
+    summary = make_summary_result(summary={"cells": 1}, **factory_fields())
+    table = make_table_result(table=science.pd.DataFrame({"value": [1]}), **factory_fields())
+    plot = make_plot_result(png=PNG_SIGNATURE + b"plot", **factory_fields())
+
+    assert isinstance(summary, SummaryResult) and summary.kind == "summary"
+    assert isinstance(table, TableResult) and table.kind == "table"
+    assert isinstance(plot, PlotResult) and plot.kind == "plot"
+
+
+def test_specific_factory_interfaces_cannot_accept_the_wrong_payload(science):
+    signatures = {
+        "summary": inspect.signature(make_summary_result).parameters,
+        "table": inspect.signature(make_table_result).parameters,
+        "plot": inspect.signature(make_plot_result).parameters,
+    }
+
+    assert (
+        "summary" in signatures["summary"]
+        and "table" not in signatures["summary"]
+        and "png" not in signatures["summary"]
+    )
+    assert "table" in signatures["table"] and "summary" not in signatures["table"] and "png" not in signatures["table"]
+    assert "png" in signatures["plot"] and "summary" not in signatures["plot"] and "table" not in signatures["plot"]
+    assert all("kind" not in parameters for parameters in signatures.values())
+
+    table = science.pd.DataFrame({"value": [1]})
+    with pytest.raises(TypeError):
+        make_summary_result(table=table, **factory_fields())
+    with pytest.raises(TypeError):
+        make_table_result(summary={"cells": 1}, **factory_fields())
+    with pytest.raises(TypeError):
+        make_plot_result(table=table, **factory_fields())
+
+
+def test_concrete_results_expose_only_their_payload(science):
+    summary = SummaryResult(summary={"cells": 1}, **result_fields())
+    table = TableResult(table=science.pd.DataFrame({"value": [1]}), **result_fields())
+    plot = PlotResult(png=PNG_SIGNATURE + b"plot", **result_fields())
+
+    assert not hasattr(summary, "table") and not hasattr(summary, "png")
+    assert not hasattr(table, "summary") and not hasattr(table, "png")
+    assert not hasattr(plot, "summary") and not hasattr(plot, "table")
+    with pytest.raises(TypeError, match="unexpected keyword argument 'table'"):
+        SummaryResult(summary={"cells": 1}, table=table.table, **result_fields())
+
+
+def test_concrete_results_reject_invalid_content():
+    with pytest.raises(ValueError, match="requires summary data"):
+        SummaryResult(summary=None, **result_fields())
+    with pytest.raises(TypeError, match="pandas DataFrame"):
+        TableResult(table=object(), **result_fields())
+    with pytest.raises(ValueError, match="standard PNG signature"):
+        PlotResult(png=b"png", **result_fields())
+    with pytest.raises(TypeError, match="must be bytes"):
+        PlotResult(png="png", **result_fields())
+
+
+def test_result_kind_and_fields_are_read_only(science):
+    summary = SummaryResult(summary={"cells": 1}, **result_fields())
+    table = TableResult(table=science.pd.DataFrame({"value": [1]}), **result_fields())
+    plot = PlotResult(png=PNG_SIGNATURE + b"plot", **result_fields())
+
+    for result in (summary, table, plot):
+        with pytest.raises(FrozenInstanceError):
+            result.kind = "changed"
+        with pytest.raises(FrozenInstanceError):
+            result.title = "changed"

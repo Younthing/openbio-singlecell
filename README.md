@@ -155,15 +155,23 @@ Additional arguments are forwarded to ComfyUI. ComfyUI's own requirements must a
 ## Data and output behavior
 
 - AnnData values use `adata` ports and the `OPENBIO_ANNDATA` wire type.
-- Single-cell result values use `result` ports and the plugin-owned `OPENBIO_SINGLE_CELL_RESULT` wire type.
+- Tables, plots, and structured summaries use distinct `table`, `plot`, and `summary` ports with the
+  plugin-owned `OPENBIO_SINGLE_CELL_TABLE`, `OPENBIO_SINGLE_CELL_PLOT`, and
+  `OPENBIO_SINGLE_CELL_SUMMARY` wire types.
 - Modifying nodes copy their input before changing it; read-only nodes do not copy it.
-- AnnData transforms output only `adata`; tables and plots output only `result`; preview and save nodes are terminal and have no data output.
+- AnnData transforms output `adata`; analysis artifacts output their concrete table, plot, or summary type;
+  preview and save nodes are terminal and have no data output.
+- Preview accepts all three artifact types, while CSV and PNG outputs accept only tables and plots respectively,
+  so incompatible links are rejected before execution.
 - Frequently tuned analysis choices, expression sources, grouping columns, and result-defining thresholds stay visible. Random seeds, internal storage keys, output column names, and iteration limits are advanced inputs.
 - Dataset-specific condition, tumor, cluster, and cell-type values are never supplied as defaults; nodes that need them require an explicit value.
 - Inputs are limited to relative paths under the ComfyUI `input` directory and are checked again at the read boundary.
 - Temporary plots are written below `temp/openbio-singlecell`; ComfyUI clears its temp directory at startup.
 - CSV, PNG, and H5AD files are only made permanent by explicit output nodes and are written below `output/openbio-singlecell`.
 - Node UI payloads are bounded; complete tables are exported as CSV.
+- DataFrames remain inside table artifacts and plots carry rendered PNG data. Library-specific models, trees,
+  figures, and other opaque Python objects remain node implementation details unless a future workflow has a
+  concrete reusable downstream contract for them.
 
 ## Scope and limitations
 

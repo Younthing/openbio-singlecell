@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING, Any
 from comfy_api.latest import io
 
 from . import dependencies
-from .analysis_utils import finish_adata, make_result
+from .analysis_utils import finish_adata, make_table_result
 from .files import input_file_fingerprint, resolve_input_path
-from .node_types import AnnDataType, SingleCellResultType
+from .node_types import AnnDataType, TableResultType
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -145,7 +145,7 @@ class OpenBioSingleCellCassiopeiaLineageQC(io.ComfyNode):
                     advanced=True,
                 ),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -275,8 +275,7 @@ class OpenBioSingleCellCassiopeiaLineageQC(io.ComfyNode):
             "percent_unique_threshold": percent_unique_threshold,
             "percent_unsaturated_threshold": percent_unsaturated_threshold,
         }
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title="Cassiopeia lineage quality",
             operation="cassiopeia_lineage_qc",
             parameters=parameters,
@@ -332,7 +331,7 @@ class OpenBioSingleCellCassiopeiaExpansionTest(io.ComfyNode):
                     step=0.01,
                 ),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -452,8 +451,7 @@ class OpenBioSingleCellCassiopeiaExpansionTest(io.ComfyNode):
             "tree_cells": int(tree.n_cell),
             "tree_characters": int(character_matrix.shape[1]),
         }
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title=f"Cassiopeia expansions: {tumor}",
             operation="cassiopeia_expansion_test",
             parameters=parameters,

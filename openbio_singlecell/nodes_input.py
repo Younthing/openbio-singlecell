@@ -9,7 +9,8 @@ import folder_paths
 from comfy_api.latest import io
 
 from . import dependencies
-from .contracts import SingleCellResult, ensure_metadata, make_analysis_source
+from .analysis_utils import make_summary_result
+from .contracts import ensure_metadata
 from .files import (
     input_file_fingerprint,
     input_file_provenance,
@@ -18,7 +19,7 @@ from .files import (
     tenx_mtx_fingerprint,
     tenx_mtx_provenance,
 )
-from .node_types import AnnDataType, SingleCellResultType
+from .node_types import AnnDataType, SummaryResultType
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -346,7 +347,7 @@ class OpenBioSingleCellAnnDataSummary(io.ComfyNode):
             category=CATEGORY,
             description="Create a bounded structural summary of AnnData.",
             inputs=[AnnDataType.Input("adata")],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[SummaryResultType.Output(display_name="summary")],
         )
 
     @classmethod
@@ -363,20 +364,17 @@ class OpenBioSingleCellAnnDataSummary(io.ComfyNode):
             "varm": _limited_names(adata.varm.keys()),
             "uns": _limited_names(adata.uns.keys()),
         }
-        elapsed = time.perf_counter() - start
-        source = make_analysis_source("anndata_summary", {}, cells, genes, 0, elapsed)
         metadata = adata.uns.get("openbio_singlecell", {})
-        result = SingleCellResult(
-            kind="summary",
+        result = make_summary_result(
             title=f"{metadata.get('display_name', 'AnnData')} summary",
+            operation="anndata_summary",
             parameters={},
             description="AnnData structure and annotations.",
             warnings=[str(value) for value in metadata.get("warnings", [])],
             input_cells=cells,
             input_genes=genes,
+            started_at=start,
             random_seed=int(metadata.get("random_seed", 0)),
-            elapsed_seconds=elapsed,
-            source=source,
             summary=summary,
         )
         return io.NodeOutput(result)

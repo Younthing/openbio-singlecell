@@ -176,7 +176,7 @@ def build_demo(np, pd, sparse, ad):
     adata = ad.AnnData(X=sparse.csr_matrix(counts), obs=obs, var=var)
     adata.uns["openbio_singlecell"] = {
         "schema_version": METADATA_SCHEMA_VERSION,
-        "version": "0.1.0",
+        "version": "0.2.0",
         "display_name": "OpenBio single-cell demo",
         "source": {"kind": "generated_demo"},
         "random_seed": RANDOM_SEED,

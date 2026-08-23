@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING
 from comfy_api.latest import io
 
 from . import dependencies
-from .analysis_utils import figure_to_png, finish_adata, make_result, matrix_totals_and_nonzero
-from .node_types import AnnDataType, SingleCellResultType
+from .analysis_utils import figure_to_png, finish_adata, make_plot_result, matrix_totals_and_nonzero
+from .node_types import AnnDataType, PlotResultType
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -257,7 +257,7 @@ class OpenBioSingleCellQCPlots(io.ComfyNode):
             display_name="QC Plots",
             category=CATEGORY,
             inputs=[AnnDataType.Input("adata")],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[PlotResultType.Output(display_name="plot")],
         )
 
     @classmethod
@@ -300,8 +300,7 @@ class OpenBioSingleCellQCPlots(io.ComfyNode):
         axes[1, 1].set_xlabel("Total counts")
         axes[1, 1].set_ylabel("Mitochondrial counts (%)")
         png = figure_to_png(figure)
-        result = make_result(
-            kind="plot",
+        result = make_plot_result(
             title="Quality control plots",
             operation="qc_plots",
             parameters={},

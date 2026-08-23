@@ -5,7 +5,7 @@ from datetime import date, datetime
 from typing import Any, Literal, TypedDict, cast
 
 from . import SCHEMA_VERSION
-from .contracts import SingleCellResult
+from .contracts import PlotResult, SingleCellResult, SummaryResult, TableResult
 
 MAX_ROWS = 100
 MAX_COLUMNS = 64
@@ -100,12 +100,15 @@ def _bounded_value(value: Any, depth: int = 0) -> JsonValue:
 
 
 def result_to_payload(result: SingleCellResult) -> SingleCellResultPayload:
+    if not isinstance(result, (SummaryResult, TableResult, PlotResult)):
+        raise TypeError("Expected an OpenBio single-cell result value.")
+
     columns: list[str] = []
     rows: list[list[JsonScalar]] = []
     total_rows = 0
     warnings = [_bounded_string(warning) for warning in result.warnings[:MAX_WARNINGS]]
 
-    if result.kind == "table" and result.table is not None:
+    if isinstance(result, TableResult):
         table = result.table
         total_rows = int(len(table))
         columns = [_bounded_string(column) for column in list(table.columns)[:MAX_COLUMNS]]
@@ -116,9 +119,7 @@ def result_to_payload(result: SingleCellResult) -> SingleCellResultPayload:
                 f"Preview limited to {MAX_ROWS} rows and {MAX_COLUMNS} columns; Export CSV for the complete table."
             )
 
-    summary = result.summary
-    if summary is None:
-        summary = {"description": result.description}
+    summary = result.summary if isinstance(result, SummaryResult) else {"description": result.description}
 
     elapsed = float(result.elapsed_seconds)
     return cast(

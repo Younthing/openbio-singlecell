@@ -9,7 +9,7 @@ from pathlib import Path
 
 from openbio_singlecell import PLUGIN_VERSION, SCHEMA_VERSION, dependencies
 from openbio_singlecell.extension import NODE_CLASSES, OpenBioSingleCellExtension, comfy_entrypoint
-from openbio_singlecell.node_types import AnnDataType, SingleCellResultType
+from openbio_singlecell.node_types import AnnDataType, PlotResultType, SummaryResultType, TableResultType
 
 EXPECTED_NODE_IDS = {
     "OpenBioSingleCellLoadH5AD",
@@ -112,10 +112,12 @@ EXPECTED_NODE_IDS = {
 
 
 def test_package_metadata_is_versioned():
-    assert PLUGIN_VERSION == "0.1.0"
+    assert PLUGIN_VERSION == "0.2.0"
     assert SCHEMA_VERSION == 1
     assert AnnDataType.io_type == "OPENBIO_ANNDATA"
-    assert SingleCellResultType.io_type == "OPENBIO_SINGLE_CELL_RESULT"
+    assert TableResultType.io_type == "OPENBIO_SINGLE_CELL_TABLE"
+    assert PlotResultType.io_type == "OPENBIO_SINGLE_CELL_PLOT"
+    assert SummaryResultType.io_type == "OPENBIO_SINGLE_CELL_SUMMARY"
 
 
 def test_scientific_dependency_api_is_minimal():
@@ -138,12 +140,14 @@ def test_input_extension_loads():
 def test_node_outputs_use_only_the_public_analysis_contracts():
     expected_types = {
         "adata": AnnDataType.io_type,
-        "result": SingleCellResultType.io_type,
+        "table": TableResultType.io_type,
+        "plot": PlotResultType.io_type,
+        "summary": SummaryResultType.io_type,
     }
     for node in NODE_CLASSES:
         schema = node.GET_SCHEMA()
         output_names = [output.display_name for output in schema.outputs]
-        assert output_names in (["adata"], ["result"], [])
+        assert output_names in (["adata"], ["table"], ["plot"], ["summary"], [])
         assert schema.is_output_node is (not output_names)
         for output in schema.outputs:
             assert output.io_type == expected_types[output.display_name]

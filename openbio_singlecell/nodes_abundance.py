@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING, Any
 from comfy_api.latest import io
 
 from . import dependencies
-from .analysis_utils import finish_adata, make_result
-from .node_types import AnnDataType, SingleCellResultType
+from .analysis_utils import finish_adata, make_table_result
+from .node_types import AnnDataType, TableResultType
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -124,7 +124,7 @@ class OpenBioSingleCellSampleCompositionSummary(io.ComfyNode):
                 io.String.Input("group_key", default="group"),
                 io.String.Input("annotation_key", default="cell_type"),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -145,8 +145,7 @@ class OpenBioSingleCellSampleCompositionSummary(io.ComfyNode):
         warnings = []
         if dropped_cells:
             warnings.append(f"Excluded {dropped_cells} cells with missing composition metadata.")
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title=f"Sample composition by {annotation_key}",
             operation="sample_composition_summary",
             parameters=parameters,
@@ -176,7 +175,7 @@ class OpenBioSingleCellDifferentialCompositionTest(io.ComfyNode):
                 io.String.Input("comparison_groups", default=""),
                 io.Float.Input("pseudocount", default=0.001, min=1e-12, step=0.001, advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -286,8 +285,7 @@ class OpenBioSingleCellDifferentialCompositionTest(io.ComfyNode):
         warnings = []
         if dropped_cells:
             warnings.append(f"Excluded {dropped_cells} cells with missing composition metadata.")
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title=f"Differential composition by {annotation_key}",
             operation="differential_composition_test",
             parameters=parameters,
@@ -369,7 +367,7 @@ class OpenBioSingleCellMiloDifferentialAbundance(io.ComfyNode):
                 io.String.Input("neighbors_key", default="openbio_milo", advanced=True),
                 io.Int.Input("random_seed", default=123, min=0, max=2**31 - 1, advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -441,8 +439,7 @@ class OpenBioSingleCellMiloDifferentialAbundance(io.ComfyNode):
             "neighbors_key": neighbors_key,
             "random_seed": random_seed,
         }
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title="Milo differential abundance",
             operation="milo_differential_abundance",
             parameters=parameters,
@@ -476,7 +473,7 @@ class OpenBioSingleCellSccodaDifferentialComposition(io.ComfyNode):
                 io.Int.Input("num_warmup", default=1000, min=0, max=2**31 - 1, advanced=True),
                 io.Int.Input("random_seed", default=123, min=0, max=2**31 - 1, advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -557,8 +554,7 @@ class OpenBioSingleCellSccodaDifferentialComposition(io.ComfyNode):
             "num_warmup": num_warmup,
             "random_seed": random_seed,
         }
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title="scCODA differential composition",
             operation="sccoda_differential_composition",
             parameters=parameters,
@@ -598,7 +594,7 @@ class OpenBioSingleCellTasccodaDifferentialComposition(io.ComfyNode):
                 io.Int.Input("num_warmup", default=1000, min=0, max=2**31 - 1, advanced=True),
                 io.Int.Input("random_seed", default=1234, min=0, max=2**31 - 1, advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -685,8 +681,7 @@ class OpenBioSingleCellTasccodaDifferentialComposition(io.ComfyNode):
             "num_warmup": num_warmup,
             "random_seed": random_seed,
         }
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title="tascCODA differential composition",
             operation="tasccoda_differential_composition",
             parameters=parameters,

@@ -4,9 +4,9 @@ from typing import TYPE_CHECKING, Any
 
 from comfy_api.latest import io, ui
 
-from .contracts import ResultKind, SingleCellResult
+from .contracts import PlotResult, SingleCellResult, SummaryResult, TableResult
 from .files import OutputTarget, prepare_output_target, preview_output_target
-from .node_types import AnnDataType, SingleCellResultType
+from .node_types import AnnDataType, PlotResultType, SummaryResultType, TableResultType
 from .payload import result_to_payload
 
 if TYPE_CHECKING:
@@ -19,13 +19,6 @@ CATEGORY = "openbio/single-cell/output"
 def _saved_result(target: OutputTarget) -> ui.SavedResult:
     folder_type = io.FolderType.output if target.folder_type == "output" else io.FolderType.temp
     return ui.SavedResult(target.filename, target.subfolder, folder_type)
-
-
-def _require_result_kind(result: SingleCellResult, kind: ResultKind) -> None:
-    if not isinstance(result, SingleCellResult):
-        raise TypeError("Expected an OPENBIO_SINGLE_CELL_RESULT value.")
-    if result.kind != kind:
-        raise ValueError(f"This node requires a {kind!r} result, but received {result.kind!r}.")
 
 
 def _preview_identity(unique_id: str | int | None, extra_pnginfo: Any) -> str:
@@ -50,12 +43,10 @@ def preview_result(
     unique_id: str | int | None = None,
     extra_pnginfo: Any = None,
 ) -> dict[str, Any]:
-    if not isinstance(result, SingleCellResult):
-        raise TypeError("Expected an OPENBIO_SINGLE_CELL_RESULT value.")
+    if not isinstance(result, (SummaryResult, TableResult, PlotResult)):
+        raise TypeError("Expected an OpenBio summary, table, or plot result value.")
     output: dict[str, Any] = {"openbio_singlecell": [result_to_payload(result)]}
-    if result.kind == "plot":
-        if not result.png:
-            raise ValueError("Plot result does not contain PNG data.")
+    if isinstance(result, PlotResult):
         target = preview_output_target(_preview_identity(unique_id, extra_pnginfo))
         with open(target.path, "wb") as handle:
             handle.write(result.png)
@@ -69,22 +60,20 @@ def save_h5ad(adata: AnnData, filename_prefix: str, overwrite: bool = False) -> 
     return target
 
 
-def export_csv(result: SingleCellResult, filename_prefix: str, overwrite: bool = False) -> OutputTarget:
-    _require_result_kind(result, "table")
-    if result.table is None:
-        raise ValueError("Table result does not contain a DataFrame.")
+def export_csv(table: TableResult, filename_prefix: str, overwrite: bool = False) -> OutputTarget:
+    if not isinstance(table, TableResult):
+        raise TypeError("Expected an OPENBIO_SINGLE_CELL_TABLE value.")
     target = prepare_output_target(filename_prefix, "csv", overwrite)
-    result.table.to_csv(target.path, index=False)
+    table.table.to_csv(target.path, index=False)
     return target
 
 
-def save_png(result: SingleCellResult, filename_prefix: str, overwrite: bool = False) -> OutputTarget:
-    _require_result_kind(result, "plot")
-    if not result.png:
-        raise ValueError("Plot result does not contain PNG data.")
+def save_png(plot: PlotResult, filename_prefix: str, overwrite: bool = False) -> OutputTarget:
+    if not isinstance(plot, PlotResult):
+        raise TypeError("Expected an OPENBIO_SINGLE_CELL_PLOT value.")
     target = prepare_output_target(filename_prefix, "png", overwrite)
     with open(target.path, "wb") as handle:
-        handle.write(result.png)
+        handle.write(plot.png)
     return target
 
 
@@ -95,7 +84,7 @@ class OpenBioSingleCellPreviewResult(io.ComfyNode):
             node_id="OpenBioSingleCellPreviewResult",
             display_name="Preview Result",
             category=CATEGORY,
-            inputs=[SingleCellResultType.Input("result")],
+            inputs=[io.MultiType.Input("result", [SummaryResultType, TableResultType, PlotResultType])],
             outputs=[],
             hidden=[io.Hidden.unique_id, io.Hidden.extra_pnginfo],
             is_output_node=True,
@@ -137,7 +126,7 @@ class OpenBioSingleCellExportCSV(io.ComfyNode):
             display_name="Export CSV",
             category=CATEGORY,
             inputs=[
-                SingleCellResultType.Input("result"),
+                TableResultType.Input("table"),
                 io.String.Input("filename_prefix", default="table"),
                 io.Boolean.Input("overwrite", default=False, advanced=True),
             ],
@@ -149,11 +138,11 @@ class OpenBioSingleCellExportCSV(io.ComfyNode):
     @classmethod
     def execute(
         cls,
-        result: SingleCellResult,
+        table: TableResult,
         filename_prefix: str = "table",
         overwrite: bool = False,
     ) -> io.NodeOutput:
-        target = export_csv(result, filename_prefix, overwrite)
+        target = export_csv(table, filename_prefix, overwrite)
         return io.NodeOutput(ui={"files": [_saved_result(target)]})
 
 
@@ -165,7 +154,7 @@ class OpenBioSingleCellSavePNG(io.ComfyNode):
             display_name="Save PNG",
             category=CATEGORY,
             inputs=[
-                SingleCellResultType.Input("result"),
+                PlotResultType.Input("plot"),
                 io.String.Input("filename_prefix", default="plot"),
                 io.Boolean.Input("overwrite", default=False, advanced=True),
             ],
@@ -177,11 +166,11 @@ class OpenBioSingleCellSavePNG(io.ComfyNode):
     @classmethod
     def execute(
         cls,
-        result: SingleCellResult,
+        plot: PlotResult,
         filename_prefix: str = "plot",
         overwrite: bool = False,
     ) -> io.NodeOutput:
-        target = save_png(result, filename_prefix, overwrite)
+        target = save_png(plot, filename_prefix, overwrite)
         return io.NodeOutput(ui={"images": [_saved_result(target)]})
 
 

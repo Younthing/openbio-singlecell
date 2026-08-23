@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING, Any
 from comfy_api.latest import io
 
 from . import dependencies
-from .analysis_utils import finish_adata, make_result, matrix_totals_and_nonzero
+from .analysis_utils import finish_adata, make_table_result, matrix_totals_and_nonzero
 from .files import input_file_fingerprint, resolve_input_path
-from .node_types import AnnDataType, SingleCellResultType
+from .node_types import AnnDataType, TableResultType
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -208,7 +208,7 @@ class OpenBioSingleCellRankTFActivities(io.ComfyNode):
                 io.Float.Input("max_pvalue", default=0.05, min=0.0, max=1.0, step=0.01),
                 io.String.Input("activity_key", default="collectri_ulm_estimate", advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -256,8 +256,7 @@ class OpenBioSingleCellRankTFActivities(io.ComfyNode):
             "max_pvalue": max_pvalue,
             "activity_key": activity_key,
         }
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title=f"TF activities by {groupby}",
             operation="rank_tf_activities",
             parameters=parameters,
@@ -555,7 +554,7 @@ class OpenBioSingleCellSCENICRegulonSpecificity(io.ComfyNode):
                 io.String.Input("groupby", default="cell_type"),
                 io.String.Input("activity_key", default="scenic_auc", advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -583,8 +582,7 @@ class OpenBioSingleCellSCENICRegulonSpecificity(io.ComfyNode):
         table = rss.reset_index().melt(id_vars="regulon", var_name="group", value_name="rss")
         table = table.sort_values(["group", "rss"], ascending=[True, False]).reset_index(drop=True)
         parameters = {"groupby": groupby, "activity_key": activity_key}
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title=f"SCENIC regulon specificity by {groupby}",
             operation="scenic_regulon_specificity",
             parameters=parameters,
@@ -669,7 +667,7 @@ class OpenBioSingleCellSCENICTFModules(io.ComfyNode):
                 io.Combo.Input("source", options=EXPRESSION_SOURCES, default="X"),
                 io.String.Input("layer_name", default="log1p_norm"),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -729,8 +727,7 @@ class OpenBioSingleCellSCENICTFModules(io.ComfyNode):
             "source": source,
             "layer_name": layer_name,
         }
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title=f"SCENIC modules: {transcription_factor or 'all TFs'}",
             operation="scenic_tf_modules",
             parameters=parameters,

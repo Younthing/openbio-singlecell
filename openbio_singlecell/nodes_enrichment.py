@@ -8,14 +8,14 @@ from typing import TYPE_CHECKING, Any
 from comfy_api.latest import io
 
 from . import dependencies
-from .analysis_utils import finish_adata, make_result
+from .analysis_utils import finish_adata, make_table_result
 from .files import input_file_fingerprint, resolve_input_path
-from .node_types import AnnDataType, SingleCellResultType
+from .node_types import AnnDataType, TableResultType
 
 if TYPE_CHECKING:
     from anndata import AnnData
 
-    from .contracts import SingleCellResult
+    from .contracts import TableResult
 
 
 CATEGORY = "openbio/single-cell/enrichment"
@@ -411,7 +411,7 @@ class OpenBioSingleCellPathwayScoreTTest(io.ComfyNode):
                 io.String.Input("group_b", default=""),
                 io.String.Input("score_key", default="aucell_estimate", advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -482,8 +482,7 @@ class OpenBioSingleCellPathwayScoreTTest(io.ComfyNode):
             "group_b": group_b,
             "score_key": score_key,
         }
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title=f"{group_a} vs {group_b} pathway scores",
             operation="pathway_score_ttest",
             parameters=parameters,
@@ -505,7 +504,7 @@ class OpenBioSingleCellRankedGSEA(io.ComfyNode):
             display_name="Ranked GSEA",
             category=CATEGORY,
             inputs=[
-                SingleCellResultType.Input("marker_result"),
+                TableResultType.Input("marker_table"),
                 io.String.Input("gene_sets_file", default="openbio-singlecell/gene_sets.csv"),
                 io.String.Input("group", default=""),
                 io.String.Input("source_column", default="geneset", advanced=True),
@@ -515,7 +514,7 @@ class OpenBioSingleCellRankedGSEA(io.ComfyNode):
                 io.Int.Input("max_genes", default=499, min=1, max=2**31 - 1, advanced=True),
                 io.Int.Input("random_seed", default=123, min=0, max=2**31 - 1, advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -533,7 +532,7 @@ class OpenBioSingleCellRankedGSEA(io.ComfyNode):
     @classmethod
     def execute(
         cls,
-        marker_result: SingleCellResult,
+        marker_table: TableResult,
         gene_sets_file: str = "openbio-singlecell/gene_sets.csv",
         group: str = "",
         source_column: str = "geneset",
@@ -547,7 +546,7 @@ class OpenBioSingleCellRankedGSEA(io.ComfyNode):
         group = _required_name(group, "Marker group")
         if min_genes > max_genes:
             raise ValueError("GSEA min_genes cannot exceed max_genes.")
-        table = marker_result.table
+        table = marker_table.table
         if not isinstance(table, science.pd.DataFrame):
             raise ValueError("Ranked GSEA requires a Marker Genes table result.")
         required_columns = ["group", "gene", score_column]
@@ -596,15 +595,14 @@ class OpenBioSingleCellRankedGSEA(io.ComfyNode):
             "max_genes": max_genes,
             "random_seed": random_seed,
         }
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title=f"GSEA for {group}",
             operation="ranked_gsea",
             parameters=parameters,
             description="GSEA applied to a selected group from a Marker Genes result.",
             warnings=[],
-            input_cells=marker_result.input_cells,
-            input_genes=marker_result.input_genes,
+            input_cells=marker_table.input_cells,
+            input_genes=marker_table.input_genes,
             started_at=started_at,
             random_seed=random_seed,
             table=result_table,
@@ -621,7 +619,7 @@ class OpenBioSingleCellGeneSetOverrepresentation(io.ComfyNode):
             category=CATEGORY,
             inputs=[
                 AnnDataType.Input("adata"),
-                SingleCellResultType.Input("result"),
+                TableResultType.Input("table"),
                 io.String.Input("gene_sets_file", default="openbio-singlecell/gene_sets.csv"),
                 io.String.Input("group", default=""),
                 io.String.Input("selection_column", default="p_adj"),
@@ -633,7 +631,7 @@ class OpenBioSingleCellGeneSetOverrepresentation(io.ComfyNode):
                 io.String.Input("source_column", default="geneset", advanced=True),
                 io.String.Input("target_column", default="genesymbol", advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -652,7 +650,7 @@ class OpenBioSingleCellGeneSetOverrepresentation(io.ComfyNode):
     def execute(
         cls,
         adata: AnnData,
-        result: SingleCellResult,
+        table: TableResult,
         gene_sets_file: str = "openbio-singlecell/gene_sets.csv",
         group: str = "",
         selection_column: str = "p_adj",
@@ -665,31 +663,31 @@ class OpenBioSingleCellGeneSetOverrepresentation(io.ComfyNode):
         target_column: str = "genesymbol",
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
-        if result.kind != "table" or not isinstance(result.table, science.pd.DataFrame):
+        if not isinstance(table.table, science.pd.DataFrame):
             raise ValueError("Gene Set Overrepresentation requires a differential table result.")
         gene_column = _required_name(gene_column, "Differential-result gene column")
-        if gene_column not in result.table:
+        if gene_column not in table.table:
             raise ValueError(f"Differential-result gene column not found: {gene_column!r}")
-        table = result.table.copy()
+        differential = table.table.copy()
         group = group.strip()
         if group:
             group_column = _required_name(group_column, "Differential-result group column")
-            if group_column not in table:
+            if group_column not in differential:
                 raise ValueError(f"Differential-result group column not found: {group_column!r}")
-            table = table[table[group_column].astype(str) == group]
+            differential = differential[differential[group_column].astype(str) == group]
 
         selection_column = selection_column.strip()
         if selection_column:
-            if selection_column not in table:
+            if selection_column not in differential:
                 raise ValueError(f"Differential-result selection column not found: {selection_column!r}")
-            values = science.pd.to_numeric(table[selection_column], errors="coerce")
+            values = science.pd.to_numeric(differential[selection_column], errors="coerce")
             if selection_operator == "<=":
-                table = table[values <= threshold]
+                differential = differential[values <= threshold]
             elif selection_operator == ">=":
-                table = table[values >= threshold]
+                differential = differential[values >= threshold]
             else:
-                table = table[values.abs() >= threshold]
-        selected_genes = set(table[gene_column].dropna().astype(str))
+                differential = differential[values.abs() >= threshold]
+        selected_genes = set(differential[gene_column].dropna().astype(str))
         if not selected_genes:
             raise ValueError("No genes passed the requested differential-result selection.")
 
@@ -748,8 +746,7 @@ class OpenBioSingleCellGeneSetOverrepresentation(io.ComfyNode):
             "source_column": source_column,
             "target_column": target_column,
         }
-        enriched = make_result(
-            kind="table",
+        enriched = make_table_result(
             title=f"Gene-set overrepresentation{f' for {group}' if group else ''}",
             operation="gene_set_overrepresentation",
             parameters=parameters,
@@ -838,7 +835,7 @@ class OpenBioSingleCellDrugHypergeometric(io.ComfyNode):
                 io.String.Input("layer_name", default="counts"),
                 io.Float.Input("marker_padj_threshold", default=0.05, min=0.0, max=1.0, step=0.01),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -869,8 +866,7 @@ class OpenBioSingleCellDrugHypergeometric(io.ComfyNode):
             "targets": "dgidb",
             "rank_method": "wilcoxon",
         }
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title=f"Drug overrepresentation by {groupby}",
             operation="drug_hypergeometric",
             parameters=parameters,
@@ -897,7 +893,7 @@ class OpenBioSingleCellDrugGSEA(io.ComfyNode):
                 io.Combo.Input("source", options=["X", "raw", "layer"], default="raw"),
                 io.String.Input("layer_name", default="counts"),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -922,8 +918,7 @@ class OpenBioSingleCellDrugGSEA(io.ComfyNode):
             "targets": "dgidb",
             "rank_method": "wilcoxon",
         }
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title=f"Drug GSEA by {groupby}",
             operation="drug_gsea",
             parameters=parameters,

@@ -186,8 +186,8 @@
       ],
       "outputs": [
         {
-          "name": "result",
-          "type": "OPENBIO_SINGLE_CELL_RESULT",
+          "name": "summary",
+          "type": "OPENBIO_SINGLE_CELL_SUMMARY",
           "links": [
             5
           ]
@@ -215,7 +215,7 @@
       "inputs": [
         {
           "name": "result",
-          "type": "OPENBIO_SINGLE_CELL_RESULT",
+          "type": "OPENBIO_SINGLE_CELL_SUMMARY,OPENBIO_SINGLE_CELL_TABLE,OPENBIO_SINGLE_CELL_PLOT",
           "link": 5
         }
       ],
@@ -248,8 +248,8 @@
       ],
       "outputs": [
         {
-          "name": "result",
-          "type": "OPENBIO_SINGLE_CELL_RESULT",
+          "name": "plot",
+          "type": "OPENBIO_SINGLE_CELL_PLOT",
           "links": [
             7
           ]
@@ -277,7 +277,7 @@
       "inputs": [
         {
           "name": "result",
-          "type": "OPENBIO_SINGLE_CELL_RESULT",
+          "type": "OPENBIO_SINGLE_CELL_SUMMARY,OPENBIO_SINGLE_CELL_TABLE,OPENBIO_SINGLE_CELL_PLOT",
           "link": 7
         }
       ],
@@ -357,7 +357,7 @@
       0,
       6,
       0,
-      "OPENBIO_SINGLE_CELL_RESULT"
+      "OPENBIO_SINGLE_CELL_SUMMARY"
     ],
     [
       6,
@@ -373,7 +373,7 @@
       0,
       8,
       0,
-      "OPENBIO_SINGLE_CELL_RESULT"
+      "OPENBIO_SINGLE_CELL_PLOT"
     ],
     [
       8,

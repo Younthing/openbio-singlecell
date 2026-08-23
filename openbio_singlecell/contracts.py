@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -10,16 +10,16 @@ from . import PLUGIN_VERSION, SCHEMA_VERSION
 
 if TYPE_CHECKING:
     from anndata import AnnData
+    from pandas import DataFrame
 
 
 METADATA_KEY = "openbio_singlecell"
-ResultKind = Literal["summary", "table", "plot"]
 _MISSING = object()
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
-@dataclass(slots=True)
-class SingleCellResult:
-    kind: ResultKind
+@dataclass(frozen=True, slots=True)
+class _SingleCellResultBase:
     title: str
     parameters: dict[str, Any]
     description: str
@@ -29,9 +29,43 @@ class SingleCellResult:
     random_seed: int
     elapsed_seconds: float
     source: dict[str, Any]
-    table: Any = None
-    png: bytes | None = None
-    summary: Any = None
+
+
+@dataclass(frozen=True, slots=True)
+class SummaryResult(_SingleCellResultBase):
+    summary: Any
+    kind: Literal["summary"] = field(init=False, default="summary")
+
+    def __post_init__(self) -> None:
+        if self.summary is None:
+            raise ValueError("SummaryResult requires summary data.")
+
+
+@dataclass(frozen=True, slots=True)
+class TableResult(_SingleCellResultBase):
+    table: DataFrame
+    kind: Literal["table"] = field(init=False, default="table")
+
+    def __post_init__(self) -> None:
+        from pandas import DataFrame as PandasDataFrame
+
+        if not isinstance(self.table, PandasDataFrame):
+            raise TypeError("TableResult table data must be a pandas DataFrame.")
+
+
+@dataclass(frozen=True, slots=True)
+class PlotResult(_SingleCellResultBase):
+    png: bytes
+    kind: Literal["plot"] = field(init=False, default="plot")
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.png, bytes):
+            raise TypeError("PlotResult PNG data must be bytes.")
+        if not self.png.startswith(_PNG_SIGNATURE):
+            raise ValueError("PlotResult PNG data must start with the standard PNG signature.")
+
+
+type SingleCellResult = SummaryResult | TableResult | PlotResult
 
 
 def _metadata_value(value: Any) -> Any:

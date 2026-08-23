@@ -25,7 +25,11 @@ def test_release_manifest_records_the_public_contract_and_artifacts():
         "node_id_prefix": "OpenBioSingleCell",
         "category_prefix": "openbio/single-cell/",
         "anndata_wire_type": "OPENBIO_ANNDATA",
-        "result_wire_type": "OPENBIO_SINGLE_CELL_RESULT",
+        "artifact_wire_types": {
+            "table": "OPENBIO_SINGLE_CELL_TABLE",
+            "plot": "OPENBIO_SINGLE_CELL_PLOT",
+            "summary": "OPENBIO_SINGLE_CELL_SUMMARY",
+        },
     }
     assert all((PLUGIN_ROOT / relative).is_file() for relative in custom_node["example_workflows"])
     assert manifest["release_artifacts"]["openbio_frontend_dist"]["build_command"] == "corepack pnpm build:openbio"

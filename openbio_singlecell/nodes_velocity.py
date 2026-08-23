@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING, Any
 from comfy_api.latest import io
 
 from . import dependencies
-from .analysis_utils import figure_to_png, finish_adata, make_result
-from .node_types import AnnDataType, SingleCellResultType
+from .analysis_utils import figure_to_png, finish_adata, make_plot_result, make_table_result
+from .node_types import AnnDataType, PlotResultType, TableResultType
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -240,7 +240,7 @@ class OpenBioSingleCellVelocityGeneRanking(io.ComfyNode):
                 io.Int.Input("top_n", default=5, min=1, max=2**31 - 1),
                 io.String.Input("likelihood_column", default="fit_likelihood", advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -268,8 +268,7 @@ class OpenBioSingleCellVelocityGeneRanking(io.ComfyNode):
             "top_n": top_n,
             "likelihood_column": likelihood_column,
         }
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title="RNA velocity gene ranking",
             operation="velocity_gene_ranking",
             parameters=parameters,
@@ -295,7 +294,7 @@ class OpenBioSingleCellVelocityStreamPlot(io.ComfyNode):
                 io.String.Input("basis", default="umap"),
                 io.String.Input("groupby", default="leiden"),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[PlotResultType.Output(display_name="plot")],
         )
 
     @classmethod
@@ -319,8 +318,7 @@ class OpenBioSingleCellVelocityStreamPlot(io.ComfyNode):
         )
         png = figure_to_png(figure)
         parameters = {"basis": basis, "groupby": groupby}
-        result = make_result(
-            kind="plot",
+        result = make_plot_result(
             title=f"RNA velocity on {basis}",
             operation="velocity_stream_plot",
             parameters=parameters,

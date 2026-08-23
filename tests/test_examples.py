@@ -13,7 +13,20 @@ EXPECTED_EXAMPLES = {
     "openbio_singlecell_basic_qc.json",
     "openbio_singlecell_full_analysis.json",
 }
-WIRE_TYPES = {"OPENBIO_ANNDATA", "OPENBIO_SINGLE_CELL_RESULT"}
+WIRE_TYPES = {
+    "OPENBIO_ANNDATA",
+    "OPENBIO_SINGLE_CELL_TABLE",
+    "OPENBIO_SINGLE_CELL_PLOT",
+    "OPENBIO_SINGLE_CELL_SUMMARY",
+}
+
+
+def _input_wire_type(item) -> str:
+    return item.get_io_type()
+
+
+def _is_wire_input(item) -> bool:
+    return bool(set(_input_wire_type(item).split(",")) & WIRE_TYPES)
 
 
 def _registered_schemas():
@@ -54,7 +67,7 @@ def test_example_workflow_matches_registered_node_schemas(filename):
 
         schema = schemas[node_id]
         assert schema.category.startswith("openbio/single-cell/")
-        expected_inputs = [(item.id, item.io_type) for item in schema.inputs if item.io_type in WIRE_TYPES]
+        expected_inputs = [(item.id, _input_wire_type(item)) for item in schema.inputs if _is_wire_input(item)]
         actual_inputs = [(item["name"], item["type"]) for item in node.get("inputs", [])]
         assert actual_inputs == expected_inputs
 
@@ -62,7 +75,7 @@ def test_example_workflow_matches_registered_node_schemas(filename):
         actual_outputs = [(item["name"], item["type"]) for item in node.get("outputs", [])]
         assert actual_outputs == expected_outputs
 
-        widget_inputs = [item for item in schema.inputs if item.io_type not in WIRE_TYPES]
+        widget_inputs = [item for item in schema.inputs if not _is_wire_input(item)]
         assert len(node.get("widgets_values", [])) == len(widget_inputs)
 
         if node_id == "OpenBioSingleCellSaveH5AD":
@@ -76,16 +89,19 @@ def test_example_workflow_matches_registered_node_schemas(filename):
 
         assert wire_type in WIRE_TYPES
         assert origin_output["type"] == wire_type
-        assert target_input["type"] == wire_type
+        assert wire_type in target_input["type"].split(",")
         assert link_id in origin_output["links"]
         assert target_input["link"] == link_id
 
 
-def test_examples_use_only_the_explicit_anndata_and_result_contracts():
+def test_examples_use_only_the_explicit_anndata_and_artifact_contracts():
     serialized = "\n".join(json.dumps(value, sort_keys=True) for value in _load_examples().values())
 
     assert "OPENBIO_ANNDATA" in serialized
-    assert "OPENBIO_SINGLE_CELL_RESULT" in serialized
+    assert "OPENBIO_SINGLE_CELL_TABLE" in serialized
+    assert "OPENBIO_SINGLE_CELL_PLOT" in serialized
+    assert "OPENBIO_SINGLE_CELL_SUMMARY" in serialized
+    assert "OPENBIO_SINGLE_CELL_RESULT" not in serialized
     assert "OPENBIO_SC_DATASET" not in serialized
     assert "OPENBIO_SC_RESULT" not in serialized
     assert '"name": "dataset"' not in serialized

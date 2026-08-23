@@ -1,6 +1,8 @@
 from comfy_api.latest import io
 
 AnnDataType = io.Custom("OPENBIO_ANNDATA")
-SingleCellResultType = io.Custom("OPENBIO_SINGLE_CELL_RESULT")
+SummaryResultType = io.Custom("OPENBIO_SINGLE_CELL_SUMMARY")
+TableResultType = io.Custom("OPENBIO_SINGLE_CELL_TABLE")
+PlotResultType = io.Custom("OPENBIO_SINGLE_CELL_PLOT")
 
-__all__ = ["AnnDataType", "SingleCellResultType"]
+__all__ = ["AnnDataType", "PlotResultType", "SummaryResultType", "TableResultType"]

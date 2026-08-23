@@ -5,10 +5,17 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from . import dependencies
-from .contracts import ResultKind, SingleCellResult, make_analysis_source, record_history
+from .contracts import (
+    PlotResult,
+    SummaryResult,
+    TableResult,
+    make_analysis_source,
+    record_history,
+)
 
 if TYPE_CHECKING:
     from anndata import AnnData
+    from pandas import DataFrame
 
 
 def matrix_totals_and_nonzero(matrix: Any, axis: int) -> tuple[Any, Any]:
@@ -47,9 +54,8 @@ def finish_adata(
     return adata
 
 
-def make_result(
+def _result_fields(
     *,
-    kind: ResultKind,
     title: str,
     operation: str,
     parameters: dict[str, Any],
@@ -59,10 +65,7 @@ def make_result(
     input_genes: int,
     started_at: float,
     random_seed: int = 0,
-    table: Any = None,
-    png: bytes | None = None,
-    summary: Any = None,
-) -> SingleCellResult:
+) -> dict[str, Any]:
     elapsed = time.perf_counter() - started_at
     source = make_analysis_source(
         operation,
@@ -72,20 +75,103 @@ def make_result(
         random_seed,
         elapsed,
     )
-    return SingleCellResult(
-        kind=kind,
-        title=title,
-        parameters=parameters,
-        description=description,
-        warnings=warnings,
-        input_cells=input_cells,
-        input_genes=input_genes,
-        random_seed=random_seed,
-        elapsed_seconds=elapsed,
-        source=source,
-        table=table,
-        png=png,
+    return {
+        "title": title,
+        "parameters": parameters,
+        "description": description,
+        "warnings": warnings,
+        "input_cells": input_cells,
+        "input_genes": input_genes,
+        "random_seed": random_seed,
+        "elapsed_seconds": elapsed,
+        "source": source,
+    }
+
+
+def make_summary_result(
+    *,
+    summary: Any,
+    title: str,
+    operation: str,
+    parameters: dict[str, Any],
+    description: str,
+    warnings: list[str],
+    input_cells: int,
+    input_genes: int,
+    started_at: float,
+    random_seed: int = 0,
+) -> SummaryResult:
+    return SummaryResult(
         summary=summary,
+        **_result_fields(
+            title=title,
+            operation=operation,
+            parameters=parameters,
+            description=description,
+            warnings=warnings,
+            input_cells=input_cells,
+            input_genes=input_genes,
+            started_at=started_at,
+            random_seed=random_seed,
+        ),
+    )
+
+
+def make_table_result(
+    *,
+    table: DataFrame,
+    title: str,
+    operation: str,
+    parameters: dict[str, Any],
+    description: str,
+    warnings: list[str],
+    input_cells: int,
+    input_genes: int,
+    started_at: float,
+    random_seed: int = 0,
+) -> TableResult:
+    return TableResult(
+        table=table,
+        **_result_fields(
+            title=title,
+            operation=operation,
+            parameters=parameters,
+            description=description,
+            warnings=warnings,
+            input_cells=input_cells,
+            input_genes=input_genes,
+            started_at=started_at,
+            random_seed=random_seed,
+        ),
+    )
+
+
+def make_plot_result(
+    *,
+    png: bytes,
+    title: str,
+    operation: str,
+    parameters: dict[str, Any],
+    description: str,
+    warnings: list[str],
+    input_cells: int,
+    input_genes: int,
+    started_at: float,
+    random_seed: int = 0,
+) -> PlotResult:
+    return PlotResult(
+        png=png,
+        **_result_fields(
+            title=title,
+            operation=operation,
+            parameters=parameters,
+            description=description,
+            warnings=warnings,
+            input_cells=input_cells,
+            input_genes=input_genes,
+            started_at=started_at,
+            random_seed=random_seed,
+        ),
     )
 
 

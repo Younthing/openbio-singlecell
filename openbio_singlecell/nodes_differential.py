@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING, Any
 from comfy_api.latest import io
 
 from . import dependencies
-from .analysis_utils import finish_adata, make_result
-from .node_types import AnnDataType, SingleCellResultType
+from .analysis_utils import finish_adata, make_table_result
+from .node_types import AnnDataType, TableResultType
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -115,7 +115,7 @@ class OpenBioSingleCellPseudobulkEdgeR(io.ComfyNode):
                 io.String.Input("baseline", default=""),
                 io.String.Input("comparison", default=""),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -152,8 +152,7 @@ class OpenBioSingleCellPseudobulkEdgeR(io.ComfyNode):
             "baseline": baseline,
             "comparison": comparison,
         }
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title=f"edgeR: {comparison} vs {baseline}",
             operation="pseudobulk_edger",
             parameters=parameters,
@@ -188,7 +187,7 @@ class OpenBioSingleCellDecouplerPseudobulkContrast(io.ComfyNode):
                 io.Int.Input("min_samples", default=3, min=1, max=2**31 - 1),
                 io.Float.Input("target_sum", default=10000.0, min=0.000001, step=1000.0, advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -252,8 +251,7 @@ class OpenBioSingleCellDecouplerPseudobulkContrast(io.ComfyNode):
             "min_samples": min_samples,
             "target_sum": target_sum,
         }
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title=f"Pseudobulk contrast: {condition} vs {reference}",
             operation="decoupler_pseudobulk_contrast",
             parameters=parameters,
@@ -281,7 +279,7 @@ class OpenBioSingleCellPseudobulkDESeq2(io.ComfyNode):
                 io.String.Input("baseline", default=""),
                 io.String.Input("comparison", default=""),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -313,8 +311,7 @@ class OpenBioSingleCellPseudobulkDESeq2(io.ComfyNode):
             "baseline": baseline,
             "comparison": comparison,
         }
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title=f"DESeq2: {comparison} vs {baseline}",
             operation="pseudobulk_deseq2",
             parameters=parameters,
@@ -351,7 +348,7 @@ class OpenBioSingleCellSCVIDifferentialExpression(io.ComfyNode):
                 io.Boolean.Input("early_stopping", default=True, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[TableResultType.Output(display_name="table")],
         )
 
     @classmethod
@@ -430,8 +427,7 @@ class OpenBioSingleCellSCVIDifferentialExpression(io.ComfyNode):
             "early_stopping": early_stopping,
             "random_seed": random_seed,
         }
-        result = make_result(
-            kind="table",
+        result = make_table_result(
             title=f"scVI DE: {group1} vs {group2}",
             operation="scvi_differential_expression",
             parameters=parameters,

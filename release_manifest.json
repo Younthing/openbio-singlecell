@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "product": "openbio-singlecell",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "comfyui": {
     "commit": "924743af083c151296cc16f925aeab113b6484e8"
   },
@@ -31,7 +31,11 @@
         "node_id_prefix": "OpenBioSingleCell",
         "category_prefix": "openbio/single-cell/",
         "anndata_wire_type": "OPENBIO_ANNDATA",
-        "result_wire_type": "OPENBIO_SINGLE_CELL_RESULT"
+        "artifact_wire_types": {
+          "table": "OPENBIO_SINGLE_CELL_TABLE",
+          "plot": "OPENBIO_SINGLE_CELL_PLOT",
+          "summary": "OPENBIO_SINGLE_CELL_SUMMARY"
+        }
       }
     },
     "openbio_frontend_dist": {
