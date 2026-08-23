@@ -3,6 +3,7 @@ from __future__ import annotations
 from comfy_api.latest import ComfyExtension, io
 
 from .nodes_annotation import ANNOTATION_NODE_CLASSES
+from .nodes_correction import CORRECTION_NODE_CLASSES
 from .nodes_data import DATA_NODE_CLASSES
 from .nodes_differential import DIFFERENTIAL_NODE_CLASSES
 from .nodes_embedding import EMBEDDING_NODE_CLASSES
@@ -18,6 +19,7 @@ NODE_CLASSES: list[type[io.ComfyNode]] = [
     *INPUT_NODE_CLASSES,
     *DATA_NODE_CLASSES,
     *QC_NODE_CLASSES,
+    *CORRECTION_NODE_CLASSES,
     *PREPROCESS_NODE_CLASSES,
     *INTEGRATION_NODE_CLASSES,
     *EMBEDDING_NODE_CLASSES,
