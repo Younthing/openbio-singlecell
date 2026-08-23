@@ -34,6 +34,7 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellPearsonResidualsToLayer",
     "OpenBioSingleCellHighlyVariableGenes",
     "OpenBioSingleCellScale",
+    "OpenBioSingleCellCNMF",
     "OpenBioSingleCellHarmonyIntegration",
     "OpenBioSingleCellSCVIIntegration",
     "OpenBioSingleCellLeidenResolutionSweep",

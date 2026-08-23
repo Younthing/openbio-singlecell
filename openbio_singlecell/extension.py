@@ -11,6 +11,7 @@ from .nodes_data import DATA_NODE_CLASSES
 from .nodes_differential import DIFFERENTIAL_NODE_CLASSES
 from .nodes_embedding import EMBEDDING_NODE_CLASSES
 from .nodes_enrichment import ENRICHMENT_NODE_CLASSES
+from .nodes_factorization import FACTORIZATION_NODE_CLASSES
 from .nodes_input import INPUT_NODE_CLASSES
 from .nodes_integration import INTEGRATION_NODE_CLASSES
 from .nodes_output import OUTPUT_NODE_CLASSES
@@ -28,6 +29,7 @@ NODE_CLASSES: list[type[io.ComfyNode]] = [
     *QC_NODE_CLASSES,
     *CORRECTION_NODE_CLASSES,
     *PREPROCESS_NODE_CLASSES,
+    *FACTORIZATION_NODE_CLASSES,
     *INTEGRATION_NODE_CLASSES,
     *EMBEDDING_NODE_CLASSES,
     *ANNOTATION_NODE_CLASSES,
