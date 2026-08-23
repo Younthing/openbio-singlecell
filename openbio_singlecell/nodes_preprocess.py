@@ -127,6 +127,64 @@ class OpenBioSingleCellNormalizeToLayer(io.ComfyNode):
         return io.NodeOutput(output)
 
 
+class OpenBioSingleCellPearsonResidualsToLayer(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellPearsonResidualsToLayer",
+            display_name="Pearson Residuals to Layer",
+            category=CATEGORY,
+            description="Compute analytic Pearson residuals and store them in an AnnData layer.",
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.Combo.Input("source", options=["X", "layer"], default="X"),
+                io.String.Input("source_layer", default="counts"),
+                io.Float.Input("theta", default=100.0, min=0.000001, step=10.0),
+                io.Float.Input("clip", default=0.0, min=0.0, step=1.0, advanced=True),
+                io.String.Input("output_layer", default="analytic_pearson_residuals", advanced=True),
+            ],
+            outputs=[AnnDataType.Output(display_name="adata")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        source: str = "X",
+        source_layer: str = "counts",
+        theta: float = 100.0,
+        clip: float = 0.0,
+        output_layer: str = "analytic_pearson_residuals",
+    ) -> io.NodeOutput:
+        science = dependencies.require_scientific_dependencies()
+        if source == "layer" and source_layer not in adata.layers:
+            raise ValueError(f"Pearson residual source layer not found: {source_layer!r}")
+        output_layer = output_layer.strip()
+        if not output_layer:
+            raise ValueError("Pearson residual output_layer cannot be empty.")
+
+        started_at = time.perf_counter()
+        cells, genes = int(adata.n_obs), int(adata.n_vars)
+        output = adata.copy()
+        normalized = science.sc.experimental.pp.normalize_pearson_residuals(
+            output,
+            theta=theta,
+            clip=clip or None,
+            layer=source_layer if source == "layer" else None,
+            inplace=False,
+        )
+        output.layers[output_layer] = normalized["X"]
+        parameters = {
+            "source": source,
+            "source_layer": source_layer,
+            "theta": theta,
+            "clip": clip,
+            "output_layer": output_layer,
+        }
+        finish_adata(output, "pearson_residuals_to_layer", parameters, cells, genes, started_at)
+        return io.NodeOutput(output)
+
+
 class OpenBioSingleCellHighlyVariableGenes(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -226,6 +284,7 @@ PREPROCESS_NODE_CLASSES = [
     OpenBioSingleCellNormalizeTotal,
     OpenBioSingleCellLog1p,
     OpenBioSingleCellNormalizeToLayer,
+    OpenBioSingleCellPearsonResidualsToLayer,
     OpenBioSingleCellHighlyVariableGenes,
     OpenBioSingleCellScale,
 ]
