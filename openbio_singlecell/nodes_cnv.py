@@ -56,6 +56,10 @@ class OpenBioSingleCellInferCNV(io.ComfyNode):
     ) -> io.NodeOutput:
         if reference_key not in adata.obs:
             raise ValueError(f"InferCNV reference column not found in obs: {reference_key!r}")
+        coordinate_columns = ["chromosome", "start", "end"]
+        missing_coordinates = [column for column in coordinate_columns if column not in adata.var]
+        if missing_coordinates:
+            raise ValueError(f"InferCNV gene coordinate columns not found in var: {missing_coordinates}")
 
         categories = _comma_separated_values(reference_categories)
         infercnvpy = _require_infercnvpy()
