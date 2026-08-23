@@ -126,7 +126,11 @@ class OpenBioSingleCellSCVIIntegration(io.ComfyNode):
                 io.Float.Input("dropout_rate", default=0.3, min=0.0, max=1.0, step=0.05, advanced=True),
                 io.Int.Input("max_epochs", default=0, min=0, max=100000, advanced=True),
                 io.Boolean.Input("early_stopping", default=True, advanced=True),
+                io.Boolean.Input("compute_mde", default=True),
                 io.String.Input("output_key", default="X_scVI", advanced=True),
+                io.String.Input("qzm_key", default="X_latent_qzm", advanced=True),
+                io.String.Input("qzv_key", default="X_latent_qzv", advanced=True),
+                io.String.Input("mde_key", default="X_mde", advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
             ],
             outputs=[AnnDataType.Output(display_name="adata")],
@@ -147,7 +151,11 @@ class OpenBioSingleCellSCVIIntegration(io.ComfyNode):
         dropout_rate: float = 0.3,
         max_epochs: int = 0,
         early_stopping: bool = True,
+        compute_mde: bool = True,
         output_key: str = "X_scVI",
+        qzm_key: str = "X_latent_qzm",
+        qzv_key: str = "X_latent_qzv",
+        mde_key: str = "X_mde",
         random_seed: int = 0,
     ) -> io.NodeOutput:
         if counts_layer not in adata.layers:
@@ -159,8 +167,11 @@ class OpenBioSingleCellSCVIIntegration(io.ComfyNode):
         missing_keys = [key for key in obs_keys if key and key not in adata.obs]
         if missing_keys:
             raise ValueError(f"scVI observation columns not found: {missing_keys}")
-        if not output_key.strip():
-            raise ValueError("scVI output_key cannot be empty.")
+        embedding_keys = [output_key, qzm_key, qzv_key]
+        if compute_mde:
+            embedding_keys.append(mde_key)
+        if any(not key.strip() for key in embedding_keys):
+            raise ValueError("scVI embedding keys cannot be empty.")
 
         try:
             import scvi
@@ -191,6 +202,11 @@ class OpenBioSingleCellSCVIIntegration(io.ComfyNode):
             train_kwargs["max_epochs"] = max_epochs
         model.train(**train_kwargs)
         output.obsm[output_key.strip()] = model.get_latent_representation()
+        qzm, qzv = model.get_latent_representation(give_mean=False, return_dist=True)
+        output.obsm[qzm_key.strip()] = qzm
+        output.obsm[qzv_key.strip()] = qzv
+        if compute_mde:
+            output.obsm[mde_key.strip()] = scvi.model.utils.mde(output.obsm[qzm_key.strip()])
 
         parameters = {
             "counts_layer": counts_layer,
@@ -204,7 +220,11 @@ class OpenBioSingleCellSCVIIntegration(io.ComfyNode):
             "dropout_rate": dropout_rate,
             "max_epochs": max_epochs,
             "early_stopping": early_stopping,
+            "compute_mde": compute_mde,
             "output_key": output_key.strip(),
+            "qzm_key": qzm_key.strip(),
+            "qzv_key": qzv_key.strip(),
+            "mde_key": mde_key.strip() if compute_mde else None,
             "random_seed": random_seed,
         }
         finish_adata(
