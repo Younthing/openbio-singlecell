@@ -14,6 +14,7 @@ from .nodes_enrichment import ENRICHMENT_NODE_CLASSES
 from .nodes_factorization import FACTORIZATION_NODE_CLASSES
 from .nodes_input import INPUT_NODE_CLASSES
 from .nodes_integration import INTEGRATION_NODE_CLASSES
+from .nodes_lineage import LINEAGE_NODE_CLASSES
 from .nodes_output import OUTPUT_NODE_CLASSES
 from .nodes_population import POPULATION_NODE_CLASSES
 from .nodes_preprocess import PREPROCESS_NODE_CLASSES
@@ -35,6 +36,7 @@ NODE_CLASSES: list[type[io.ComfyNode]] = [
     *ANNOTATION_NODE_CLASSES,
     *COMMUNICATION_NODE_CLASSES,
     *TRAJECTORY_NODE_CLASSES,
+    *LINEAGE_NODE_CLASSES,
     *VELOCITY_NODE_CLASSES,
     *CNV_NODE_CLASSES,
     *DIFFERENTIAL_NODE_CLASSES,

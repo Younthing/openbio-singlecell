@@ -54,6 +54,8 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellDiffusionMap",
     "OpenBioSingleCellPAGA",
     "OpenBioSingleCellDPT",
+    "OpenBioSingleCellCassiopeiaLineageQC",
+    "OpenBioSingleCellCassiopeiaExpansionTest",
     "OpenBioSingleCellVelocityFilterAndNormalize",
     "OpenBioSingleCellVelocityMoments",
     "OpenBioSingleCellEstimateVelocity",
