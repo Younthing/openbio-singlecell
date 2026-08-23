@@ -97,6 +97,7 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellUMAPPlot",
     "OpenBioSingleCellFilterMarkerGenes",
     "OpenBioSingleCellMarkerExpressionPlot",
+    "OpenBioSingleCellPCAMetadataAssociations",
     "OpenBioSingleCellPreviewResult",
     "OpenBioSingleCellSaveH5AD",
     "OpenBioSingleCellExportCSV",

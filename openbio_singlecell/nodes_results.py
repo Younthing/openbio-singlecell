@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 DIFFERENTIAL_CATEGORY = "openbio/single-cell/differential-expression"
 PLOT_CATEGORY = "openbio/single-cell/visualization"
+DIAGNOSTIC_CATEGORY = "openbio/single-cell/diagnostics"
 MARKER_COLUMNS = [
     "group",
     "gene",
@@ -422,9 +423,85 @@ class OpenBioSingleCellMarkerExpressionPlot(io.ComfyNode):
         return io.NodeOutput(plotted)
 
 
+class OpenBioSingleCellPCAMetadataAssociations(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellPCAMetadataAssociations",
+            display_name="PCA Metadata Associations",
+            category=DIAGNOSTIC_CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input("use_rep", default="X_pca"),
+                io.String.Input("obs_keys", default=""),
+                io.Float.Input("alpha", default=0.05, min=0.0, max=1.0, step=0.01),
+                io.String.Input("p_adjust_method", default="fdr_bh", advanced=True),
+            ],
+            outputs=[SingleCellResultType.Output(display_name="result")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        use_rep: str = "X_pca",
+        obs_keys: str = "",
+        alpha: float = 0.05,
+        p_adjust_method: str = "fdr_bh",
+    ) -> io.NodeOutput:
+        use_rep = use_rep.strip()
+        if not use_rep:
+            raise ValueError("PCA metadata association representation cannot be empty.")
+        if use_rep not in adata.obsm:
+            raise ValueError(f"PCA metadata association representation not found in obsm: {use_rep!r}")
+        selected_obs = list(dict.fromkeys(key.strip() for key in obs_keys.split(",") if key.strip()))
+        if not selected_obs:
+            raise ValueError("PCA metadata associations require at least one comma-separated obs column.")
+        missing_obs = [key for key in selected_obs if key not in adata.obs]
+        if missing_obs:
+            raise ValueError(f"PCA metadata association columns not found in obs: {missing_obs}")
+        try:
+            import decoupler
+        except (ImportError, OSError) as error:
+            raise RuntimeError("PCA Metadata Associations requires the decoupler package.") from error
+
+        science = dependencies.require_scientific_dependencies()
+        started_at = time.perf_counter()
+        table = decoupler.get_metadata_associations(
+            adata,
+            obs_keys=selected_obs,
+            obsm_key=use_rep,
+            inplace=False,
+            alpha=alpha,
+            method=p_adjust_method,
+            verbose=False,
+        )
+        table = science.pd.DataFrame(table).reset_index()
+        parameters = {
+            "use_rep": use_rep,
+            "obs_keys": selected_obs,
+            "alpha": alpha,
+            "p_adjust_method": p_adjust_method,
+        }
+        result = make_result(
+            kind="table",
+            title=f"Metadata associations with {use_rep}",
+            operation="pca_metadata_associations",
+            parameters=parameters,
+            description="ANOVA associations between an embedding and selected observation metadata.",
+            warnings=[],
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+            started_at=started_at,
+            table=table,
+        )
+        return io.NodeOutput(result)
+
+
 RESULT_NODE_CLASSES = [
     OpenBioSingleCellMarkerGenes,
     OpenBioSingleCellUMAPPlot,
     OpenBioSingleCellFilterMarkerGenes,
     OpenBioSingleCellMarkerExpressionPlot,
+    OpenBioSingleCellPCAMetadataAssociations,
 ]
