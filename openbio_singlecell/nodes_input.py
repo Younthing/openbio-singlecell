@@ -166,7 +166,7 @@ class OpenBioSingleCellLoad10xMTX(io.ComfyNode):
                 io.String.Input("directory", default="openbio-singlecell/10x"),
                 io.Combo.Input("var_names", options=["gene_symbols", "gene_ids"], default="gene_symbols"),
                 io.Boolean.Input("make_unique", default=True, advanced=True),
-                io.Boolean.Input("gex_only", default=True, advanced=True),
+                io.Boolean.Input("gex_only", default=True),
             ],
             outputs=[AnnDataType.Output(display_name="adata")],
         )
@@ -212,9 +212,9 @@ class OpenBioSingleCellLoad10xStudy(io.ComfyNode):
                 io.String.Input("directory", default="openbio-singlecell/study"),
                 io.String.Input("sample_key", default="sample"),
                 io.Combo.Input("var_names", options=["gene_symbols", "gene_ids"], default="gene_symbols"),
-                io.Combo.Input("join", options=["inner", "outer"], default="inner", advanced=True),
+                io.Combo.Input("join", options=["inner", "outer"], default="inner"),
                 io.Boolean.Input("make_unique", default=True, advanced=True),
-                io.Boolean.Input("gex_only", default=True, advanced=True),
+                io.Boolean.Input("gex_only", default=True),
             ],
             outputs=[AnnDataType.Output(display_name="adata")],
         )
@@ -291,7 +291,7 @@ class OpenBioSingleCellLoad10xH5(io.ComfyNode):
             inputs=[
                 io.String.Input("path", default="openbio-singlecell/filtered_feature_bc_matrix.h5"),
                 io.String.Input("genome", default="", advanced=True),
-                io.Boolean.Input("gex_only", default=True, advanced=True),
+                io.Boolean.Input("gex_only", default=True),
                 io.Boolean.Input("make_unique", default=True, advanced=True),
             ],
             outputs=[AnnDataType.Output(display_name="adata")],

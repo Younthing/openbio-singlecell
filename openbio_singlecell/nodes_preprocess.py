@@ -53,7 +53,7 @@ class OpenBioSingleCellLog1p(io.ComfyNode):
             category=CATEGORY,
             inputs=[
                 AnnDataType.Input("adata"),
-                io.Boolean.Input("set_raw", default=True, advanced=True),
+                io.Boolean.Input("set_raw", default=True),
             ],
             outputs=[AnnDataType.Output(display_name="adata")],
         )
