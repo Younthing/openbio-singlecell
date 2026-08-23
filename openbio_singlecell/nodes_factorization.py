@@ -96,11 +96,14 @@ class OpenBioSingleCellCNMF(io.ComfyNode):
                 io.Combo.Input("source", options=EXPRESSION_SOURCES, default="X"),
                 io.String.Input("layer_name", default="counts"),
                 io.Int.Input("selected_k", default=7, min=2, max=1024),
+                io.Combo.Input("cluster_assignment", options=["rfc", "usage_argmax"], default="rfc"),
+                io.String.Input("rfc_use_rep", default="scaled|original|X_pca"),
+                io.Float.Input("rfc_threshold", default=0.5, min=0.0, max=1.0, step=0.05),
                 io.Int.Input("components_min", default=3, min=2, max=1024, advanced=True),
                 io.Int.Input("components_max", default=19, min=2, max=1024, advanced=True),
                 io.Int.Input("n_iter", default=200, min=1, max=100000, advanced=True),
                 io.Int.Input("num_highvar_genes", default=2000, min=1, max=2**31 - 1, advanced=True),
-                io.Float.Input("density_threshold", default=0.1, min=0.0, max=2.0, step=0.05, advanced=True),
+                io.Float.Input("density_threshold", default=0.1, min=0.0, max=2.0, step=0.05),
                 io.Int.Input("n_top_genes", default=100, min=1, max=2**31 - 1, advanced=True),
                 io.Int.Input("workers", default=1, min=1, max=1024, advanced=True),
                 io.Int.Input("random_seed", default=123, min=0, max=2**31 - 1, advanced=True),
@@ -121,6 +124,9 @@ class OpenBioSingleCellCNMF(io.ComfyNode):
         source: str = "X",
         layer_name: str = "counts",
         selected_k: int = 7,
+        cluster_assignment: str = "rfc",
+        rfc_use_rep: str = "scaled|original|X_pca",
+        rfc_threshold: float = 0.5,
         components_min: int = 3,
         components_max: int = 19,
         n_iter: int = 200,
@@ -136,6 +142,11 @@ class OpenBioSingleCellCNMF(io.ComfyNode):
             raise ValueError("cNMF components_min cannot exceed components_max.")
         if not components_min <= selected_k <= components_max:
             raise ValueError("cNMF selected_k must be within the requested component range.")
+        if cluster_assignment not in {"rfc", "usage_argmax"}:
+            raise ValueError(f"Unsupported cNMF cluster assignment method: {cluster_assignment!r}")
+        rfc_use_rep = rfc_use_rep.strip()
+        if cluster_assignment == "rfc" and not rfc_use_rep:
+            raise ValueError("cNMF RFC representation cannot be empty.")
 
         science = dependencies.require_scientific_dependencies()
         omicverse = _require_omicverse()
@@ -176,6 +187,13 @@ class OpenBioSingleCellCNMF(io.ComfyNode):
         obsm_keys_before = set(work.obsm)
         uns_keys_before = set(work.uns)
         cnmf.get_results(work, result_dict)
+        if cluster_assignment == "rfc":
+            cnmf.get_results_rfc(
+                work,
+                result_dict,
+                use_rep=rfc_use_rep,
+                cNMF_threshold=rfc_threshold,
+            )
 
         for column in work.obs.columns:
             if column not in obs_columns_before or str(column).lower().startswith(("cnmf", "nmf")):
@@ -197,7 +215,14 @@ class OpenBioSingleCellCNMF(io.ComfyNode):
         gene_scores = _align_frame(result_dict["gep_scores"], output.var_names, science, "gene score matrix")
         for column in usage.columns:
             output.obs[str(column)] = usage[column].to_numpy()
-        output.obs["cNMF_cluster"] = science.pd.Categorical(usage.idxmax(axis=1).astype(str).to_numpy())
+        if cluster_assignment == "rfc":
+            if "cNMF_cluster_rfc" not in work.obs:
+                raise RuntimeError("cNMF RFC assignment did not produce obs['cNMF_cluster_rfc'].")
+            assigned = work.obs["cNMF_cluster_rfc"].reindex(output.obs_names).astype(str)
+            assigned = assigned.map(lambda value: value if value.startswith("cNMF_") else f"cNMF_{value}")
+        else:
+            assigned = usage.idxmax(axis=1).astype(str)
+        output.obs["cNMF_cluster"] = science.pd.Categorical(assigned.to_numpy())
         output.obsm["cNMF_usage"] = usage
         for column in gene_scores.columns:
             output.var[str(column)] = gene_scores[column].to_numpy()
@@ -212,6 +237,7 @@ class OpenBioSingleCellCNMF(io.ComfyNode):
             "component_range": [int(components_min), int(components_max)],
             "usage_key": "cNMF_usage",
             "cluster_key": "cNMF_cluster",
+            "cluster_assignment": cluster_assignment,
             "top_genes": top_gene_records,
         }
 
@@ -219,6 +245,9 @@ class OpenBioSingleCellCNMF(io.ComfyNode):
             "source": source,
             "layer_name": layer_name,
             "selected_k": selected_k,
+            "cluster_assignment": cluster_assignment,
+            "rfc_use_rep": rfc_use_rep,
+            "rfc_threshold": rfc_threshold,
             "components_min": components_min,
             "components_max": components_max,
             "n_iter": n_iter,
