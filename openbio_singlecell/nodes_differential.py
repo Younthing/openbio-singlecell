@@ -24,6 +24,14 @@ def _require_pertpy() -> Any:
     return pertpy
 
 
+def _require_decoupler() -> Any:
+    try:
+        import decoupler
+    except (ImportError, OSError) as error:
+        raise RuntimeError("Decoupler pseudobulk contrast requires the decoupler package.") from error
+    return decoupler
+
+
 class OpenBioSingleCellPseudobulk(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -148,6 +156,106 @@ class OpenBioSingleCellPseudobulkEdgeR(io.ComfyNode):
             input_genes=int(adata.n_vars),
             started_at=started_at,
             table=science.pd.DataFrame(table),
+        )
+        return io.NodeOutput(result)
+
+
+class OpenBioSingleCellDecouplerPseudobulkContrast(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellDecouplerPseudobulkContrast",
+            display_name="Decoupler Pseudobulk Contrast",
+            category=CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input("sample_key", default="sample"),
+                io.String.Input("groupby", default="cell_type"),
+                io.String.Input("condition_key", default="group"),
+                io.String.Input("condition", default=""),
+                io.String.Input("reference", default=""),
+                io.Combo.Input("source", options=["X", "layer"], default="layer"),
+                io.String.Input("layer_name", default="counts"),
+                io.Combo.Input("method", options=["t-test", "wilcoxon"], default="t-test"),
+                io.Float.Input("min_prop", default=0.1, min=0.0, max=1.0, step=0.05, advanced=True),
+                io.Int.Input("min_samples", default=3, min=1, max=2**31 - 1, advanced=True),
+                io.Float.Input("target_sum", default=10000.0, min=0.000001, step=1000.0, advanced=True),
+            ],
+            outputs=[SingleCellResultType.Output(display_name="result")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        sample_key: str = "sample",
+        groupby: str = "cell_type",
+        condition_key: str = "group",
+        condition: str = "",
+        reference: str = "",
+        source: str = "layer",
+        layer_name: str = "counts",
+        method: str = "t-test",
+        min_prop: float = 0.1,
+        min_samples: int = 3,
+        target_sum: float = 10000.0,
+    ) -> io.NodeOutput:
+        required_obs = [sample_key, groupby, condition_key]
+        missing_obs = [key for key in required_obs if key not in adata.obs]
+        if missing_obs:
+            raise ValueError(f"Decoupler pseudobulk observation columns not found: {missing_obs}")
+        if source == "layer" and layer_name not in adata.layers:
+            raise ValueError(f"Decoupler pseudobulk layer not found: {layer_name!r}")
+        if not condition or not reference:
+            raise ValueError("Decoupler pseudobulk condition and reference values are required.")
+
+        decoupler = _require_decoupler()
+        science = dependencies.require_scientific_dependencies()
+        started_at = time.perf_counter()
+        pdata = decoupler.get_pseudobulk(
+            adata,
+            sample_col=sample_key,
+            groups_col=groupby,
+            min_prop=min_prop,
+            min_smpls=min_samples,
+            layer=layer_name if source == "layer" else None,
+        )
+        science.sc.pp.normalize_total(pdata, target_sum=target_sum)
+        science.sc.pp.log1p(pdata)
+        log_fold_changes, p_values = decoupler.get_contrast(
+            pdata,
+            group_col=groupby,
+            condition_col=condition_key,
+            condition=condition,
+            reference=reference,
+            method=method,
+        )
+        table = science.pd.DataFrame(decoupler.format_contrast_results(log_fold_changes, p_values)).reset_index()
+
+        parameters = {
+            "sample_key": sample_key,
+            "groupby": groupby,
+            "condition_key": condition_key,
+            "condition": condition,
+            "reference": reference,
+            "source": source,
+            "layer_name": layer_name,
+            "method": method,
+            "min_prop": min_prop,
+            "min_samples": min_samples,
+            "target_sum": target_sum,
+        }
+        result = make_result(
+            kind="table",
+            title=f"Pseudobulk contrast: {condition} vs {reference}",
+            operation="decoupler_pseudobulk_contrast",
+            parameters=parameters,
+            description="Decoupler pseudobulk contrast formatted as one differential-expression table.",
+            warnings=[],
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+            started_at=started_at,
+            table=table,
         )
         return io.NodeOutput(result)
 
@@ -334,6 +442,7 @@ class OpenBioSingleCellSCVIDifferentialExpression(io.ComfyNode):
 DIFFERENTIAL_NODE_CLASSES = [
     OpenBioSingleCellPseudobulk,
     OpenBioSingleCellPseudobulkEdgeR,
+    OpenBioSingleCellDecouplerPseudobulkContrast,
     OpenBioSingleCellPseudobulkDESeq2,
     OpenBioSingleCellSCVIDifferentialExpression,
 ]
@@ -341,6 +450,7 @@ DIFFERENTIAL_NODE_CLASSES = [
 
 __all__ = [
     "DIFFERENTIAL_NODE_CLASSES",
+    "OpenBioSingleCellDecouplerPseudobulkContrast",
     "OpenBioSingleCellPseudobulk",
     "OpenBioSingleCellPseudobulkEdgeR",
     "OpenBioSingleCellPseudobulkDESeq2",

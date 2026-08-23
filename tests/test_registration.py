@@ -64,6 +64,7 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellCNVStructure",
     "OpenBioSingleCellPseudobulk",
     "OpenBioSingleCellPseudobulkEdgeR",
+    "OpenBioSingleCellDecouplerPseudobulkContrast",
     "OpenBioSingleCellPseudobulkDESeq2",
     "OpenBioSingleCellSCVIDifferentialExpression",
     "OpenBioSingleCellSampleCompositionSummary",
