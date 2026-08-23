@@ -43,7 +43,7 @@ class OpenBioSingleCellCellTypistAnnotation(io.ComfyNode):
             category=CATEGORY,
             inputs=[
                 AnnDataType.Input("adata"),
-                io.String.Input("model", default="Immune_All_Low.pkl"),
+                io.String.Input("model", default=""),
                 io.Boolean.Input("use_raw", default=True),
                 io.Boolean.Input("majority_voting", default=True),
                 io.String.Input("label_column", default="celltypist_cell_type", advanced=True),
@@ -56,7 +56,7 @@ class OpenBioSingleCellCellTypistAnnotation(io.ComfyNode):
     def execute(
         cls,
         adata: AnnData,
-        model: str = "Immune_All_Low.pkl",
+        model: str = "",
         use_raw: bool = True,
         majority_voting: bool = True,
         label_column: str = "celltypist_cell_type",
@@ -238,7 +238,7 @@ class OpenBioSingleCellMapClusterAnnotations(io.ComfyNode):
             inputs=[
                 AnnDataType.Input("adata"),
                 io.String.Input("groupby", default="leiden"),
-                io.String.Input("mapping_json", default='{"0": "Cell type A", "1": "Cell type B"}'),
+                io.String.Input("mapping_json", default="{}"),
                 io.String.Input("output_column", default="cell_type", advanced=True),
                 io.Boolean.Input("keep_unmapped", default=True),
             ],
@@ -250,7 +250,7 @@ class OpenBioSingleCellMapClusterAnnotations(io.ComfyNode):
         cls,
         adata: AnnData,
         groupby: str = "leiden",
-        mapping_json: str = '{"0": "Cell type A", "1": "Cell type B"}',
+        mapping_json: str = "{}",
         output_column: str = "cell_type",
         keep_unmapped: bool = True,
     ) -> io.NodeOutput:
