@@ -9,19 +9,29 @@ from pathlib import Path
 
 from openbio_singlecell import PLUGIN_VERSION, SCHEMA_VERSION
 from openbio_singlecell.extension import NODE_CLASSES, OpenBioSingleCellExtension, comfy_entrypoint
+from openbio_singlecell.node_types import AnnDataType, SingleCellResultType
+
+EXPECTED_NODE_IDS = {
+    "OpenBioSingleCellLoadH5AD",
+    "OpenBioSingleCellLoad10xMTX",
+    "OpenBioSingleCellLoad10xH5",
+    "OpenBioSingleCellAnnDataSummary",
+}
 
 
 def test_package_metadata_is_versioned():
     assert PLUGIN_VERSION == "0.1.0"
     assert SCHEMA_VERSION == 1
+    assert AnnDataType.io_type == "OPENBIO_ANNDATA"
+    assert SingleCellResultType.io_type == "OPENBIO_SINGLE_CELL_RESULT"
 
 
-def test_empty_extension_loads():
+def test_input_extension_loads():
     extension = asyncio.run(comfy_entrypoint())
 
     assert isinstance(extension, OpenBioSingleCellExtension)
-    assert NODE_CLASSES == []
-    assert asyncio.run(extension.get_node_list()) == []
+    assert {node.GET_SCHEMA().node_id for node in NODE_CLASSES} == EXPECTED_NODE_IDS
+    assert asyncio.run(extension.get_node_list()) == NODE_CLASSES
 
 
 def test_extension_loads_without_scientific_dependencies():
@@ -44,7 +54,7 @@ def test_extension_loads_without_scientific_dependencies():
         from openbio_singlecell.extension import NODE_CLASSES, comfy_entrypoint
 
         assert not dependencies.AVAILABLE
-        assert NODE_CLASSES == []
+        assert len(NODE_CLASSES) == 4
 
         try:
             dependencies.require_scientific_dependencies()
@@ -57,7 +67,7 @@ def test_extension_loads_without_scientific_dependencies():
 
         extension = asyncio.run(comfy_entrypoint())
         asyncio.run(extension.on_load())
-        assert asyncio.run(extension.get_node_list()) == []
+        assert len(asyncio.run(extension.get_node_list())) == 4
         """
     )
     environment = os.environ.copy()

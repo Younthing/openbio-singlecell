@@ -5,8 +5,9 @@ import logging
 from comfy_api.latest import ComfyExtension, io
 
 from . import dependencies
+from .nodes_input import INPUT_NODE_CLASSES
 
-NODE_CLASSES: list[type[io.ComfyNode]] = []
+NODE_CLASSES: list[type[io.ComfyNode]] = [*INPUT_NODE_CLASSES]
 
 
 class OpenBioSingleCellExtension(ComfyExtension):
