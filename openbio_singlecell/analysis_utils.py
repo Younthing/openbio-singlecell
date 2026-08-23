@@ -12,13 +12,14 @@ if TYPE_CHECKING:
 
 
 def matrix_totals_and_nonzero(matrix: Any, axis: int) -> tuple[Any, Any]:
-    if dependencies.sparse.issparse(matrix):
-        totals = dependencies.np.asarray(matrix.sum(axis=axis)).ravel()
-        nonzero = dependencies.np.asarray(matrix.getnnz(axis=axis)).ravel()
+    science = dependencies.require_scientific_dependencies()
+    if science.sparse.issparse(matrix):
+        totals = science.np.asarray(matrix.sum(axis=axis)).ravel()
+        nonzero = science.np.asarray(matrix.getnnz(axis=axis)).ravel()
     else:
-        array = dependencies.np.asarray(matrix)
+        array = science.np.asarray(matrix)
         totals = array.sum(axis=axis)
-        nonzero = dependencies.np.count_nonzero(array, axis=axis)
+        nonzero = science.np.count_nonzero(array, axis=axis)
     return totals, nonzero
 
 
@@ -89,7 +90,8 @@ def make_result(
 
 
 def figure_to_png(figure: Any) -> bytes:
-    dependencies.FigureCanvasAgg(figure)
+    science = dependencies.require_scientific_dependencies()
+    science.FigureCanvasAgg(figure)
     buffer = bytes_io.BytesIO()
     figure.savefig(buffer, format="png", dpi=120, bbox_inches="tight")
     return buffer.getvalue()

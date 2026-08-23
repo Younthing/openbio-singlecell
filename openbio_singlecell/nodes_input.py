@@ -41,15 +41,15 @@ def read_10x_mtx(
     make_unique: bool = True,
     gex_only: bool = True,
 ) -> AnnData:
-    dependencies.require_scientific_dependencies()
+    science = dependencies.require_scientific_dependencies()
     files = resolve_10x_mtx_files(relative_directory)
 
     opener = gzip.open if files["matrix"].lower().endswith(".gz") else open
     with opener(files["matrix"], "rb") as matrix_file:
-        matrix = dependencies.mmread(matrix_file).tocsr()
+        matrix = science.mmread(matrix_file).tocsr()
 
-    barcodes = dependencies.pd.read_csv(files["barcodes"], sep="\t", header=None, dtype=str, compression="infer")
-    features = dependencies.pd.read_csv(files["features"], sep="\t", header=None, dtype=str, compression="infer")
+    barcodes = science.pd.read_csv(files["barcodes"], sep="\t", header=None, dtype=str, compression="infer")
+    features = science.pd.read_csv(files["features"], sep="\t", header=None, dtype=str, compression="infer")
     if features.shape[1] == 0:
         raise ValueError("The 10x features file is empty.")
 
@@ -71,14 +71,14 @@ def read_10x_mtx(
         feature_types = feature_types[mask].reset_index(drop=True)
 
     selected_names = gene_ids if var_names == "gene_ids" else gene_symbols
-    obs = dependencies.pd.DataFrame(index=barcodes.iloc[:, 0].astype(str).to_numpy())
-    var = dependencies.pd.DataFrame(index=selected_names.astype(str).to_numpy())
+    obs = science.pd.DataFrame(index=barcodes.iloc[:, 0].astype(str).to_numpy())
+    var = science.pd.DataFrame(index=selected_names.astype(str).to_numpy())
     var["gene_ids"] = gene_ids.astype(str).to_numpy()
     var["gene_symbols"] = gene_symbols.astype(str).to_numpy()
     if feature_types is not None:
         var["feature_types"] = feature_types.astype(str).to_numpy()
 
-    adata = dependencies.ad.AnnData(X=matrix.transpose().tocsr(), obs=obs, var=var)
+    adata = science.ad.AnnData(X=matrix.transpose().tocsr(), obs=obs, var=var)
     if make_unique:
         adata.obs_names_make_unique()
         adata.var_names_make_unique()
@@ -115,9 +115,9 @@ class OpenBioSingleCellLoadH5AD(io.ComfyNode):
 
     @classmethod
     def execute(cls, path: str, make_var_names_unique: bool = True) -> io.NodeOutput:
-        dependencies.require_scientific_dependencies()
+        science = dependencies.require_scientific_dependencies()
         resolved = resolve_input_path(path, extensions=(".h5ad",))
-        adata = dependencies.ad.read_h5ad(resolved)
+        adata = science.ad.read_h5ad(resolved)
         if make_var_names_unique:
             adata.var_names_make_unique()
         _validate_nonempty(adata)
@@ -212,9 +212,9 @@ class OpenBioSingleCellLoad10xH5(io.ComfyNode):
         gex_only: bool = True,
         make_unique: bool = True,
     ) -> io.NodeOutput:
-        dependencies.require_scientific_dependencies()
+        science = dependencies.require_scientific_dependencies()
         resolved = resolve_input_path(path, extensions=(".h5", ".hdf5"))
-        adata = dependencies.sc.read_10x_h5(resolved, genome=genome or None, gex_only=gex_only)
+        adata = science.sc.read_10x_h5(resolved, genome=genome or None, gex_only=gex_only)
         if make_unique:
             adata.obs_names_make_unique()
             adata.var_names_make_unique()

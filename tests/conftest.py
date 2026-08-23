@@ -42,8 +42,7 @@ from openbio_singlecell import dependencies  # noqa: E402
 @pytest.fixture(scope="session")
 def science():
     try:
-        dependencies.require_scientific_dependencies()
-        return dependencies
+        return dependencies.require_scientific_dependencies()
     except RuntimeError as error:
         pytest.skip(str(error))
 

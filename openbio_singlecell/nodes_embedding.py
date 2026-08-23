@@ -40,7 +40,7 @@ class OpenBioSingleCellPCA(io.ComfyNode):
         use_hvg: bool = True,
         random_seed: int = 0,
     ) -> io.NodeOutput:
-        dependencies.require_scientific_dependencies()
+        science = dependencies.require_scientific_dependencies()
         if use_hvg and "highly_variable" not in adata.var:
             raise ValueError(
                 "PCA with use_hvg enabled requires var['highly_variable']; run Highly Variable Genes first."
@@ -48,7 +48,7 @@ class OpenBioSingleCellPCA(io.ComfyNode):
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        dependencies.sc.pp.pca(
+        science.sc.pp.pca(
             output,
             n_comps=n_comps,
             mask_var="highly_variable" if use_hvg else None,
@@ -98,11 +98,11 @@ class OpenBioSingleCellNeighbors(io.ComfyNode):
         metric: str = "cosine",
         random_seed: int = 0,
     ) -> io.NodeOutput:
-        dependencies.require_scientific_dependencies()
+        science = dependencies.require_scientific_dependencies()
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        dependencies.sc.pp.neighbors(
+        science.sc.pp.neighbors(
             output,
             n_neighbors=n_neighbors,
             n_pcs=n_pcs,
@@ -151,11 +151,11 @@ class OpenBioSingleCellUMAP(io.ComfyNode):
         spread: float = 1.0,
         random_seed: int = 0,
     ) -> io.NodeOutput:
-        dependencies.require_scientific_dependencies()
+        science = dependencies.require_scientific_dependencies()
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        dependencies.sc.tl.umap(
+        science.sc.tl.umap(
             output,
             min_dist=min_dist,
             spread=spread,
@@ -198,13 +198,13 @@ class OpenBioSingleCellLeiden(io.ComfyNode):
         key_added: str = "leiden",
         random_seed: int = 0,
     ) -> io.NodeOutput:
-        dependencies.require_scientific_dependencies()
+        science = dependencies.require_scientific_dependencies()
         if not key_added:
             raise ValueError("Leiden key_added cannot be empty.")
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        dependencies.sc.tl.leiden(
+        science.sc.tl.leiden(
             output,
             resolution=resolution,
             key_added=key_added,

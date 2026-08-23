@@ -7,7 +7,7 @@ import sys
 import textwrap
 from pathlib import Path
 
-from openbio_singlecell import PLUGIN_VERSION, SCHEMA_VERSION
+from openbio_singlecell import PLUGIN_VERSION, SCHEMA_VERSION, dependencies
 from openbio_singlecell.extension import NODE_CLASSES, OpenBioSingleCellExtension, comfy_entrypoint
 from openbio_singlecell.node_types import AnnDataType, SingleCellResultType
 
@@ -44,6 +44,15 @@ def test_package_metadata_is_versioned():
     assert SingleCellResultType.io_type == "OPENBIO_SINGLE_CELL_RESULT"
 
 
+def test_scientific_dependency_api_is_minimal():
+    assert dependencies.__all__ == [
+        "ScientificDependencies",
+        "require_scientific_dependencies",
+    ]
+    assert not hasattr(dependencies, "INSTALL_COMMAND")
+    assert not hasattr(dependencies, "REQUIREMENTS_PATH")
+
+
 def test_input_extension_loads():
     extension = asyncio.run(comfy_entrypoint())
 
@@ -60,19 +69,26 @@ def test_extension_loads_without_scientific_dependencies():
         import importlib.abc
         import sys
 
-        class BlockAnndata(importlib.abc.MetaPathFinder):
+        blocked_roots = {"anndata", "matplotlib", "pandas", "scanpy", "scipy"}
+        attempted = []
+
+        class BlockScience(importlib.abc.MetaPathFinder):
             def find_spec(self, fullname, path=None, target=None):
-                if fullname == "anndata" or fullname.startswith("anndata."):
-                    raise ModuleNotFoundError("anndata blocked for dependency test")
+                if fullname.partition(".")[0] in blocked_roots:
+                    attempted.append(fullname)
+                    raise ModuleNotFoundError(f"{fullname} blocked for dependency test")
                 return None
 
-        sys.meta_path.insert(0, BlockAnndata())
+        sys.meta_path.insert(0, BlockScience())
 
         from openbio_singlecell import dependencies
         from openbio_singlecell.extension import NODE_CLASSES, comfy_entrypoint
 
-        assert not dependencies.AVAILABLE
         assert len(NODE_CLASSES) == 22
+        extension = asyncio.run(comfy_entrypoint())
+        asyncio.run(extension.on_load())
+        assert len(asyncio.run(extension.get_node_list())) == 22
+        assert attempted == []
 
         try:
             dependencies.require_scientific_dependencies()
@@ -82,10 +98,7 @@ def test_extension_loads_without_scientific_dependencies():
             assert "pip install -r" in message
         else:
             raise AssertionError("missing dependencies did not produce an installation error")
-
-        extension = asyncio.run(comfy_entrypoint())
-        asyncio.run(extension.on_load())
-        assert len(asyncio.run(extension.get_node_list())) == 22
+        assert attempted
         """
     )
     environment = os.environ.copy()

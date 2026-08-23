@@ -32,13 +32,13 @@ class OpenBioSingleCellNormalizeTotal(io.ComfyNode):
 
     @classmethod
     def execute(cls, adata: AnnData, target_sum: float = 10000.0) -> io.NodeOutput:
-        dependencies.require_scientific_dependencies()
+        science = dependencies.require_scientific_dependencies()
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
         if "counts" not in output.layers:
             output.layers["counts"] = output.X.copy()
-        dependencies.sc.pp.normalize_total(output, target_sum=target_sum, inplace=True)
+        science.sc.pp.normalize_total(output, target_sum=target_sum, inplace=True)
         parameters = {"target_sum": target_sum}
         finish_adata(output, "normalize_total", parameters, cells, genes, started_at)
         return io.NodeOutput(output)
@@ -60,11 +60,11 @@ class OpenBioSingleCellLog1p(io.ComfyNode):
 
     @classmethod
     def execute(cls, adata: AnnData, set_raw: bool = True) -> io.NodeOutput:
-        dependencies.require_scientific_dependencies()
+        science = dependencies.require_scientific_dependencies()
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        dependencies.sc.pp.log1p(output)
+        science.sc.pp.log1p(output)
         if set_raw:
             output.raw = output.copy()
         parameters = {"set_raw": set_raw}
@@ -96,11 +96,11 @@ class OpenBioSingleCellHighlyVariableGenes(io.ComfyNode):
         flavor: str = "seurat",
         subset: bool = False,
     ) -> io.NodeOutput:
-        dependencies.require_scientific_dependencies()
+        science = dependencies.require_scientific_dependencies()
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        dependencies.sc.pp.highly_variable_genes(
+        science.sc.pp.highly_variable_genes(
             output,
             n_top_genes=n_top_genes,
             flavor=flavor,
@@ -129,11 +129,11 @@ class OpenBioSingleCellScale(io.ComfyNode):
 
     @classmethod
     def execute(cls, adata: AnnData, max_value: float = 10.0) -> io.NodeOutput:
-        dependencies.require_scientific_dependencies()
+        science = dependencies.require_scientific_dependencies()
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        dependencies.sc.pp.scale(output, max_value=max_value if max_value > 0 else None)
+        science.sc.pp.scale(output, max_value=max_value if max_value > 0 else None)
         parameters = {"max_value": max_value}
         finish_adata(output, "scale", parameters, cells, genes, started_at)
         return io.NodeOutput(output)

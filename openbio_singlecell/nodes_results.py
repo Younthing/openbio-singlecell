@@ -28,11 +28,11 @@ MARKER_COLUMNS = [
 ]
 
 
-def _first_column(frame: Any, names: tuple[str, ...]) -> Any:
+def _first_column(frame: Any, names: tuple[str, ...], science: dependencies.ScientificDependencies) -> Any:
     for name in names:
         if name in frame.columns:
             return frame[name]
-    return dependencies.pd.Series(dependencies.np.nan, index=frame.index)
+    return science.pd.Series(science.np.nan, index=frame.index)
 
 
 class OpenBioSingleCellMarkerGenes(io.ComfyNode):
@@ -71,7 +71,7 @@ class OpenBioSingleCellMarkerGenes(io.ComfyNode):
         pts: bool = True,
         random_seed: int = 0,
     ) -> io.NodeOutput:
-        dependencies.require_scientific_dependencies()
+        science = dependencies.require_scientific_dependencies()
         if groupby not in adata.obs:
             raise ValueError(f"Marker groupby column not found in obs: {groupby!r}")
         if source == "raw" and adata.raw is None:
@@ -83,14 +83,14 @@ class OpenBioSingleCellMarkerGenes(io.ComfyNode):
         cells = int(adata.n_obs)
         genes = int(adata.raw.n_vars) if source == "raw" else int(adata.n_vars)
         work = adata.copy()
-        if not isinstance(work.obs[groupby].dtype, dependencies.pd.CategoricalDtype):
-            work.obs[groupby] = dependencies.pd.Categorical(work.obs[groupby].astype(str))
+        if not isinstance(work.obs[groupby].dtype, science.pd.CategoricalDtype):
+            work.obs[groupby] = science.pd.Categorical(work.obs[groupby].astype(str))
 
         key = "_openbio_marker_genes"
         use_raw = source == "raw"
         layer = layer_name if source == "layer" else None
         method_options = {"random_state": random_seed} if method == "logreg" else {}
-        dependencies.sc.tl.rank_genes_groups(
+        science.sc.tl.rank_genes_groups(
             work,
             groupby=groupby,
             method=method,
@@ -101,17 +101,17 @@ class OpenBioSingleCellMarkerGenes(io.ComfyNode):
             key_added=key,
             **method_options,
         )
-        ranked = dependencies.sc.get.rank_genes_groups_df(work, group=None, key=key)
-        table = dependencies.pd.DataFrame(index=ranked.index)
-        table["group"] = _first_column(ranked, ("group",)).astype(str)
-        table["gene"] = _first_column(ranked, ("names", "gene")).astype(str)
-        table["score"] = _first_column(ranked, ("scores", "score"))
-        table["logFC"] = _first_column(ranked, ("logfoldchanges", "logFC"))
-        table["p"] = _first_column(ranked, ("pvals", "p"))
-        table["p_adj"] = _first_column(ranked, ("pvals_adj", "p_adj"))
+        ranked = science.sc.get.rank_genes_groups_df(work, group=None, key=key)
+        table = science.pd.DataFrame(index=ranked.index)
+        table["group"] = _first_column(ranked, ("group",), science).astype(str)
+        table["gene"] = _first_column(ranked, ("names", "gene"), science).astype(str)
+        table["score"] = _first_column(ranked, ("scores", "score"), science)
+        table["logFC"] = _first_column(ranked, ("logfoldchanges", "logFC"), science)
+        table["p"] = _first_column(ranked, ("pvals", "p"), science)
+        table["p_adj"] = _first_column(ranked, ("pvals_adj", "p_adj"), science)
         table["rank"] = table.groupby("group", sort=False).cumcount() + 1
-        table["pct_in_group"] = _first_column(ranked, ("pct_nz_group", "pct_in_group"))
-        table["pct_rest"] = _first_column(ranked, ("pct_nz_reference", "pct_rest"))
+        table["pct_in_group"] = _first_column(ranked, ("pct_nz_group", "pct_in_group"), science)
+        table["pct_rest"] = _first_column(ranked, ("pct_nz_reference", "pct_rest"), science)
         table = table[MARKER_COLUMNS].reset_index(drop=True)
 
         parameters = {
@@ -163,10 +163,10 @@ class OpenBioSingleCellUMAPPlot(io.ComfyNode):
         point_size: float = 10.0,
         color_map: str = "viridis",
     ) -> io.NodeOutput:
-        dependencies.require_scientific_dependencies()
+        science = dependencies.require_scientific_dependencies()
         if "X_umap" not in adata.obsm:
             raise ValueError("UMAP coordinates not found in obsm['X_umap']; run UMAP first.")
-        coordinates = dependencies.np.asarray(adata.obsm["X_umap"])
+        coordinates = science.np.asarray(adata.obsm["X_umap"])
         if coordinates.ndim != 2 or coordinates.shape[1] < 2:
             raise ValueError("UMAP coordinates must have at least two columns.")
         if color and color not in adata.obs:
@@ -175,15 +175,15 @@ class OpenBioSingleCellUMAPPlot(io.ComfyNode):
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         warnings = []
-        figure = dependencies.Figure(figsize=(8, 7), constrained_layout=True)
+        figure = science.Figure(figsize=(8, 7), constrained_layout=True)
         axis = figure.subplots()
 
         if not color:
             axis.scatter(coordinates[:, 0], coordinates[:, 1], s=point_size, alpha=0.8, color="#246bfe")
         else:
             values = adata.obs[color]
-            if dependencies.pd.api.types.is_numeric_dtype(values.dtype):
-                numeric = dependencies.np.asarray(values, dtype=float)
+            if science.pd.api.types.is_numeric_dtype(values.dtype):
+                numeric = science.np.asarray(values, dtype=float)
                 points = axis.scatter(
                     coordinates[:, 0],
                     coordinates[:, 1],
@@ -194,10 +194,10 @@ class OpenBioSingleCellUMAPPlot(io.ComfyNode):
                 )
                 figure.colorbar(points, ax=axis, label=color)
             else:
-                categorical = dependencies.pd.Categorical(values.astype(str))
+                categorical = science.pd.Categorical(values.astype(str))
                 categories = list(categorical.categories)
                 for index, category in enumerate(categories):
-                    mask = dependencies.np.asarray(categorical.codes == index)
+                    mask = science.np.asarray(categorical.codes == index)
                     axis.scatter(
                         coordinates[mask, 0],
                         coordinates[mask, 1],

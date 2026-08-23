@@ -33,7 +33,7 @@ class OpenBioSingleCellCalculateQC(io.ComfyNode):
 
     @classmethod
     def execute(cls, adata: AnnData, mitochondrial_prefix: str = "MT-") -> io.NodeOutput:
-        dependencies.require_scientific_dependencies()
+        science = dependencies.require_scientific_dependencies()
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
@@ -41,7 +41,7 @@ class OpenBioSingleCellCalculateQC(io.ComfyNode):
         warnings = []
         if not bool(output.var["mt"].any()):
             warnings.append(f"No genes matched mitochondrial prefix {mitochondrial_prefix!r}.")
-        dependencies.sc.pp.calculate_qc_metrics(
+        science.sc.pp.calculate_qc_metrics(
             output,
             qc_vars=["mt"],
             percent_top=None,
@@ -80,11 +80,11 @@ class OpenBioSingleCellFilterCells(io.ComfyNode):
         min_counts: int = 0,
         max_counts: int = 0,
     ) -> io.NodeOutput:
-        dependencies.require_scientific_dependencies()
+        science = dependencies.require_scientific_dependencies()
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         counts, detected = matrix_totals_and_nonzero(adata.X, axis=1)
-        mask = dependencies.np.ones(cells, dtype=bool)
+        mask = science.np.ones(cells, dtype=bool)
         if min_genes > 0:
             mask &= detected >= min_genes
         if max_genes > 0:
@@ -131,11 +131,11 @@ class OpenBioSingleCellFilterGenes(io.ComfyNode):
         min_counts: int = 0,
         max_counts: int = 0,
     ) -> io.NodeOutput:
-        dependencies.require_scientific_dependencies()
+        science = dependencies.require_scientific_dependencies()
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         counts, detected = matrix_totals_and_nonzero(adata.X, axis=0)
-        mask = dependencies.np.ones(genes, dtype=bool)
+        mask = science.np.ones(genes, dtype=bool)
         if min_cells > 0:
             mask &= detected >= min_cells
         if max_cells > 0:
@@ -168,7 +168,7 @@ class OpenBioSingleCellQCPlots(io.ComfyNode):
 
     @classmethod
     def execute(cls, adata: AnnData) -> io.NodeOutput:
-        dependencies.require_scientific_dependencies()
+        science = dependencies.require_scientific_dependencies()
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         if cells == 0 or genes == 0:
@@ -177,23 +177,23 @@ class OpenBioSingleCellQCPlots(io.ComfyNode):
         total_counts, detected = matrix_totals_and_nonzero(adata.X, axis=1)
         warnings = []
         if "pct_counts_mt" in adata.obs:
-            pct_mt = dependencies.np.asarray(adata.obs["pct_counts_mt"], dtype=float)
+            pct_mt = science.np.asarray(adata.obs["pct_counts_mt"], dtype=float)
         elif "mt" in adata.var:
-            mt_mask = dependencies.np.asarray(adata.var["mt"], dtype=bool)
+            mt_mask = science.np.asarray(adata.var["mt"], dtype=bool)
             mt_counts, _ = matrix_totals_and_nonzero(adata.X[:, mt_mask], axis=1)
-            pct_mt = dependencies.np.divide(
+            pct_mt = science.np.divide(
                 mt_counts * 100.0,
                 total_counts,
-                out=dependencies.np.zeros_like(total_counts, dtype=float),
+                out=science.np.zeros_like(total_counts, dtype=float),
                 where=total_counts != 0,
             )
         else:
-            pct_mt = dependencies.np.zeros(cells, dtype=float)
+            pct_mt = science.np.zeros(cells, dtype=float)
             warnings.append(
                 "Mitochondrial annotations are unavailable; percent mitochondrial counts are shown as zero."
             )
 
-        figure = dependencies.Figure(figsize=(10, 7), constrained_layout=True)
+        figure = science.Figure(figsize=(10, 7), constrained_layout=True)
         axes = figure.subplots(2, 2)
         axes[0, 0].hist(total_counts, bins=40, color="#246bfe")
         axes[0, 0].set_title("Total counts per cell")
