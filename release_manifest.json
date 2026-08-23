@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "product": "openbio-singlecell",
+  "version": "0.1.0",
+  "comfyui": {
+    "commit": "924743af083c151296cc16f925aeab113b6484e8"
+  },
+  "comfyui_frontend": {
+    "commit": "795292d90777efdfb92fc5d3f928dcf13a7cf8a8",
+    "version": "1.52.3"
+  },
+  "toolchain": {
+    "python": ">=3.12",
+    "node": ">=25 <26",
+    "pnpm": "11.13.1"
+  },
+  "python_dependencies": {
+    "scanpy": ">=1.12.3,<1.13",
+    "anndata": ">=0.13.2,<0.14"
+  },
+  "release_artifacts": {
+    "custom_node": {
+      "path": "openbio-singlecell",
+      "license": "LICENSE",
+      "third_party_notices": "THIRD_PARTY_NOTICES.md",
+      "example_workflows": [
+        "example_workflows/openbio_singlecell_basic_qc.json",
+        "example_workflows/openbio_singlecell_full_analysis.json"
+      ],
+      "contract": {
+        "node_id_prefix": "OpenBioSingleCell",
+        "category_prefix": "openbio/single-cell/",
+        "anndata_wire_type": "OPENBIO_ANNDATA",
+        "result_wire_type": "OPENBIO_SINGLE_CELL_RESULT"
+      }
+    },
+    "openbio_frontend_dist": {
+      "path": "ComfyUI_frontend/dist",
+      "build_command": "corepack pnpm build:openbio",
+      "notice_command": "corepack pnpm exec node ../openbio-singlecell/scripts/generate_frontend_notices.mjs",
+      "source_identity": "Source baseline commit and source-tree SHA-256 in THIRD_PARTY_NOTICES.md",
+      "artifact_identity": "Frontend dist SHA-256 in THIRD_PARTY_NOTICES.md",
+      "required_files": [
+        "index.html",
+        "LICENSE",
+        "THIRD_PARTY_NOTICES.md"
+      ]
+    }
+  }
+}

@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "openbio-singlecell"
 description = "Single-cell analysis nodes for ComfyUI."
 version = "0.1.0"
+readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "GPL-3.0-or-later" }
 dependencies = [
