@@ -228,6 +228,61 @@ class OpenBioSingleCellRecoverDynamics(io.ComfyNode):
         return io.NodeOutput(output)
 
 
+class OpenBioSingleCellVelocityGeneRanking(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellVelocityGeneRanking",
+            display_name="RNA Velocity Gene Ranking",
+            category=CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.Int.Input("top_n", default=5, min=1, max=2**31 - 1),
+                io.String.Input("likelihood_column", default="fit_likelihood", advanced=True),
+            ],
+            outputs=[SingleCellResultType.Output(display_name="result")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        top_n: int = 5,
+        likelihood_column: str = "fit_likelihood",
+    ) -> io.NodeOutput:
+        science = dependencies.require_scientific_dependencies()
+        if likelihood_column not in adata.var:
+            raise ValueError(
+                f"Velocity likelihood column not found in var: {likelihood_column!r}; run Recover Dynamics first."
+            )
+
+        started_at = time.perf_counter()
+        ranked = adata.var[likelihood_column].sort_values(ascending=False).head(top_n)
+        table = science.pd.DataFrame(
+            {
+                "gene": ranked.index.astype(str),
+                likelihood_column: ranked.to_numpy(),
+            }
+        )
+        parameters = {
+            "top_n": top_n,
+            "likelihood_column": likelihood_column,
+        }
+        result = make_result(
+            kind="table",
+            title="RNA velocity gene ranking",
+            operation="velocity_gene_ranking",
+            parameters=parameters,
+            description="Genes ranked by recovered-dynamics fit likelihood.",
+            warnings=[],
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+            started_at=started_at,
+            table=table,
+        )
+        return io.NodeOutput(result)
+
+
 class OpenBioSingleCellVelocityStreamPlot(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -285,6 +340,7 @@ VELOCITY_NODE_CLASSES = [
     OpenBioSingleCellEstimateVelocity,
     OpenBioSingleCellVelocityGraph,
     OpenBioSingleCellRecoverDynamics,
+    OpenBioSingleCellVelocityGeneRanking,
     OpenBioSingleCellVelocityStreamPlot,
 ]
 

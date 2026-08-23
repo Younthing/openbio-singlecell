@@ -62,6 +62,7 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellEstimateVelocity",
     "OpenBioSingleCellVelocityGraph",
     "OpenBioSingleCellRecoverDynamics",
+    "OpenBioSingleCellVelocityGeneRanking",
     "OpenBioSingleCellVelocityStreamPlot",
     "OpenBioSingleCellInferCNV",
     "OpenBioSingleCellCNVStructure",
