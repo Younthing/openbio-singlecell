@@ -70,7 +70,13 @@
         "Node name for S&R": "OpenBioSingleCellCalculateQC"
       },
       "widgets_values": [
-        "MT-"
+        true,
+        true,
+        "MT-",
+        "RPS,RPL",
+        "^HB[^(P)]",
+        "20,50,100,200,500",
+        true
       ]
     },
     {
@@ -110,7 +116,9 @@
         90,
         0,
         0,
-        220
+        220,
+        0.0,
+        "pct_counts_mt"
       ]
     },
     {

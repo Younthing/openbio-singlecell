@@ -97,7 +97,14 @@ def test_examples_use_effective_demo_feature_selection_defaults():
 
     for workflow in examples.values():
         nodes = {node["type"]: node for node in workflow["nodes"]}
-        assert nodes["OpenBioSingleCellFilterCells"]["widgets_values"] == [90, 0, 0, 220]
+        assert nodes["OpenBioSingleCellFilterCells"]["widgets_values"] == [
+            90,
+            0,
+            0,
+            220,
+            0.0,
+            "pct_counts_mt",
+        ]
         assert nodes["OpenBioSingleCellFilterGenes"]["widgets_values"] == [100, 0, 0, 0]
 
     full_nodes = {node["type"]: node for node in examples["openbio_singlecell_full_analysis.json"]["nodes"]}
@@ -106,6 +113,7 @@ def test_examples_use_effective_demo_feature_selection_defaults():
         "seurat",
         "X",
         "log1p_norm",
+        "",
         "",
         False,
     ]

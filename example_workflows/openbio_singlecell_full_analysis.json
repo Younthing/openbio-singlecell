@@ -70,7 +70,13 @@
         "Node name for S&R": "OpenBioSingleCellCalculateQC"
       },
       "widgets_values": [
-        "MT-"
+        true,
+        true,
+        "MT-",
+        "RPS,RPL",
+        "^HB[^(P)]",
+        "20,50,100,200,500",
+        true
       ]
     },
     {
@@ -110,7 +116,9 @@
         90,
         0,
         0,
-        220
+        220,
+        0.0,
+        "pct_counts_mt"
       ]
     },
     {
@@ -187,7 +195,7 @@
         "Node name for S&R": "OpenBioSingleCellNormalizeTotal"
       },
       "widgets_values": [
-        10000
+        10000.0
       ]
     },
     {
@@ -266,6 +274,7 @@
         "X",
         "log1p_norm",
         "",
+        "",
         false
       ]
     },
@@ -303,7 +312,7 @@
         "Node name for S&R": "OpenBioSingleCellScale"
       },
       "widgets_values": [
-        10
+        10.0
       ]
     },
     {
@@ -423,7 +432,7 @@
       },
       "widgets_values": [
         0.5,
-        1,
+        1.0,
         "neighbors",
         0
       ]
@@ -465,7 +474,7 @@
         "Node name for S&R": "OpenBioSingleCellLeiden"
       },
       "widgets_values": [
-        1,
+        1.0,
         "leiden",
         "neighbors",
         0
@@ -608,7 +617,7 @@
       },
       "widgets_values": [
         "leiden",
-        10,
+        10.0,
         "viridis"
       ]
     },
