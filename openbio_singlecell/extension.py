@@ -3,6 +3,7 @@ from __future__ import annotations
 from comfy_api.latest import ComfyExtension, io
 
 from .nodes_annotation import ANNOTATION_NODE_CLASSES
+from .nodes_cnv import CNV_NODE_CLASSES
 from .nodes_communication import COMMUNICATION_NODE_CLASSES
 from .nodes_correction import CORRECTION_NODE_CLASSES
 from .nodes_data import DATA_NODE_CLASSES
@@ -29,6 +30,7 @@ NODE_CLASSES: list[type[io.ComfyNode]] = [
     *ANNOTATION_NODE_CLASSES,
     *COMMUNICATION_NODE_CLASSES,
     *TRAJECTORY_NODE_CLASSES,
+    *CNV_NODE_CLASSES,
     *DIFFERENTIAL_NODE_CLASSES,
     *ENRICHMENT_NODE_CLASSES,
     *POPULATION_NODE_CLASSES,
