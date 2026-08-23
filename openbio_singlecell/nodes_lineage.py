@@ -3,14 +3,17 @@ from __future__ import annotations
 import importlib
 import os
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from comfy_api.latest import io
 
 from . import dependencies
-from .analysis_utils import make_result
+from .analysis_utils import finish_adata, make_result
 from .files import input_file_fingerprint, resolve_input_path
-from .node_types import SingleCellResultType
+from .node_types import AnnDataType, SingleCellResultType
+
+if TYPE_CHECKING:
+    from anndata import AnnData
 
 CATEGORY = "openbio/single-cell/lineage"
 ALLELE_TABLE_EXTENSIONS = (".txt", ".tsv", ".csv")
@@ -464,9 +467,185 @@ class OpenBioSingleCellCassiopeiaExpansionTest(io.ComfyNode):
         return io.NodeOutput(result)
 
 
+class OpenBioSingleCellCassiopeiaPlasticity(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellCassiopeiaPlasticity",
+            display_name="Cassiopeia Plasticity",
+            category=CATEGORY,
+            description="Reconstruct one tumor lineage and add its single-cell effective plasticity to AnnData.",
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input(
+                    "allele_table_file",
+                    default="openbio-singlecell/allele_table.tsv",
+                ),
+                io.String.Input("tumor", default=""),
+                io.String.Input("annotation_key", default="cell_type"),
+                io.Float.Input(
+                    "allele_representation_threshold",
+                    default=0.9,
+                    min=0.0,
+                    max=1.0,
+                    step=0.01,
+                ),
+                io.Boolean.Input("first_column_as_index", default=True, advanced=True),
+                io.String.Input("tumor_column", default="Tumor", advanced=True),
+                io.String.Input("cell_barcode_column", default="cellBC", advanced=True),
+                io.String.Input("integration_barcode_column", default="intBC", advanced=True),
+                io.String.Input("mutation_family_column", default="MetFamily", advanced=True),
+                io.String.Input("output_key", default="scPlasticity", advanced=True),
+                io.String.Input("summary_key", default="cassiopeia_plasticity", advanced=True),
+            ],
+            outputs=[AnnDataType.Output(display_name="adata")],
+        )
+
+    @classmethod
+    def validate_inputs(cls, allele_table_file: str, **kwargs: Any) -> bool | str:
+        try:
+            resolve_input_path(allele_table_file, extensions=ALLELE_TABLE_EXTENSIONS)
+        except (ValueError, FileNotFoundError, OSError) as error:
+            return str(error)
+        return True
+
+    @classmethod
+    def fingerprint_inputs(cls, allele_table_file: str, **kwargs: Any) -> Any:
+        return input_file_fingerprint(allele_table_file, ALLELE_TABLE_EXTENSIONS)
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        allele_table_file: str,
+        tumor: str = "",
+        annotation_key: str = "cell_type",
+        allele_representation_threshold: float = 0.9,
+        first_column_as_index: bool = True,
+        tumor_column: str = "Tumor",
+        cell_barcode_column: str = "cellBC",
+        integration_barcode_column: str = "intBC",
+        mutation_family_column: str = "MetFamily",
+        output_key: str = "scPlasticity",
+        summary_key: str = "cassiopeia_plasticity",
+    ) -> io.NodeOutput:
+        tumor = tumor.strip()
+        annotation_key = annotation_key.strip()
+        output_key = output_key.strip()
+        summary_key = summary_key.strip()
+        if not tumor:
+            raise ValueError("Tumor cannot be empty.")
+        if not annotation_key or annotation_key not in adata.obs:
+            raise ValueError(f"Plasticity annotation column not found in obs: {annotation_key!r}")
+        if not output_key:
+            raise ValueError("Plasticity output_key cannot be empty.")
+        if output_key == annotation_key:
+            raise ValueError("Plasticity output_key must differ from annotation_key.")
+        if not summary_key:
+            raise ValueError("Plasticity summary_key cannot be empty.")
+
+        cassiopeia, _ = _require_cassiopeia()
+        science = dependencies.require_scientific_dependencies()
+        started_at = time.perf_counter()
+        allele_table = _read_allele_table(allele_table_file, first_column_as_index)
+        allele_table = _normalize_cassiopeia_columns(
+            allele_table,
+            {
+                "Tumor": tumor_column,
+                "cellBC": cell_barcode_column,
+                "intBC": integration_barcode_column,
+                "MetFamily": mutation_family_column,
+            },
+        )
+        tumor_allele_table = allele_table[allele_table["Tumor"].astype(str) == tumor].copy()
+        if tumor_allele_table.empty:
+            raise ValueError(f"Tumor not found in allele table: {tumor!r}")
+
+        indel_priors = cassiopeia.pp.compute_empirical_indel_priors(
+            allele_table,
+            grouping_variables=["intBC", "MetFamily"],
+        )
+        character_matrix, priors, _ = cassiopeia.pp.convert_alleletable_to_character_matrix(
+            tumor_allele_table,
+            allele_rep_thresh=allele_representation_threshold,
+            mutation_priors=indel_priors,
+        )
+        if character_matrix.shape[0] < 2 or character_matrix.shape[1] == 0:
+            raise ValueError("The selected tumor did not produce enough cells and characters to reconstruct a tree.")
+
+        tree = cassiopeia.data.CassiopeiaTree(character_matrix=character_matrix, priors=priors)
+        cassiopeia.solver.VanillaGreedySolver().solve(tree)
+        output = adata.copy()
+        missing_leaves = [leaf for leaf in tree.leaves if leaf not in output.obs_names]
+        if missing_leaves:
+            raise ValueError(
+                f"Expression AnnData is missing {len(missing_leaves)} lineage cells; "
+                f"first missing cell: {missing_leaves[0]!r}."
+            )
+
+        tree.cell_meta = science.pd.DataFrame(output.obs.loc[tree.leaves, annotation_key].astype(str))
+        parsimony = cassiopeia.tl.score_small_parsimony(tree, meta_item=annotation_key)
+        effective_plasticity_score = float(parsimony / len(tree.nodes))
+
+        for node in tree.depth_first_traverse_nodes():
+            node_parsimony = cassiopeia.tl.score_small_parsimony(
+                tree,
+                meta_item=annotation_key,
+                root=node,
+            )
+            leaf_count = len(tree.leaves_in_subtree(node))
+            tree.set_attribute(node, "effective_plasticity", node_parsimony / leaf_count)
+
+        tree.cell_meta[output_key] = 0.0
+        for leaf in tree.leaves:
+            ancestor_plasticities = []
+            parent = tree.parent(leaf)
+            while True:
+                ancestor_plasticities.append(tree.get_attribute(parent, "effective_plasticity"))
+                if parent == tree.root:
+                    break
+                parent = tree.parent(parent)
+            tree.cell_meta.loc[leaf, output_key] = science.np.mean(ancestor_plasticities)
+
+        output.obs[output_key] = science.np.nan
+        output.obs.loc[tree.leaves, output_key] = tree.cell_meta[output_key]
+        output.uns[summary_key] = {
+            "tumor": tumor,
+            "annotation_key": annotation_key,
+            "parsimony": int(parsimony),
+            "effective_plasticity_score": effective_plasticity_score,
+            "tree_nodes": int(len(tree.nodes)),
+            "tree_leaves": int(len(tree.leaves)),
+            "tree_characters": int(character_matrix.shape[1]),
+        }
+        parameters = {
+            "allele_table_file": allele_table_file,
+            "tumor": tumor,
+            "annotation_key": annotation_key,
+            "allele_representation_threshold": allele_representation_threshold,
+            "first_column_as_index": first_column_as_index,
+            "tumor_column": tumor_column,
+            "cell_barcode_column": cell_barcode_column,
+            "integration_barcode_column": integration_barcode_column,
+            "mutation_family_column": mutation_family_column,
+            "output_key": output_key,
+            "summary_key": summary_key,
+        }
+        finish_adata(
+            output,
+            "cassiopeia_plasticity",
+            parameters,
+            int(adata.n_obs),
+            int(adata.n_vars),
+            started_at,
+        )
+        return io.NodeOutput(output)
+
+
 LINEAGE_NODE_CLASSES = [
     OpenBioSingleCellCassiopeiaLineageQC,
     OpenBioSingleCellCassiopeiaExpansionTest,
+    OpenBioSingleCellCassiopeiaPlasticity,
 ]
 
 

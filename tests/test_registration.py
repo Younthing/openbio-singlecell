@@ -58,6 +58,7 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellDPT",
     "OpenBioSingleCellCassiopeiaLineageQC",
     "OpenBioSingleCellCassiopeiaExpansionTest",
+    "OpenBioSingleCellCassiopeiaPlasticity",
     "OpenBioSingleCellVelocityFilterAndNormalize",
     "OpenBioSingleCellVelocityMoments",
     "OpenBioSingleCellEstimateVelocity",
