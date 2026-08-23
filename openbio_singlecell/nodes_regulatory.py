@@ -331,11 +331,159 @@ class OpenBioSingleCellSCENICRegulonSpecificity(io.ComfyNode):
         return io.NodeOutput(result)
 
 
+class OpenBioSingleCellSCENICActivityBinarization(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellSCENICActivityBinarization",
+            display_name="SCENIC Activity Binarization",
+            category=CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input("activity_key", default="scenic_auc", advanced=True),
+                io.String.Input("binary_key", default="scenic_binary", advanced=True),
+                io.String.Input("threshold_key", default="scenic_thresholds", advanced=True),
+            ],
+            outputs=[AnnDataType.Output(display_name="adata")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        activity_key: str = "scenic_auc",
+        binary_key: str = "scenic_binary",
+        threshold_key: str = "scenic_thresholds",
+    ) -> io.NodeOutput:
+        science = dependencies.require_scientific_dependencies()
+        activity_key = _required_name(activity_key, "SCENIC activity key")
+        binary_key = _required_name(binary_key, "SCENIC binary output key")
+        threshold_key = _required_name(threshold_key, "SCENIC threshold output key")
+        if activity_key not in adata.obsm:
+            raise ValueError(f"SCENIC activities not found in obsm: {activity_key!r}")
+        activities = adata.obsm[activity_key]
+        if not isinstance(activities, science.pd.DataFrame):
+            raise ValueError(f"obsm[{activity_key!r}] must be a named regulon activity DataFrame.")
+
+        scenic_binarization = _require_optional_dependency("pyscenic.binarization")
+        started_at = time.perf_counter()
+        binary, thresholds = scenic_binarization.binarize(activities)
+        output = adata.copy()
+        output.obsm[binary_key] = science.pd.DataFrame(binary).reindex(output.obs_names)
+        threshold_series = science.pd.Series(thresholds, dtype=float)
+        output.uns[threshold_key] = {str(name): float(value) for name, value in threshold_series.items()}
+        parameters = {
+            "activity_key": activity_key,
+            "binary_key": binary_key,
+            "threshold_key": threshold_key,
+        }
+        finish_adata(
+            output,
+            "scenic_activity_binarization",
+            parameters,
+            int(adata.n_obs),
+            int(adata.n_vars),
+            started_at,
+        )
+        return io.NodeOutput(output)
+
+
+class OpenBioSingleCellSCENICTFModules(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellSCENICTFModules",
+            display_name="SCENIC TF Modules",
+            category=CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input("adjacency_csv", default="openbio-singlecell/adjacencies.csv"),
+                io.String.Input("transcription_factor", default=""),
+                io.Combo.Input("source", options=EXPRESSION_SOURCES, default="X"),
+                io.String.Input("layer_name", default="log1p_norm"),
+            ],
+            outputs=[SingleCellResultType.Output(display_name="result")],
+        )
+
+    @classmethod
+    def validate_inputs(cls, adjacency_csv: str, **kwargs: Any) -> bool | str:
+        try:
+            resolve_input_path(adjacency_csv, extensions=(".csv",))
+        except (ValueError, FileNotFoundError, OSError) as exc:
+            return str(exc)
+        return True
+
+    @classmethod
+    def fingerprint_inputs(cls, adjacency_csv: str, **kwargs: Any) -> Any:
+        return input_file_fingerprint(adjacency_csv, (".csv",))
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        adjacency_csv: str = "openbio-singlecell/adjacencies.csv",
+        transcription_factor: str = "",
+        source: str = "X",
+        layer_name: str = "log1p_norm",
+    ) -> io.NodeOutput:
+        science = dependencies.require_scientific_dependencies()
+        path = resolve_input_path(adjacency_csv, extensions=(".csv",))
+        adjacency = science.pd.read_csv(path)
+        if adjacency.empty:
+            raise ValueError("SCENIC adjacency file is empty.")
+        work = _expression_adata(adata, source, layer_name)
+        matrix = work.X.toarray() if science.sparse.issparse(work.X) else science.np.asarray(work.X)
+        expression = science.pd.DataFrame(matrix, index=work.obs_names, columns=work.var_names)
+
+        scenic_utils = _require_optional_dependency("pyscenic.utils")
+        started_at = time.perf_counter()
+        modules = list(scenic_utils.modules_from_adjacencies(adjacency, expression))
+        transcription_factor = transcription_factor.strip()
+        if transcription_factor:
+            modules = [module for module in modules if str(module.transcription_factor) == transcription_factor]
+        rows = []
+        for index, module in enumerate(modules):
+            rows.extend(
+                {
+                    "transcription_factor": str(module.transcription_factor),
+                    "module": index,
+                    "gene": str(gene),
+                }
+                for gene in module.genes
+            )
+        table = science.pd.DataFrame.from_records(
+            rows,
+            columns=["transcription_factor", "module", "gene"],
+        )
+        warnings = [] if not table.empty else ["No SCENIC modules matched the requested transcription factor."]
+        parameters = {
+            "adjacency_csv": adjacency_csv,
+            "transcription_factor": transcription_factor,
+            "source": source,
+            "layer_name": layer_name,
+        }
+        result = make_result(
+            kind="table",
+            title=f"SCENIC modules: {transcription_factor or 'all TFs'}",
+            operation="scenic_tf_modules",
+            parameters=parameters,
+            description="TF-module target genes generated from SCENIC adjacencies and the selected expression matrix.",
+            warnings=warnings,
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+            started_at=started_at,
+            table=table,
+        )
+        return io.NodeOutput(result)
+
+
 REGULATORY_NODE_CLASSES = [
     OpenBioSingleCellCollecTRIULM,
     OpenBioSingleCellRankTFActivities,
     OpenBioSingleCellImportPySCENICResults,
     OpenBioSingleCellSCENICRegulonSpecificity,
+    OpenBioSingleCellSCENICActivityBinarization,
+    OpenBioSingleCellSCENICTFModules,
 ]
 
 
@@ -344,5 +492,7 @@ __all__ = [
     "OpenBioSingleCellCollecTRIULM",
     "OpenBioSingleCellImportPySCENICResults",
     "OpenBioSingleCellRankTFActivities",
+    "OpenBioSingleCellSCENICActivityBinarization",
     "OpenBioSingleCellSCENICRegulonSpecificity",
+    "OpenBioSingleCellSCENICTFModules",
 ]
