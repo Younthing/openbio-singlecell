@@ -1,0 +1,4 @@
+tests/
+pytest.ini
+uv.lock
+node.zip
