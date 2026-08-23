@@ -101,4 +101,11 @@ def test_examples_use_effective_demo_feature_selection_defaults():
         assert nodes["OpenBioSingleCellFilterGenes"]["widgets_values"] == [100, 0, 0, 0]
 
     full_nodes = {node["type"]: node for node in examples["openbio_singlecell_full_analysis.json"]["nodes"]}
-    assert full_nodes["OpenBioSingleCellHighlyVariableGenes"]["widgets_values"] == [200, "seurat", False]
+    assert full_nodes["OpenBioSingleCellHighlyVariableGenes"]["widgets_values"] == [
+        200,
+        "seurat",
+        "X",
+        "log1p_norm",
+        "",
+        False,
+    ]

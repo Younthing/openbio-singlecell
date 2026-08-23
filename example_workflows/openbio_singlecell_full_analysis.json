@@ -263,6 +263,9 @@
       "widgets_values": [
         200,
         "seurat",
+        "X",
+        "log1p_norm",
+        "",
         false
       ]
     },
@@ -339,6 +342,7 @@
       "widgets_values": [
         50,
         true,
+        "",
         0
       ]
     },
@@ -379,6 +383,8 @@
         15,
         50,
         "cosine",
+        "",
+        "",
         0
       ]
     },
@@ -418,6 +424,7 @@
       "widgets_values": [
         0.5,
         1,
+        "neighbors",
         0
       ]
     },
@@ -460,6 +467,7 @@
       "widgets_values": [
         1,
         "leiden",
+        "neighbors",
         0
       ]
     },

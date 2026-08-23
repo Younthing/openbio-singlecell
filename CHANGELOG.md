@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Add notebook-derived AnnData preparation, Harmony, clustering, annotation, cell-cycle, PAGA, and DPT nodes.
+- Add notebook-derived AnnData preparation, QC correction, Harmony/scVI, clustering, annotation, pseudobulk, enrichment, communication, abundance, regulatory, trajectory, RNA velocity, and inferCNV nodes.
 - Keep frequently tuned analysis choices visible while moving storage keys, output column names, seeds, and iteration limits to advanced inputs.
 
 ## 0.1.0 - 2026-08-23

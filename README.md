@@ -12,6 +12,8 @@
 - `scanpy[leiden]>=1.12.3,<1.13`
 - `anndata>=0.13.2,<0.14`
 
+Notebook-derived optional nodes import their own libraries only when executed. Install the relevant packages in the ComfyUI Python environment for Harmony, scVI, CellTypist, decoupler, pertpy, LIANA, scVelo, infercnvpy, Schist, or pySCENIC analyses.
+
 The exact source pairing is recorded in `release_manifest.json`.
 
 ## Install with ComfyUI Manager
@@ -164,11 +166,11 @@ Additional arguments are forwarded to ComfyUI. ComfyUI's own requirements must a
 
 ## Scope and limitations
 
-The current in-memory workflow includes layer-aware preprocessing, batch-aware HVG selection, Harmony integration, representation-aware neighbor graphs, annotation, and PAGA/DPT trajectory tools. Harmony, CellTypist, and marker ORA use the corresponding optional packages from the active ComfyUI Python environment. The pack does not declare a maximum AnnData size and does not yet provide AnnData backed mode, out-of-core processing, automatic disk caching, scVI, CellChat, RNA velocity, ATAC, or spatial analysis. Scale may densify data as Scanpy normally does. A running Scanpy/igraph operation may finish before a stop request takes effect; stopping prevents later nodes from starting.
+The current in-memory workflow includes layer-aware preprocessing, batch correction, Harmony/scVI integration, annotation, pseudobulk differential analysis, enrichment, LIANA communication, abundance testing, regulatory activity, PAGA/DPT, RNA velocity, and inferCNV. The pack does not declare a maximum AnnData size and does not yet provide AnnData backed mode, out-of-core processing, automatic disk caching, ATAC, spatial analysis, or notebook stages implemented only in R. Scale and GSVA may densify data as their underlying libraries normally do. A running scientific operation may finish before a stop request takes effect; stopping prevents later nodes from starting.
 
 ## Offline behavior
 
-Analysis and demo generation are local-only. The plugin contains no telemetry, analytics, update checks, model downloads, remote configuration, or other runtime network request path. The OpenBio launcher disables Comfy API nodes. The installer may contact the Python package index configured for `pip`; install dependencies before disconnecting for a fully offline run.
+The plugin contains no telemetry, analytics, update checks, or remote configuration. The OpenBio launcher disables Comfy API nodes. Optional scientific libraries may download a selected model or knowledge resource, such as CellTypist, CollecTRI, or DGIdb data, when it is not already cached; prepare those resources in advance for an offline run. The installer may contact the Python package index configured for `pip`.
 
 ## License and attribution
 
