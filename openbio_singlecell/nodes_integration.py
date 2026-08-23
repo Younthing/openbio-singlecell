@@ -38,6 +38,10 @@ def _resolution_key(prefix: str, resolution: float) -> str:
     return f"{prefix}_{suffix}"
 
 
+def _comma_separated_keys(value: str) -> list[str]:
+    return list(dict.fromkeys(item.strip() for item in value.split(",") if item.strip()))
+
+
 class OpenBioSingleCellHarmonyIntegration(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -94,6 +98,124 @@ class OpenBioSingleCellHarmonyIntegration(io.ComfyNode):
             "max_iter_kmeans": max_iter_kmeans,
         }
         finish_adata(output, "harmony_integration", parameters, cells, genes, started_at)
+        return io.NodeOutput(output)
+
+
+class OpenBioSingleCellSCVIIntegration(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellSCVIIntegration",
+            display_name="scVI Integration",
+            category=INTEGRATION_CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input("counts_layer", default="counts"),
+                io.String.Input("batch_key", default="batch"),
+                io.String.Input("categorical_covariates", default=""),
+                io.String.Input("continuous_covariates", default=""),
+                io.Int.Input("n_latent", default=10, min=1, max=4096),
+                io.Combo.Input("gene_likelihood", options=["zinb", "nb", "poisson"], default="zinb"),
+                io.Int.Input("n_layers", default=2, min=1, max=20, advanced=True),
+                io.Combo.Input(
+                    "dispersion",
+                    options=["gene-batch", "gene", "gene-label", "gene-cell"],
+                    default="gene-batch",
+                    advanced=True,
+                ),
+                io.Float.Input("dropout_rate", default=0.3, min=0.0, max=1.0, step=0.05, advanced=True),
+                io.Int.Input("max_epochs", default=0, min=0, max=100000, advanced=True),
+                io.Boolean.Input("early_stopping", default=True, advanced=True),
+                io.String.Input("output_key", default="X_scVI", advanced=True),
+                io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
+            ],
+            outputs=[AnnDataType.Output(display_name="adata")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        counts_layer: str = "counts",
+        batch_key: str = "batch",
+        categorical_covariates: str = "",
+        continuous_covariates: str = "",
+        n_latent: int = 10,
+        gene_likelihood: str = "zinb",
+        n_layers: int = 2,
+        dispersion: str = "gene-batch",
+        dropout_rate: float = 0.3,
+        max_epochs: int = 0,
+        early_stopping: bool = True,
+        output_key: str = "X_scVI",
+        random_seed: int = 0,
+    ) -> io.NodeOutput:
+        if counts_layer not in adata.layers:
+            raise ValueError(f"scVI counts layer not found: {counts_layer!r}")
+
+        categorical_keys = _comma_separated_keys(categorical_covariates)
+        continuous_keys = _comma_separated_keys(continuous_covariates)
+        obs_keys = [batch_key, *categorical_keys, *continuous_keys]
+        missing_keys = [key for key in obs_keys if key and key not in adata.obs]
+        if missing_keys:
+            raise ValueError(f"scVI observation columns not found: {missing_keys}")
+        if not output_key.strip():
+            raise ValueError("scVI output_key cannot be empty.")
+
+        try:
+            import scvi
+        except (ImportError, OSError) as error:
+            raise RuntimeError("scVI Integration requires the scvi-tools package.") from error
+
+        started_at = time.perf_counter()
+        cells, genes = int(adata.n_obs), int(adata.n_vars)
+        output = adata.copy()
+        scvi.settings.seed = random_seed
+        scvi.model.SCVI.setup_anndata(
+            output,
+            layer=counts_layer,
+            batch_key=batch_key or None,
+            categorical_covariate_keys=categorical_keys or None,
+            continuous_covariate_keys=continuous_keys or None,
+        )
+        model = scvi.model.SCVI(
+            output,
+            n_layers=n_layers,
+            n_latent=n_latent,
+            gene_likelihood=gene_likelihood,
+            dispersion=dispersion,
+            dropout_rate=dropout_rate,
+        )
+        train_kwargs = {"early_stopping": early_stopping}
+        if max_epochs:
+            train_kwargs["max_epochs"] = max_epochs
+        model.train(**train_kwargs)
+        output.obsm[output_key.strip()] = model.get_latent_representation()
+
+        parameters = {
+            "counts_layer": counts_layer,
+            "batch_key": batch_key,
+            "categorical_covariates": categorical_keys,
+            "continuous_covariates": continuous_keys,
+            "n_latent": n_latent,
+            "gene_likelihood": gene_likelihood,
+            "n_layers": n_layers,
+            "dispersion": dispersion,
+            "dropout_rate": dropout_rate,
+            "max_epochs": max_epochs,
+            "early_stopping": early_stopping,
+            "output_key": output_key.strip(),
+            "random_seed": random_seed,
+        }
+        finish_adata(
+            output,
+            "scvi_integration",
+            parameters,
+            cells,
+            genes,
+            started_at,
+            random_seed=random_seed,
+        )
         return io.NodeOutput(output)
 
 
@@ -166,5 +288,6 @@ class OpenBioSingleCellLeidenResolutionSweep(io.ComfyNode):
 
 INTEGRATION_NODE_CLASSES = [
     OpenBioSingleCellHarmonyIntegration,
+    OpenBioSingleCellSCVIIntegration,
     OpenBioSingleCellLeidenResolutionSweep,
 ]
