@@ -155,6 +155,8 @@ Additional arguments are forwarded to ComfyUI. ComfyUI's own requirements must a
 - AnnData values use `adata` ports and the `OPENBIO_ANNDATA` wire type.
 - Single-cell result values use `result` ports and the plugin-owned `OPENBIO_SINGLE_CELL_RESULT` wire type.
 - Modifying nodes copy their input before changing it; read-only nodes do not copy it.
+- AnnData transforms output only `adata`; tables and plots output only `result`; preview and save nodes are terminal and have no data output.
+- Frequently tuned analysis choices stay visible. Random seeds, internal storage keys, output column names, and iteration limits are advanced inputs.
 - Inputs are limited to relative paths under the ComfyUI `input` directory and are checked again at the read boundary.
 - Temporary plots are written below `temp/openbio-singlecell`; ComfyUI clears its temp directory at startup.
 - CSV, PNG, and H5AD files are only made permanent by explicit output nodes and are written below `output/openbio-singlecell`.
@@ -162,7 +164,7 @@ Additional arguments are forwarded to ComfyUI. ComfyUI's own requirements must a
 
 ## Scope and limitations
 
-The first release is an in-memory workflow. It does not declare a maximum AnnData size and does not provide AnnData backed mode, out-of-core processing, automatic disk caching, batch integration, trajectories, CellChat, RNA velocity, ATAC, or spatial analysis. Scale may densify data as Scanpy normally does. A running Scanpy/igraph operation may finish before a stop request takes effect; stopping prevents later nodes from starting.
+The current in-memory workflow includes layer-aware preprocessing, batch-aware HVG selection, Harmony integration, representation-aware neighbor graphs, annotation, and PAGA/DPT trajectory tools. Harmony, CellTypist, and marker ORA use the corresponding optional packages from the active ComfyUI Python environment. The pack does not declare a maximum AnnData size and does not yet provide AnnData backed mode, out-of-core processing, automatic disk caching, scVI, CellChat, RNA velocity, ATAC, or spatial analysis. Scale may densify data as Scanpy normally does. A running Scanpy/igraph operation may finish before a stop request takes effect; stopping prevents later nodes from starting.
 
 ## Offline behavior
 

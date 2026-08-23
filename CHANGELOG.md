@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add notebook-derived AnnData preparation, Harmony, clustering, annotation, cell-cycle, PAGA, and DPT nodes.
+- Keep frequently tuned analysis choices visible while moving storage keys, output column names, seeds, and iteration limits to advanced inputs.
+
 ## 0.1.0 - 2026-08-23
 
 - Add the first in-memory single-cell analysis node set for ComfyUI.

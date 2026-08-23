@@ -51,7 +51,7 @@ class OpenBioSingleCellMarkerGenes(io.ComfyNode):
                     default="wilcoxon",
                 ),
                 io.Combo.Input("source", options=["X", "raw", "layer"], default="X"),
-                io.String.Input("layer_name", default="", advanced=True),
+                io.String.Input("layer_name", default=""),
                 io.Int.Input("n_genes", default=100, min=1, max=2**31 - 1),
                 io.Boolean.Input("pts", default=True, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
