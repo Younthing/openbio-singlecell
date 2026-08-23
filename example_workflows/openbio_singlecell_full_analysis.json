@@ -107,10 +107,10 @@
         "Node name for S&R": "OpenBioSingleCellFilterCells"
       },
       "widgets_values": [
+        90,
         0,
         0,
-        0,
-        0
+        220
       ]
     },
     {
@@ -147,7 +147,7 @@
         "Node name for S&R": "OpenBioSingleCellFilterGenes"
       },
       "widgets_values": [
-        0,
+        100,
         0,
         0,
         0
@@ -261,7 +261,7 @@
         "Node name for S&R": "OpenBioSingleCellHighlyVariableGenes"
       },
       "widgets_values": [
-        2000,
+        200,
         "seurat",
         false
       ]
@@ -500,7 +500,7 @@
       "widgets_values": [
         "leiden",
         "wilcoxon",
-        "X",
+        "raw",
         "",
         100,
         true,

@@ -90,3 +90,15 @@ def test_examples_use_only_the_explicit_anndata_and_result_contracts():
     assert "OPENBIO_SC_RESULT" not in serialized
     assert '"name": "dataset"' not in serialized
     assert "OpenBioDatasetSummary" not in serialized
+
+
+def test_examples_use_effective_demo_feature_selection_defaults():
+    examples = _load_examples()
+
+    for workflow in examples.values():
+        nodes = {node["type"]: node for node in workflow["nodes"]}
+        assert nodes["OpenBioSingleCellFilterCells"]["widgets_values"] == [90, 0, 0, 220]
+        assert nodes["OpenBioSingleCellFilterGenes"]["widgets_values"] == [100, 0, 0, 0]
+
+    full_nodes = {node["type"]: node for node in examples["openbio_singlecell_full_analysis.json"]["nodes"]}
+    assert full_nodes["OpenBioSingleCellHighlyVariableGenes"]["widgets_values"] == [200, "seurat", False]

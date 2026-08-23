@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import copy
+import json
+import warnings
+from pathlib import Path
 
 import pytest
 
-from openbio_singlecell import dependencies
 from openbio_singlecell.contracts import ensure_metadata
 from openbio_singlecell.nodes_embedding import (
     OpenBioSingleCellLeiden,
@@ -24,32 +26,29 @@ from openbio_singlecell.nodes_results import (
     OpenBioSingleCellUMAPPlot,
 )
 
-pytestmark = pytest.mark.skipif(
-    not dependencies.AVAILABLE,
-    reason="Scientific dependencies are unavailable.",
-)
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
 
 def output_value(node_output):
     return node_output.result[0]
 
 
-def dense(matrix):
-    return matrix.toarray() if dependencies.sparse.issparse(matrix) else dependencies.np.asarray(matrix)
+def dense(matrix, science):
+    return matrix.toarray() if science.sparse.issparse(matrix) else science.np.asarray(matrix)
 
 
 @pytest.fixture
-def adata():
-    rng = dependencies.np.random.default_rng(4)
+def adata(science):
+    rng = science.np.random.default_rng(4)
     counts = rng.poisson(2.0, size=(30, 12)).astype(float)
     counts[:15, :3] += 5
     counts[15:, 3:6] += 5
-    obs = dependencies.pd.DataFrame(
-        {"group": dependencies.pd.Categorical(["A"] * 15 + ["B"] * 15)},
+    obs = science.pd.DataFrame(
+        {"group": science.pd.Categorical(["A"] * 15 + ["B"] * 15)},
         index=[f"cell_{index}" for index in range(30)],
     )
-    var = dependencies.pd.DataFrame(index=["MT-G0", *[f"G{index}" for index in range(1, 12)]])
-    value = dependencies.ad.AnnData(dependencies.sparse.csr_matrix(counts), obs=obs, var=var)
+    var = science.pd.DataFrame(index=["MT-G0", *[f"G{index}" for index in range(1, 12)]])
+    value = science.ad.AnnData(science.sparse.csr_matrix(counts), obs=obs, var=var)
     value.layers["counts"] = value.X.copy()
     value.layers["alternate"] = value.X.copy()
     value.raw = value.copy()
@@ -63,6 +62,12 @@ def prepare_embedding_input(adata):
     variable = output_value(OpenBioSingleCellHighlyVariableGenes.execute(logged, 8, "seurat", False))
     with pytest.warns(UserWarning, match="densifies"):
         return output_value(OpenBioSingleCellScale.execute(variable, 10.0))
+
+
+def full_example_node(node_type):
+    workflow_path = PLUGIN_ROOT / "example_workflows" / "openbio_singlecell_full_analysis.json"
+    workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
+    return next(node for node in workflow["nodes"] if node["type"] == node_type)
 
 
 def test_dimension_reduction_chain_is_copy_on_write(adata):
@@ -134,18 +139,41 @@ def test_marker_raw_provenance_uses_raw_gene_count(adata):
     assert result.source["input_genes"] == adata.n_vars
 
 
+def test_full_example_marker_logfc_is_finite_after_scaling_without_runtime_warnings(adata, science):
+    log1p_values = full_example_node("OpenBioSingleCellLog1p")["widgets_values"]
+    variable_values = full_example_node("OpenBioSingleCellHighlyVariableGenes")["widgets_values"]
+    scale_values = full_example_node("OpenBioSingleCellScale")["widgets_values"]
+    marker_values = full_example_node("OpenBioSingleCellMarkerGenes")["widgets_values"]
+
+    normalized = output_value(OpenBioSingleCellNormalizeTotal.execute(adata, 10_000.0))
+    logged = output_value(OpenBioSingleCellLog1p.execute(normalized, *log1p_values))
+    variable = output_value(OpenBioSingleCellHighlyVariableGenes.execute(logged, *variable_values))
+    with pytest.warns(UserWarning, match="densifies"):
+        scaled = output_value(OpenBioSingleCellScale.execute(variable, *scale_values))
+    scaled.obs["leiden"] = scaled.obs["group"].copy()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = output_value(OpenBioSingleCellMarkerGenes.execute(scaled, *marker_values))
+
+    runtime_warnings = [warning for warning in caught if issubclass(warning.category, RuntimeWarning)]
+    assert runtime_warnings == []
+    assert result.parameters["source"] == "raw"
+    assert science.np.isfinite(result.table["logFC"].to_numpy(dtype=float)).all()
+
+
 @pytest.mark.parametrize(
     "method,expected_random_state",
     [("logreg", 17), ("wilcoxon", None)],
 )
-def test_marker_random_seed_is_only_forwarded_to_logreg(adata, monkeypatch, method, expected_random_state):
+def test_marker_random_seed_is_only_forwarded_to_logreg(adata, science, monkeypatch, method, expected_random_state):
     received = {}
 
     def rank_genes_groups(*args, **kwargs):
         received.update(kwargs)
 
     def rank_genes_groups_df(*args, **kwargs):
-        return dependencies.pd.DataFrame(
+        return science.pd.DataFrame(
             {
                 "group": ["A", "B"],
                 "names": ["G1", "G2"],
@@ -158,18 +186,18 @@ def test_marker_random_seed_is_only_forwarded_to_logreg(adata, monkeypatch, meth
             }
         )
 
-    monkeypatch.setattr(dependencies.sc.tl, "rank_genes_groups", rank_genes_groups)
-    monkeypatch.setattr(dependencies.sc.get, "rank_genes_groups_df", rank_genes_groups_df)
+    monkeypatch.setattr(science.sc.tl, "rank_genes_groups", rank_genes_groups)
+    monkeypatch.setattr(science.sc.get, "rank_genes_groups_df", rank_genes_groups_df)
     OpenBioSingleCellMarkerGenes.execute(adata, "group", method, "X", "", 2, True, 17)
 
     assert received.get("random_state") == expected_random_state
     assert ("random_state" in received) is (method == "logreg")
 
 
-def test_umap_plot_is_read_only_for_categorical_and_numeric_colors(adata):
-    adata.obsm["X_umap"] = dependencies.np.arange(adata.n_obs * 2, dtype=float).reshape(adata.n_obs, 2)
-    adata.obs["score"] = dependencies.np.linspace(0.0, 1.0, adata.n_obs)
-    snapshot_x = dense(adata.X).copy()
+def test_umap_plot_is_read_only_for_categorical_and_numeric_colors(adata, science):
+    adata.obsm["X_umap"] = science.np.arange(adata.n_obs * 2, dtype=float).reshape(adata.n_obs, 2)
+    adata.obs["score"] = science.np.linspace(0.0, 1.0, adata.n_obs)
+    snapshot_x = dense(adata.X, science).copy()
     snapshot_obs = adata.obs.copy(deep=True)
     snapshot_uns = copy.deepcopy(adata.uns)
 
@@ -178,19 +206,19 @@ def test_umap_plot_is_read_only_for_categorical_and_numeric_colors(adata):
 
     assert categorical.kind == "plot" and categorical.png
     assert numeric.kind == "plot" and numeric.png
-    dependencies.np.testing.assert_array_equal(dense(adata.X), snapshot_x)
-    dependencies.pd.testing.assert_frame_equal(adata.obs, snapshot_obs)
+    science.np.testing.assert_array_equal(dense(adata.X, science), snapshot_x)
+    science.pd.testing.assert_frame_equal(adata.obs, snapshot_obs)
     assert adata.uns == snapshot_uns
 
 
-def test_umap_plot_preconditions_are_clear(adata):
+def test_umap_plot_preconditions_are_clear(adata, science):
     with pytest.raises(ValueError, match="run UMAP first"):
         OpenBioSingleCellUMAPPlot.execute(adata, "group", 8.0, "viridis")
 
-    adata.obsm["X_umap"] = dependencies.np.ones((adata.n_obs, 1))
+    adata.obsm["X_umap"] = science.np.ones((adata.n_obs, 1))
     with pytest.raises(ValueError, match="at least two columns"):
         OpenBioSingleCellUMAPPlot.execute(adata, "group", 8.0, "viridis")
 
-    adata.obsm["X_umap"] = dependencies.np.ones((adata.n_obs, 2))
+    adata.obsm["X_umap"] = science.np.ones((adata.n_obs, 2))
     with pytest.raises(ValueError, match="color column not found"):
         OpenBioSingleCellUMAPPlot.execute(adata, "missing", 8.0, "viridis")
