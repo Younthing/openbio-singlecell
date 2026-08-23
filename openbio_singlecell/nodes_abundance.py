@@ -21,7 +21,7 @@ def _require_pertpy() -> Any:
         import pertpy
     except (ImportError, OSError) as error:
         raise RuntimeError(
-            "Milo and tascCODA nodes require the pertpy package and the relevant optional extras."
+            "Pertpy differential-abundance nodes require pertpy and the relevant optional extras."
         ) from error
     return pertpy
 
@@ -47,6 +47,258 @@ def _table_with_index(frame: Any, index_name: str, science: dependencies.Scienti
     elif table.index.name is None:
         table.index.name = index_name
     return table.reset_index()
+
+
+def _sample_composition_table(
+    adata: AnnData,
+    sample_key: str,
+    group_key: str,
+    annotation_key: str,
+) -> tuple[Any, int]:
+    science = dependencies.require_scientific_dependencies()
+    keys = [sample_key, group_key, annotation_key]
+    if len(set(keys)) != len(keys):
+        raise ValueError("Composition sample, group, and annotation columns must be different.")
+    missing = [key for key in keys if key not in adata.obs]
+    if missing:
+        raise ValueError(f"Composition observation columns not found: {missing}")
+
+    frame = adata.obs[keys].copy()
+    valid = frame.notna().all(axis=1)
+    dropped_cells = int((~valid).sum())
+    frame = frame.loc[valid]
+    if frame.empty:
+        raise ValueError("No observations remain after excluding missing composition metadata.")
+    for key in keys:
+        frame[key] = frame[key].astype(str)
+
+    groups_per_sample = frame.groupby(sample_key, observed=True)[group_key].nunique()
+    ambiguous_samples = groups_per_sample[groups_per_sample > 1]
+    if not ambiguous_samples.empty:
+        raise ValueError(f"Each sample must map to one group; conflicting samples: {ambiguous_samples.index.tolist()}")
+
+    sample_metadata = frame[[sample_key, group_key]].drop_duplicates(sample_key)
+    samples = sample_metadata[sample_key].tolist()
+    annotations = list(dict.fromkeys(frame[annotation_key].tolist()))
+    index = science.pd.MultiIndex.from_product(
+        [samples, annotations],
+        names=[sample_key, annotation_key],
+    )
+    counts = frame.groupby([sample_key, annotation_key], observed=True).size().reindex(index, fill_value=0)
+    table = counts.rename("count").reset_index()
+    table = table.merge(sample_metadata, on=sample_key, how="left", validate="many_to_one")
+    table["count"] = table["count"].astype(int)
+    totals = table.groupby(sample_key, observed=True)["count"].transform("sum")
+    table["proportion"] = table["count"] / totals
+    table = table.rename(
+        columns={
+            sample_key: "sample",
+            group_key: "group",
+            annotation_key: "annotation",
+        }
+    )
+    return table[["sample", "group", "annotation", "count", "proportion"]], dropped_cells
+
+
+def _adjust_bh(table: Any, science: dependencies.ScientificDependencies) -> Any:
+    from statsmodels.stats.multitest import multipletests
+
+    table = table.copy()
+    table["p_adj"] = science.np.nan
+    finite = science.np.isfinite(table["p"].to_numpy(dtype=float))
+    if finite.any():
+        table.loc[finite, "p_adj"] = multipletests(table.loc[finite, "p"], method="fdr_bh")[1]
+    return table
+
+
+class OpenBioSingleCellSampleCompositionSummary(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellSampleCompositionSummary",
+            display_name="Sample Composition Summary",
+            category=ABUNDANCE_CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input("sample_key", default="sample"),
+                io.String.Input("group_key", default="group"),
+                io.String.Input("annotation_key", default="cell_type"),
+            ],
+            outputs=[SingleCellResultType.Output(display_name="result")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        sample_key: str = "sample",
+        group_key: str = "group",
+        annotation_key: str = "cell_type",
+    ) -> io.NodeOutput:
+        started_at = time.perf_counter()
+        table, dropped_cells = _sample_composition_table(adata, sample_key, group_key, annotation_key)
+        parameters = {
+            "sample_key": sample_key,
+            "group_key": group_key,
+            "annotation_key": annotation_key,
+        }
+        warnings = []
+        if dropped_cells:
+            warnings.append(f"Excluded {dropped_cells} cells with missing composition metadata.")
+        result = make_result(
+            kind="table",
+            title=f"Sample composition by {annotation_key}",
+            operation="sample_composition_summary",
+            parameters=parameters,
+            description="Per-sample cell counts and proportions for each annotation category.",
+            warnings=warnings,
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+            started_at=started_at,
+            table=table,
+        )
+        return io.NodeOutput(result)
+
+
+class OpenBioSingleCellDifferentialCompositionTest(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellDifferentialCompositionTest",
+            display_name="Differential Composition Test",
+            category=ABUNDANCE_CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input("sample_key", default="sample"),
+                io.String.Input("group_key", default="group"),
+                io.String.Input("annotation_key", default="cell_type"),
+                io.String.Input("control_group", default=""),
+                io.String.Input("comparison_groups", default=""),
+                io.Float.Input("pseudocount", default=0.001, min=1e-12, step=0.001, advanced=True),
+            ],
+            outputs=[SingleCellResultType.Output(display_name="result")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        sample_key: str = "sample",
+        group_key: str = "group",
+        annotation_key: str = "cell_type",
+        control_group: str = "",
+        comparison_groups: str = "",
+        pseudocount: float = 0.001,
+    ) -> io.NodeOutput:
+        from scipy import stats
+
+        science = dependencies.require_scientific_dependencies()
+        started_at = time.perf_counter()
+        table, dropped_cells = _sample_composition_table(adata, sample_key, group_key, annotation_key)
+        control_group = control_group.strip()
+        if not control_group:
+            raise ValueError("Differential composition control group cannot be empty.")
+
+        present_groups = list(dict.fromkeys(table["group"].astype(str)))
+        if control_group not in present_groups:
+            raise ValueError(f"Differential composition control group not found: {control_group!r}")
+        comparisons = _comma_separated_columns(comparison_groups)
+        if not comparisons:
+            comparisons = [group for group in present_groups if group != control_group]
+        missing_groups = [group for group in comparisons if group not in present_groups]
+        if missing_groups:
+            raise ValueError(f"Differential composition comparison groups not found: {missing_groups}")
+        comparisons = [group for group in comparisons if group != control_group]
+        if not comparisons:
+            raise ValueError("Differential composition requires at least one non-control comparison group.")
+
+        selected_groups = [control_group, *comparisons]
+        analysis_table = table[table["group"].isin(selected_groups)]
+        global_rows = []
+        pairwise_rows = []
+        for annotation, frame in analysis_table.groupby("annotation", sort=False, observed=True):
+            values_by_group = {
+                group: frame.loc[frame["group"] == group, "proportion"].to_numpy(dtype=float)
+                for group in selected_groups
+            }
+            try:
+                statistic, p_value = stats.kruskal(*(values_by_group[group] for group in selected_groups))
+            except ValueError:
+                statistic, p_value = science.np.nan, science.np.nan
+            global_rows.append(
+                {
+                    "scope": "global",
+                    "annotation": str(annotation),
+                    "test": "Kruskal-Wallis",
+                    "comparison": "all selected groups",
+                    "group": "",
+                    "control": "",
+                    "n_group": int(sum(len(values_by_group[group]) for group in selected_groups)),
+                    "n_control": science.np.nan,
+                    "mean_group": science.np.nan,
+                    "mean_control": science.np.nan,
+                    "difference": science.np.nan,
+                    "log2_fold_change": science.np.nan,
+                    "statistic": statistic,
+                    "p": p_value,
+                }
+            )
+
+            control_values = values_by_group[control_group]
+            control_mean = float(science.np.mean(control_values))
+            for group in comparisons:
+                group_values = values_by_group[group]
+                group_mean = float(science.np.mean(group_values))
+                statistic, p_value = stats.mannwhitneyu(group_values, control_values, alternative="two-sided")
+                pairwise_rows.append(
+                    {
+                        "scope": "pairwise",
+                        "annotation": str(annotation),
+                        "test": "Mann-Whitney U",
+                        "comparison": f"{group} vs {control_group}",
+                        "group": group,
+                        "control": control_group,
+                        "n_group": int(len(group_values)),
+                        "n_control": int(len(control_values)),
+                        "mean_group": group_mean,
+                        "mean_control": control_mean,
+                        "difference": group_mean - control_mean,
+                        "log2_fold_change": float(
+                            science.np.log2((group_mean + pseudocount) / (control_mean + pseudocount))
+                        ),
+                        "statistic": statistic,
+                        "p": p_value,
+                    }
+                )
+
+        global_table = _adjust_bh(science.pd.DataFrame.from_records(global_rows), science)
+        pairwise_table = _adjust_bh(science.pd.DataFrame.from_records(pairwise_rows), science)
+        result_table = science.pd.concat([global_table, pairwise_table], ignore_index=True)
+        parameters = {
+            "sample_key": sample_key,
+            "group_key": group_key,
+            "annotation_key": annotation_key,
+            "control_group": control_group,
+            "comparison_groups": comparisons,
+            "pseudocount": pseudocount,
+            "p_adjust": "fdr_bh",
+        }
+        warnings = []
+        if dropped_cells:
+            warnings.append(f"Excluded {dropped_cells} cells with missing composition metadata.")
+        result = make_result(
+            kind="table",
+            title=f"Differential composition by {annotation_key}",
+            operation="differential_composition_test",
+            parameters=parameters,
+            description="Sample-level Kruskal-Wallis tests and pairwise Mann-Whitney tests versus the control group.",
+            warnings=warnings,
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+            started_at=started_at,
+            table=result_table,
+        )
+        return io.NodeOutput(result)
 
 
 class OpenBioSingleCellSchistNestedModel(io.ComfyNode):
@@ -205,6 +457,122 @@ class OpenBioSingleCellMiloDifferentialAbundance(io.ComfyNode):
         return io.NodeOutput(result)
 
 
+class OpenBioSingleCellSccodaDifferentialComposition(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellSccodaDifferentialComposition",
+            display_name="scCODA Differential Composition",
+            category=ABUNDANCE_CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input("sample_key", default="sample"),
+                io.String.Input("annotation_key", default="cell_type"),
+                io.String.Input("covariate_keys", default="group"),
+                io.String.Input("formula", default="group"),
+                io.String.Input("reference_cell_type", default="automatic"),
+                io.Float.Input("estimated_fdr", default=0.05, min=0.0, max=1.0, step=0.01),
+                io.Int.Input("num_samples", default=10000, min=1, max=2**31 - 1, advanced=True),
+                io.Int.Input("num_warmup", default=1000, min=0, max=2**31 - 1, advanced=True),
+                io.Int.Input("random_seed", default=123, min=0, max=2**31 - 1, advanced=True),
+            ],
+            outputs=[SingleCellResultType.Output(display_name="result")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        sample_key: str = "sample",
+        annotation_key: str = "cell_type",
+        covariate_keys: str = "group",
+        formula: str = "group",
+        reference_cell_type: str = "automatic",
+        estimated_fdr: float = 0.05,
+        num_samples: int = 10000,
+        num_warmup: int = 1000,
+        random_seed: int = 123,
+    ) -> io.NodeOutput:
+        covariates = _comma_separated_columns(covariate_keys)
+        if not covariates:
+            raise ValueError("scCODA requires at least one covariate column.")
+        required_obs = [sample_key, annotation_key, *covariates]
+        missing_obs = [key for key in required_obs if key not in adata.obs]
+        if missing_obs:
+            raise ValueError(f"scCODA observation columns not found: {missing_obs}")
+        if not formula.strip():
+            raise ValueError("scCODA formula cannot be empty.")
+        reference = reference_cell_type.strip() or "automatic"
+
+        pertpy = _require_pertpy()
+        science = dependencies.require_scientific_dependencies()
+        started_at = time.perf_counter()
+        model = pertpy.tl.Sccoda()
+        mdata = model.load(
+            adata.copy(),
+            type="cell_level",
+            generate_sample_level=True,
+            cell_type_identifier=annotation_key,
+            sample_identifier=sample_key,
+            covariate_obs=covariates,
+        )
+        prepared = model.prepare(
+            mdata,
+            modality_key="coda",
+            formula=formula.strip(),
+            reference_cell_type=reference,
+        )
+        if prepared is not None:
+            mdata = prepared
+        model.run_nuts(
+            mdata,
+            modality_key="coda",
+            rng_key=random_seed,
+            num_samples=num_samples,
+            num_warmup=num_warmup,
+        )
+        model.set_fdr(mdata, estimated_fdr, modality_key="coda")
+
+        summaries = model.summary_prepare(mdata["coda"], est_fdr=estimated_fdr)
+        sections = ("intercept", "effect", "node_effect")
+        tables = []
+        for section, frame in zip(sections, summaries, strict=False):
+            if frame is None:
+                continue
+            table = _table_with_index(frame, "parameter", science)
+            table.insert(0, "summary_section", section)
+            tables.append(table)
+        if not tables:
+            raise RuntimeError("scCODA did not return summary tables.")
+        table = science.pd.concat(tables, ignore_index=True, sort=False)
+
+        parameters = {
+            "sample_key": sample_key,
+            "annotation_key": annotation_key,
+            "covariate_keys": covariates,
+            "formula": formula.strip(),
+            "reference_cell_type": reference,
+            "estimated_fdr": estimated_fdr,
+            "num_samples": num_samples,
+            "num_warmup": num_warmup,
+            "random_seed": random_seed,
+        }
+        result = make_result(
+            kind="table",
+            title="scCODA differential composition",
+            operation="sccoda_differential_composition",
+            parameters=parameters,
+            description="Intercept and cell-type effect summaries from the scCODA compositional model.",
+            warnings=[],
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+            started_at=started_at,
+            random_seed=random_seed,
+            table=table,
+        )
+        return io.NodeOutput(result)
+
+
 class OpenBioSingleCellTasccodaDifferentialComposition(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -334,15 +702,21 @@ class OpenBioSingleCellTasccodaDifferentialComposition(io.ComfyNode):
 
 
 ABUNDANCE_NODE_CLASSES = [
+    OpenBioSingleCellSampleCompositionSummary,
+    OpenBioSingleCellDifferentialCompositionTest,
     OpenBioSingleCellSchistNestedModel,
     OpenBioSingleCellMiloDifferentialAbundance,
+    OpenBioSingleCellSccodaDifferentialComposition,
     OpenBioSingleCellTasccodaDifferentialComposition,
 ]
 
 
 __all__ = [
     "ABUNDANCE_NODE_CLASSES",
+    "OpenBioSingleCellDifferentialCompositionTest",
     "OpenBioSingleCellMiloDifferentialAbundance",
+    "OpenBioSingleCellSampleCompositionSummary",
     "OpenBioSingleCellSchistNestedModel",
+    "OpenBioSingleCellSccodaDifferentialComposition",
     "OpenBioSingleCellTasccodaDifferentialComposition",
 ]
