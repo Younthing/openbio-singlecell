@@ -150,6 +150,8 @@ class OpenBioSingleCellFilterCells(io.ComfyNode):
                 io.Int.Input("max_genes", default=0, min=0, max=MAX_THRESHOLD),
                 io.Int.Input("min_counts", default=0, min=0, max=MAX_THRESHOLD),
                 io.Int.Input("max_counts", default=0, min=0, max=MAX_THRESHOLD),
+                io.Float.Input("max_pct_mito", default=0.0, min=0.0, max=100.0, step=1.0),
+                io.String.Input("mito_column", default="pct_counts_mt", advanced=True),
             ],
             outputs=[AnnDataType.Output(display_name="adata")],
         )
@@ -162,8 +164,13 @@ class OpenBioSingleCellFilterCells(io.ComfyNode):
         max_genes: int = 0,
         min_counts: int = 0,
         max_counts: int = 0,
+        max_pct_mito: float = 0.0,
+        mito_column: str = "pct_counts_mt",
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
+        mito_column = mito_column.strip()
+        if max_pct_mito > 0 and mito_column not in adata.obs:
+            raise ValueError(f"Cell mitochondrial percentage column not found in obs: {mito_column!r}")
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         counts, detected = matrix_totals_and_nonzero(adata.X, axis=1)
@@ -176,12 +183,16 @@ class OpenBioSingleCellFilterCells(io.ComfyNode):
             mask &= counts >= min_counts
         if max_counts > 0:
             mask &= counts <= max_counts
+        if max_pct_mito > 0:
+            mask &= science.np.asarray(adata.obs[mito_column], dtype=float) <= max_pct_mito
         output = adata[mask].copy()
         parameters = {
             "min_genes": min_genes,
             "max_genes": max_genes,
             "min_counts": min_counts,
             "max_counts": max_counts,
+            "max_pct_mito": max_pct_mito,
+            "mito_column": mito_column,
         }
         finish_adata(output, "filter_cells", parameters, cells, genes, started_at)
         return io.NodeOutput(output)
