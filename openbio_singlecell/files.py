@@ -65,8 +65,29 @@ def file_fingerprint(path: str) -> tuple[str, int, int]:
     return canonical_path, int(stat.st_size), int(stat.st_mtime_ns)
 
 
+def _portable_input_path(path: str) -> str:
+    input_root = os.path.realpath(folder_paths.get_input_directory())
+    canonical_path = os.path.realpath(path)
+    if not folder_paths.is_within_directory(input_root, canonical_path):
+        raise ValueError("Input provenance path escapes the ComfyUI input directory.")
+    return os.path.relpath(canonical_path, input_root).replace(os.sep, "/")
+
+
+def _portable_file_provenance(path: str) -> dict[str, str | int]:
+    stat = os.stat(path)
+    return {
+        "path": _portable_input_path(path),
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+    }
+
+
 def input_file_fingerprint(relative_path: str, extensions: tuple[str, ...]) -> tuple[str, int, int]:
     return file_fingerprint(resolve_input_path(relative_path, extensions=extensions))
+
+
+def input_file_provenance(relative_path: str, extensions: tuple[str, ...]) -> dict[str, str | int]:
+    return _portable_file_provenance(resolve_input_path(relative_path, extensions=extensions))
 
 
 def resolve_10x_mtx_files(relative_directory: str) -> dict[str, str]:
@@ -87,6 +108,15 @@ def resolve_10x_mtx_files(relative_directory: str) -> dict[str, str]:
 def tenx_mtx_fingerprint(relative_directory: str) -> tuple[tuple[str, str, int, int], ...]:
     selected = resolve_10x_mtx_files(relative_directory)
     return tuple((role, *file_fingerprint(selected[role])) for role in ("matrix", "barcodes", "features"))
+
+
+def tenx_mtx_provenance(relative_directory: str) -> dict[str, object]:
+    directory = resolve_input_path(relative_directory, kind="directory")
+    selected = resolve_10x_mtx_files(relative_directory)
+    return {
+        "path": _portable_input_path(directory),
+        "files": {role: _portable_file_provenance(selected[role]) for role in ("matrix", "barcodes", "features")},
+    }
 
 
 def prepare_output_target(

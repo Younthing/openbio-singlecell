@@ -36,6 +36,17 @@ sys.path.insert(0, str(COMFY_ROOT))
 
 import folder_paths  # noqa: E402
 
+from openbio_singlecell import dependencies  # noqa: E402
+
+
+@pytest.fixture(scope="session")
+def science():
+    try:
+        dependencies.require_scientific_dependencies()
+        return dependencies
+    except RuntimeError as error:
+        pytest.skip(str(error))
+
 
 @pytest.fixture
 def comfy_directories(tmp_path):

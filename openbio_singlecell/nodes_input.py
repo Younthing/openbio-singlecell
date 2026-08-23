@@ -9,7 +9,14 @@ from comfy_api.latest import io
 
 from . import dependencies
 from .contracts import SingleCellResult, ensure_metadata, make_analysis_source
-from .files import input_file_fingerprint, resolve_10x_mtx_files, resolve_input_path, tenx_mtx_fingerprint
+from .files import (
+    input_file_fingerprint,
+    input_file_provenance,
+    resolve_10x_mtx_files,
+    resolve_input_path,
+    tenx_mtx_fingerprint,
+    tenx_mtx_provenance,
+)
 from .node_types import AnnDataType, SingleCellResultType
 
 if TYPE_CHECKING:
@@ -24,16 +31,8 @@ def _validate_nonempty(adata: AnnData) -> None:
         raise ValueError("The loaded single-cell matrix must contain at least one cell and one gene.")
 
 
-def _fingerprint_metadata(fingerprint: Any) -> dict[str, Any]:
-    if len(fingerprint) == 3 and isinstance(fingerprint[0], str):
-        return {"path": fingerprint[0], "size": fingerprint[1], "mtime_ns": fingerprint[2]}
-    return {
-        role: {"path": canonical, "size": size, "mtime_ns": mtime_ns} for role, canonical, size, mtime_ns in fingerprint
-    }
-
-
-def _source_metadata(kind: str, path: str, fingerprint: Any) -> dict[str, Any]:
-    return {"kind": kind, "path": path, "fingerprint": _fingerprint_metadata(fingerprint)}
+def _source_metadata(kind: str, provenance: dict[str, Any]) -> dict[str, Any]:
+    return {"kind": kind, **provenance}
 
 
 def read_10x_mtx(
@@ -125,7 +124,7 @@ class OpenBioSingleCellLoadH5AD(io.ComfyNode):
         ensure_metadata(
             adata,
             display_name=os.path.splitext(os.path.basename(resolved))[0],
-            source=_source_metadata("h5ad", path, input_file_fingerprint(path, (".h5ad",))),
+            source=_source_metadata("h5ad", input_file_provenance(path, (".h5ad",))),
         )
         return io.NodeOutput(adata)
 
@@ -171,7 +170,7 @@ class OpenBioSingleCellLoad10xMTX(io.ComfyNode):
         ensure_metadata(
             adata,
             display_name=os.path.basename(os.path.normpath(directory)) or "10x",
-            source=_source_metadata("10x_mtx", directory, tenx_mtx_fingerprint(directory)),
+            source=_source_metadata("10x_mtx", tenx_mtx_provenance(directory)),
         )
         return io.NodeOutput(adata)
 
@@ -223,7 +222,7 @@ class OpenBioSingleCellLoad10xH5(io.ComfyNode):
         ensure_metadata(
             adata,
             display_name=os.path.splitext(os.path.basename(resolved))[0],
-            source=_source_metadata("10x_h5", path, input_file_fingerprint(path, (".h5", ".hdf5"))),
+            source=_source_metadata("10x_h5", input_file_provenance(path, (".h5", ".hdf5"))),
         )
         return io.NodeOutput(adata)
 

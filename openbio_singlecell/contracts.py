@@ -64,21 +64,12 @@ def _metadata_value(value: Any) -> Any:
 
 
 def _normalize_history(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        converted = _metadata_value(value)
-        return converted if isinstance(converted, dict) else {}
-
-    if hasattr(value, "tolist"):
-        value = value.tolist()
-    if not isinstance(value, (list, tuple)):
-        return {}
-
-    history = {}
-    for index, item in enumerate(value):
-        converted = _metadata_value(item)
-        if converted is not _MISSING:
-            history[f"{index:06d}"] = converted
-    return history
+    if not isinstance(value, dict):
+        raise ValueError("OpenBio metadata analysis_history must be a mapping.")
+    converted = _metadata_value(value)
+    if not isinstance(converted, dict):
+        raise ValueError("OpenBio metadata analysis_history must be a mapping.")
+    return converted
 
 
 def _normalize_warnings(value: Any) -> list[str]:
@@ -131,12 +122,28 @@ def ensure_metadata(
     display_name: str | None = None,
     source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    existing = adata.uns.get(METADATA_KEY)
-    metadata = copy.deepcopy(existing) if isinstance(existing, dict) else {}
-    metadata.setdefault("schema_version", SCHEMA_VERSION)
-    metadata.setdefault("version", PLUGIN_VERSION)
-    metadata.setdefault("display_name", display_name or "AnnData")
-    metadata.setdefault("source", _metadata_value(source or {}))
+    if METADATA_KEY in adata.uns:
+        existing = adata.uns[METADATA_KEY]
+        if not isinstance(existing, dict):
+            raise ValueError("OpenBio metadata must be a mapping.")
+        if existing.get("schema_version") != SCHEMA_VERSION:
+            raise ValueError(
+                "OpenBio metadata has unsupported schema_version "
+                f"{existing.get('schema_version')!r}; expected {SCHEMA_VERSION}."
+            )
+        metadata = copy.deepcopy(existing)
+    else:
+        metadata = {}
+    metadata["schema_version"] = SCHEMA_VERSION
+    metadata["version"] = PLUGIN_VERSION
+    if display_name is None:
+        metadata.setdefault("display_name", "AnnData")
+    else:
+        metadata["display_name"] = display_name
+    if source is None:
+        metadata.setdefault("source", {})
+    else:
+        metadata["source"] = _metadata_value(source)
     try:
         metadata["random_seed"] = int(metadata.get("random_seed", 0))
     except (TypeError, ValueError, OverflowError):

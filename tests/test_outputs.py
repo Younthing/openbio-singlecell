@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import pytest
 from comfy_api.latest import io
 
-from openbio_singlecell import dependencies
 from openbio_singlecell.contracts import SingleCellResult, ensure_metadata, record_history
 from openbio_singlecell.nodes_output import (
     OpenBioSingleCellPreviewResult,
@@ -117,10 +115,8 @@ def test_plot_preview_without_workflow_id_has_stable_fallback(comfy_directories)
     assert len(list((temp_dir / "openbio-singlecell").iterdir())) == 1
 
 
-def test_csv_and_png_increment_and_overwrite(comfy_directories):
-    if not dependencies.AVAILABLE:
-        pytest.skip("Scientific dependencies are unavailable.")
-    table_result = make_result("table", table=dependencies.pd.DataFrame({"gene": ["A", "B"]}))
+def test_csv_and_png_increment_and_overwrite(comfy_directories, science):
+    table_result = make_result("table", table=science.pd.DataFrame({"gene": ["A", "B"]}))
     plot_result = make_result("plot", png=b"png")
 
     csv_first = export_csv(table_result, "markers")
@@ -138,14 +134,12 @@ def test_csv_and_png_increment_and_overwrite(comfy_directories):
     assert png_overwrite.filename == "umap.png"
 
 
-def test_h5ad_increment_and_overwrite(comfy_directories):
-    if not dependencies.AVAILABLE:
-        pytest.skip("Scientific dependencies are unavailable.")
-    adata = dependencies.ad.AnnData(dependencies.np.eye(2))
+def test_h5ad_increment_and_overwrite(comfy_directories, science):
+    adata = science.ad.AnnData(science.np.eye(2))
     metadata = ensure_metadata(adata, "roundtrip", {"kind": "test"})
     metadata["analysis_history"] = {
-        "000001": {"operation": "legacy_one"},
-        "000004": {"operation": "legacy_four"},
+        "000001": {"operation": "first"},
+        "000004": {"operation": "fourth"},
     }
     metadata["warnings"] = ["roundtrip warning"]
     record_history(adata, "normalize_total", {"target_sum": 10000.0}, 2, 2)
@@ -155,29 +149,10 @@ def test_h5ad_increment_and_overwrite(comfy_directories):
     assert first.filename == "adata_00001.h5ad"
     assert second.filename == "adata_00002.h5ad"
     assert overwrite.filename == "adata.h5ad"
-    loaded = dependencies.ad.read_h5ad(overwrite.path)
+    loaded = science.ad.read_h5ad(overwrite.path)
     history = loaded.uns["openbio_singlecell"]["analysis_history"]
     assert isinstance(history, dict)
-    assert history["000001"]["operation"] == "legacy_one"
-    assert history["000004"]["operation"] == "legacy_four"
+    assert history["000001"]["operation"] == "first"
+    assert history["000004"]["operation"] == "fourth"
     assert history["000005"]["operation"] == "normalize_total"
     assert ensure_metadata(loaded)["warnings"] == ["roundtrip warning"]
-
-
-@pytest.mark.parametrize("legacy_type", ["list", "tuple", "ndarray"])
-def test_legacy_history_sequences_are_normalized(legacy_type):
-    if not dependencies.AVAILABLE:
-        pytest.skip("Scientific dependencies are unavailable.")
-    entry = {"operation": "legacy"}
-    values = [entry]
-    if legacy_type == "tuple":
-        values = tuple(values)
-    elif legacy_type == "ndarray":
-        values = dependencies.np.asarray(values, dtype=object)
-
-    adata = dependencies.ad.AnnData(dependencies.np.eye(1))
-    adata.uns["openbio_singlecell"] = {"analysis_history": values}
-    history = ensure_metadata(adata)["analysis_history"]
-
-    assert isinstance(history, dict)
-    assert history == {"000000": entry}

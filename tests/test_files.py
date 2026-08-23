@@ -6,10 +6,12 @@ import pytest
 
 from openbio_singlecell.files import (
     file_fingerprint,
+    input_file_provenance,
     prepare_output_target,
     resolve_10x_mtx_files,
     resolve_input_path,
     tenx_mtx_fingerprint,
+    tenx_mtx_provenance,
 )
 
 
@@ -47,6 +49,10 @@ def test_file_fingerprint_changes_with_stat(comfy_directories):
     source = input_dir / "sample.h5"
     source.write_bytes(b"one")
     first = file_fingerprint(str(source))
+    provenance = input_file_provenance("sample.h5", (".h5",))
+    assert os.path.isabs(first[0])
+    assert provenance["path"] == "sample.h5"
+    assert str(input_dir) not in str(provenance)
     source.write_bytes(b"two-two")
     stat = source.stat()
     os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
@@ -65,8 +71,11 @@ def test_10x_selection_and_fingerprint_use_the_same_actual_files(comfy_directori
 
     selected = resolve_10x_mtx_files("tenx")
     fingerprint = tenx_mtx_fingerprint("tenx")
+    provenance = tenx_mtx_provenance("tenx")
     assert selected["matrix"].endswith("matrix.mtx")
     assert fingerprint[0][1] == file_fingerprint(selected["matrix"])[0]
+    assert provenance["files"]["matrix"]["path"] == "tenx/matrix.mtx"
+    assert str(input_dir) not in str(provenance)
 
     (directory / "features.tsv").write_text("id\tgene\tGene Expression\n", encoding="utf-8")
     stat = (directory / "features.tsv").stat()
