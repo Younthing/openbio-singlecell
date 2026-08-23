@@ -5,6 +5,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
+import folder_paths
 from comfy_api.latest import io
 
 from . import dependencies
@@ -84,6 +85,30 @@ def read_10x_mtx(
         adata.var_names_make_unique()
     _validate_nonempty(adata)
     return adata
+
+
+def _discover_10x_study(relative_root: str) -> list[tuple[str, str]]:
+    root = resolve_input_path(relative_root, kind="directory")
+    input_root = os.path.realpath(folder_paths.get_input_directory())
+    discovered = []
+    with os.scandir(root) as entries:
+        child_directories = sorted(
+            ((entry.name, entry.path) for entry in entries if entry.is_dir(follow_symlinks=False)),
+            key=lambda item: item[0].casefold(),
+        )
+    for sample_name, child_path in child_directories:
+        child = os.path.realpath(child_path)
+        if not folder_paths.is_within_directory(root, child):
+            continue
+        relative_child = os.path.relpath(child, input_root).replace(os.sep, "/")
+        try:
+            resolve_10x_mtx_files(relative_child)
+        except (ValueError, FileNotFoundError, OSError):
+            continue
+        discovered.append((sample_name, relative_child))
+    if not discovered:
+        raise ValueError("The study directory does not contain any valid 10x MTX sample subdirectories.")
+    return discovered
 
 
 class OpenBioSingleCellLoadH5AD(io.ComfyNode):
@@ -171,6 +196,86 @@ class OpenBioSingleCellLoad10xMTX(io.ComfyNode):
             adata,
             display_name=os.path.basename(os.path.normpath(directory)) or "10x",
             source=_source_metadata("10x_mtx", tenx_mtx_provenance(directory)),
+        )
+        return io.NodeOutput(adata)
+
+
+class OpenBioSingleCellLoad10xStudy(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellLoad10xStudy",
+            display_name="Load 10x Study",
+            category=CATEGORY,
+            description="Load and concatenate valid 10x MTX sample directories under one study directory.",
+            inputs=[
+                io.String.Input("directory", default="openbio-singlecell/study"),
+                io.String.Input("sample_key", default="sample"),
+                io.Combo.Input("var_names", options=["gene_symbols", "gene_ids"], default="gene_symbols"),
+                io.Combo.Input("join", options=["inner", "outer"], default="inner", advanced=True),
+                io.Boolean.Input("make_unique", default=True, advanced=True),
+                io.Boolean.Input("gex_only", default=True, advanced=True),
+            ],
+            outputs=[AnnDataType.Output(display_name="adata")],
+        )
+
+    @classmethod
+    def validate_inputs(cls, directory: str, **kwargs) -> bool | str:
+        try:
+            _discover_10x_study(directory)
+        except (ValueError, FileNotFoundError, OSError) as exc:
+            return str(exc)
+        return True
+
+    @classmethod
+    def fingerprint_inputs(cls, directory: str, **kwargs) -> Any:
+        return tuple(
+            (sample_name, tenx_mtx_fingerprint(sample_directory))
+            for sample_name, sample_directory in _discover_10x_study(directory)
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        directory: str,
+        sample_key: str = "sample",
+        var_names: str = "gene_symbols",
+        join: str = "inner",
+        make_unique: bool = True,
+        gex_only: bool = True,
+    ) -> io.NodeOutput:
+        sample_key = sample_key.strip()
+        if not sample_key:
+            raise ValueError("Study sample_key cannot be empty.")
+
+        science = dependencies.require_scientific_dependencies()
+        discovered = _discover_10x_study(directory)
+        samples = {
+            sample_name: read_10x_mtx(sample_directory, var_names, make_unique, gex_only)
+            for sample_name, sample_directory in discovered
+        }
+        adata = science.ad.concat(
+            samples,
+            join=join,
+            merge="same",
+            label=sample_key,
+            index_unique="-",
+        )
+        _validate_nonempty(adata)
+        study_name = os.path.basename(os.path.normpath(directory)) or "10x study"
+        ensure_metadata(
+            adata,
+            display_name=study_name,
+            source=_source_metadata(
+                "10x_study",
+                {
+                    "path": directory,
+                    "samples": {
+                        sample_name: tenx_mtx_provenance(sample_directory)
+                        for sample_name, sample_directory in discovered
+                    },
+                },
+            ),
         )
         return io.NodeOutput(adata)
 
@@ -280,6 +385,7 @@ class OpenBioSingleCellAnnDataSummary(io.ComfyNode):
 INPUT_NODE_CLASSES = [
     OpenBioSingleCellLoadH5AD,
     OpenBioSingleCellLoad10xMTX,
+    OpenBioSingleCellLoad10xStudy,
     OpenBioSingleCellLoad10xH5,
     OpenBioSingleCellAnnDataSummary,
 ]

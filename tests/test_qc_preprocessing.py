@@ -54,7 +54,7 @@ def assert_adata_equal(actual, expected, science):
 
 
 def test_qc_filter_and_preprocessing_chain_preserves_counts(adata, science):
-    qc = output_value(OpenBioSingleCellCalculateQC.execute(adata, "MT-"))
+    qc = output_value(OpenBioSingleCellCalculateQC.execute(adata, mitochondrial_prefix="MT-"))
     assert "total_counts" in qc.obs
     filtered_cells = output_value(OpenBioSingleCellFilterCells.execute(qc, 1, 0, 1, 0))
     filtered = output_value(OpenBioSingleCellFilterGenes.execute(filtered_cells, 1, 0, 1, 0))
@@ -76,7 +76,7 @@ def test_modifying_nodes_do_not_mutate_upstream_anndata(adata, science):
     snapshot = adata.copy()
     snapshot_uns = copy.deepcopy(adata.uns)
 
-    OpenBioSingleCellCalculateQC.execute(adata, "MT-")
+    OpenBioSingleCellCalculateQC.execute(adata, mitochondrial_prefix="MT-")
     OpenBioSingleCellFilterCells.execute(adata, 1, 0, 1, 0)
     OpenBioSingleCellFilterGenes.execute(adata, 1, 0, 1, 0)
     OpenBioSingleCellNormalizeTotal.execute(adata, 10_000.0)
@@ -93,7 +93,15 @@ def test_qc_plot_is_read_only_and_reports_missing_mitochondrial_annotations(adat
     adata.var_names = [f"G{index}" for index in range(adata.n_vars)]
     snapshot = adata.copy()
 
-    qc = output_value(OpenBioSingleCellCalculateQC.execute(adata, "MT-"))
+    qc = output_value(
+        OpenBioSingleCellCalculateQC.execute(
+            adata,
+            include_ribosomal=False,
+            include_hemoglobin=False,
+            mitochondrial_prefix="MT-",
+            percent_top="",
+        )
+    )
     plot = output_value(OpenBioSingleCellQCPlots.execute(adata))
 
     assert qc.uns["openbio_singlecell"]["warnings"] == ["No genes matched mitochondrial prefix 'MT-'."]

@@ -17,6 +17,30 @@ CATEGORY = "openbio/single-cell/qc"
 MAX_THRESHOLD = 2**31 - 1
 
 
+def _comma_separated_prefixes(value: str, name: str) -> tuple[str, ...]:
+    prefixes = tuple(dict.fromkeys(item.strip().upper() for item in value.split(",") if item.strip()))
+    if not prefixes:
+        raise ValueError(f"{name} must contain at least one comma-separated prefix.")
+    return prefixes
+
+
+def _percent_top_values(value: str) -> tuple[int, ...]:
+    values = []
+    for item in value.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            position = int(item)
+        except ValueError as error:
+            raise ValueError(f"percent_top values must be positive integers; received {item!r}.") from error
+        if position <= 0:
+            raise ValueError("percent_top values must be greater than zero.")
+        if position not in values:
+            values.append(position)
+    return tuple(values)
+
+
 class OpenBioSingleCellCalculateQC(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -26,29 +50,88 @@ class OpenBioSingleCellCalculateQC(io.ComfyNode):
             category=CATEGORY,
             inputs=[
                 AnnDataType.Input("adata"),
+                io.Boolean.Input("include_ribosomal", default=True),
+                io.Boolean.Input("include_hemoglobin", default=True),
                 io.String.Input("mitochondrial_prefix", default="MT-", advanced=True),
+                io.String.Input("ribosomal_prefixes", default="RPS,RPL", advanced=True),
+                io.String.Input("hemoglobin_pattern", default=r"^HB[^(P)]", advanced=True),
+                io.String.Input("percent_top", default="20,50,100,200,500", advanced=True),
+                io.Boolean.Input("log1p", default=True, advanced=True),
             ],
             outputs=[AnnDataType.Output(display_name="adata")],
         )
 
     @classmethod
-    def execute(cls, adata: AnnData, mitochondrial_prefix: str = "MT-") -> io.NodeOutput:
+    def execute(
+        cls,
+        adata: AnnData,
+        include_ribosomal: bool = True,
+        include_hemoglobin: bool = True,
+        mitochondrial_prefix: str = "MT-",
+        ribosomal_prefixes: str = "RPS,RPL",
+        hemoglobin_pattern: str = r"^HB[^(P)]",
+        percent_top: str = "20,50,100,200,500",
+        log1p: bool = True,
+    ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
+        if not mitochondrial_prefix.strip():
+            raise ValueError("Mitochondrial gene prefix cannot be empty.")
+        if include_hemoglobin and not hemoglobin_pattern.strip():
+            raise ValueError("Hemoglobin gene pattern cannot be empty when hemoglobin QC is enabled.")
+
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        output.var["mt"] = output.var_names.astype(str).str.startswith(mitochondrial_prefix)
+        gene_names = output.var_names.astype(str)
+        upper_gene_names = gene_names.str.upper()
+        output.var["mt"] = upper_gene_names.str.startswith(mitochondrial_prefix.strip().upper())
+
+        qc_vars = ["mt"]
+        parsed_ribosomal_prefixes: tuple[str, ...] = ()
+        if include_ribosomal:
+            parsed_ribosomal_prefixes = _comma_separated_prefixes(ribosomal_prefixes, "ribosomal_prefixes")
+            output.var["ribo"] = upper_gene_names.str.startswith(parsed_ribosomal_prefixes)
+            qc_vars.append("ribo")
+        if include_hemoglobin:
+            output.var["hb"] = gene_names.str.contains(hemoglobin_pattern, case=False, regex=True, na=False)
+            qc_vars.append("hb")
+
+        requested_percent_top = _percent_top_values(percent_top)
+        supported_percent_top = tuple(position for position in requested_percent_top if position <= genes)
         warnings = []
-        if not bool(output.var["mt"].any()):
-            warnings.append(f"No genes matched mitochondrial prefix {mitochondrial_prefix!r}.")
+        for qc_var in qc_vars:
+            if not bool(output.var[qc_var].any()):
+                if qc_var == "mt":
+                    warnings.append(f"No genes matched mitochondrial prefix {mitochondrial_prefix!r}.")
+                else:
+                    warnings.append(f"No genes matched the {qc_var!r} QC annotation.")
         science.sc.pp.calculate_qc_metrics(
             output,
-            qc_vars=["mt"],
-            percent_top=None,
-            log1p=False,
+            qc_vars=qc_vars,
+            percent_top=supported_percent_top or None,
+            log1p=log1p,
             inplace=True,
         )
-        parameters = {"mitochondrial_prefix": mitochondrial_prefix}
+
+        if requested_percent_top and supported_percent_top != requested_percent_top:
+            total_counts = science.np.asarray(output.obs["total_counts"], dtype=float)
+            all_features_percentage = science.np.where(total_counts > 0, 100.0, 0.0)
+            for position in requested_percent_top:
+                if position > genes:
+                    output.obs[f"pct_counts_in_top_{position}_genes"] = all_features_percentage
+            warnings.append(
+                "Some percent_top positions exceed the number of genes; those percentages include all available genes."
+            )
+
+        parameters = {
+            "include_ribosomal": include_ribosomal,
+            "include_hemoglobin": include_hemoglobin,
+            "mitochondrial_prefix": mitochondrial_prefix.strip(),
+            "ribosomal_prefixes": list(parsed_ribosomal_prefixes),
+            "hemoglobin_pattern": hemoglobin_pattern,
+            "percent_top": list(requested_percent_top),
+            "log1p": log1p,
+        }
         finish_adata(output, "calculate_qc", parameters, cells, genes, started_at, warnings=warnings)
         return io.NodeOutput(output)
 

@@ -14,6 +14,7 @@ from openbio_singlecell.node_types import AnnDataType, SingleCellResultType
 EXPECTED_NODE_IDS = {
     "OpenBioSingleCellLoadH5AD",
     "OpenBioSingleCellLoad10xMTX",
+    "OpenBioSingleCellLoad10xStudy",
     "OpenBioSingleCellLoad10xH5",
     "OpenBioSingleCellAnnDataSummary",
     "OpenBioSingleCellUseExpressionLayer",
