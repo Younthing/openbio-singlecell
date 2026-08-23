@@ -610,6 +610,159 @@ class OpenBioSingleCellRankedGSEA(io.ComfyNode):
         return io.NodeOutput(result)
 
 
+class OpenBioSingleCellGeneSetOverrepresentation(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellGeneSetOverrepresentation",
+            display_name="Gene Set Overrepresentation",
+            category=CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                SingleCellResultType.Input("result"),
+                io.String.Input("gene_sets_file", default="openbio-singlecell/gene_sets.csv"),
+                io.String.Input("group", default=""),
+                io.String.Input("selection_column", default="p_adj"),
+                io.Combo.Input("selection_operator", options=["<=", ">=", "abs>="], default="<="),
+                io.Float.Input("threshold", default=0.05, step=0.01),
+                io.Combo.Input("universe_source", options=["X", "raw"], default="X"),
+                io.String.Input("gene_column", default="gene", advanced=True),
+                io.String.Input("group_column", default="group", advanced=True),
+                io.String.Input("source_column", default="geneset", advanced=True),
+                io.String.Input("target_column", default="genesymbol", advanced=True),
+            ],
+            outputs=[SingleCellResultType.Output(display_name="result")],
+        )
+
+    @classmethod
+    def validate_inputs(cls, gene_sets_file: str, **kwargs: Any) -> bool | str:
+        try:
+            resolve_input_path(gene_sets_file, extensions=GENE_SET_EXTENSIONS)
+        except (ValueError, FileNotFoundError, OSError) as exc:
+            return str(exc)
+        return True
+
+    @classmethod
+    def fingerprint_inputs(cls, gene_sets_file: str, **kwargs: Any) -> Any:
+        return input_file_fingerprint(gene_sets_file, GENE_SET_EXTENSIONS)
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        result: SingleCellResult,
+        gene_sets_file: str = "openbio-singlecell/gene_sets.csv",
+        group: str = "",
+        selection_column: str = "p_adj",
+        selection_operator: str = "<=",
+        threshold: float = 0.05,
+        universe_source: str = "X",
+        gene_column: str = "gene",
+        group_column: str = "group",
+        source_column: str = "geneset",
+        target_column: str = "genesymbol",
+    ) -> io.NodeOutput:
+        science = dependencies.require_scientific_dependencies()
+        if result.kind != "table" or not isinstance(result.table, science.pd.DataFrame):
+            raise ValueError("Gene Set Overrepresentation requires a differential table result.")
+        gene_column = _required_name(gene_column, "Differential-result gene column")
+        if gene_column not in result.table:
+            raise ValueError(f"Differential-result gene column not found: {gene_column!r}")
+        table = result.table.copy()
+        group = group.strip()
+        if group:
+            group_column = _required_name(group_column, "Differential-result group column")
+            if group_column not in table:
+                raise ValueError(f"Differential-result group column not found: {group_column!r}")
+            table = table[table[group_column].astype(str) == group]
+
+        selection_column = selection_column.strip()
+        if selection_column:
+            if selection_column not in table:
+                raise ValueError(f"Differential-result selection column not found: {selection_column!r}")
+            values = science.pd.to_numeric(table[selection_column], errors="coerce")
+            if selection_operator == "<=":
+                table = table[values <= threshold]
+            elif selection_operator == ">=":
+                table = table[values >= threshold]
+            else:
+                table = table[values.abs() >= threshold]
+        selected_genes = set(table[gene_column].dropna().astype(str))
+        if not selected_genes:
+            raise ValueError("No genes passed the requested differential-result selection.")
+
+        if universe_source == "raw":
+            if adata.raw is None:
+                raise ValueError("Gene-set universe source 'raw' was selected, but adata.raw is unavailable.")
+            universe = set(adata.raw.var_names.astype(str))
+        else:
+            universe = set(adata.var_names.astype(str))
+        selected_genes.intersection_update(universe)
+        if not selected_genes:
+            raise ValueError("Selected differential genes do not overlap the AnnData gene universe.")
+
+        network = _read_gene_sets(gene_sets_file, source_column, target_column, science)
+        from scipy.stats import hypergeom
+        from statsmodels.stats.multitest import multipletests
+
+        started_at = time.perf_counter()
+        rows = []
+        for gene_set, frame in network.groupby(source_column, sort=False):
+            gene_set_genes = set(frame[target_column].astype(str)).intersection(universe)
+            if not gene_set_genes:
+                continue
+            overlap = sorted(gene_set_genes.intersection(selected_genes))
+            p_value = hypergeom.sf(
+                len(overlap) - 1,
+                len(universe),
+                len(gene_set_genes),
+                len(selected_genes),
+            )
+            rows.append(
+                {
+                    "gene_set": str(gene_set),
+                    "intersection_size": len(overlap),
+                    "gene_set_size": len(gene_set_genes),
+                    "selected_gene_count": len(selected_genes),
+                    "universe_size": len(universe),
+                    "overlap_genes": ",".join(overlap),
+                    "p": p_value,
+                }
+            )
+        enrichment = science.pd.DataFrame.from_records(rows)
+        if enrichment.empty:
+            raise ValueError("No gene sets overlap the AnnData gene universe.")
+        enrichment["p_adj"] = multipletests(enrichment["p"], method="fdr_bh")[1]
+        enrichment = enrichment.sort_values(["p_adj", "p", "gene_set"]).reset_index(drop=True)
+        parameters = {
+            "gene_sets_file": gene_sets_file,
+            "group": group,
+            "selection_column": selection_column,
+            "selection_operator": selection_operator,
+            "threshold": threshold,
+            "universe_source": universe_source,
+            "gene_column": gene_column,
+            "group_column": group_column,
+            "source_column": source_column,
+            "target_column": target_column,
+        }
+        enriched = make_result(
+            kind="table",
+            title=f"Gene-set overrepresentation{f' for {group}' if group else ''}",
+            operation="gene_set_overrepresentation",
+            parameters=parameters,
+            description="Hypergeometric enrichment using AnnData genes as the tested universe.",
+            warnings=[]
+            if bool((enrichment["intersection_size"] > 0).any())
+            else ["No gene set contains a selected gene."],
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+            started_at=started_at,
+            table=enrichment,
+        )
+        return io.NodeOutput(enriched)
+
+
 class OpenBioSingleCellDGIdbAnnotation(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -788,6 +941,7 @@ ENRICHMENT_NODE_CLASSES = [
     OpenBioSingleCellGenePanelScores,
     OpenBioSingleCellPathwayScoreTTest,
     OpenBioSingleCellRankedGSEA,
+    OpenBioSingleCellGeneSetOverrepresentation,
     OpenBioSingleCellDGIdbAnnotation,
     OpenBioSingleCellDrugScores,
     OpenBioSingleCellDrugHypergeometric,
@@ -803,6 +957,7 @@ __all__ = [
     "OpenBioSingleCellDrugHypergeometric",
     "OpenBioSingleCellDrugScores",
     "OpenBioSingleCellGenePanelScores",
+    "OpenBioSingleCellGeneSetOverrepresentation",
     "OpenBioSingleCellGSVAScores",
     "OpenBioSingleCellPathwayScoreTTest",
     "OpenBioSingleCellRankedGSEA",

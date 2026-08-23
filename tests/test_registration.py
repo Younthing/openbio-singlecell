@@ -80,6 +80,7 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellGenePanelScores",
     "OpenBioSingleCellPathwayScoreTTest",
     "OpenBioSingleCellRankedGSEA",
+    "OpenBioSingleCellGeneSetOverrepresentation",
     "OpenBioSingleCellDGIdbAnnotation",
     "OpenBioSingleCellDrugScores",
     "OpenBioSingleCellDrugHypergeometric",
