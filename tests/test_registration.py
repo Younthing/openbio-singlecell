@@ -92,6 +92,7 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellSCENICActivityBinarization",
     "OpenBioSingleCellSCENICTFModules",
     "OpenBioSingleCellAugur",
+    "OpenBioSingleCellAugurResults",
     "OpenBioSingleCellCellTypeCorrelation",
     "OpenBioSingleCellMarkerGenes",
     "OpenBioSingleCellUMAPPlot",
@@ -127,6 +128,20 @@ def test_input_extension_loads():
     assert isinstance(extension, OpenBioSingleCellExtension)
     assert {node.GET_SCHEMA().node_id for node in NODE_CLASSES} == EXPECTED_NODE_IDS
     assert asyncio.run(extension.get_node_list()) == NODE_CLASSES
+
+
+def test_node_outputs_use_only_the_public_analysis_contracts():
+    expected_types = {
+        "adata": AnnDataType.io_type,
+        "result": SingleCellResultType.io_type,
+    }
+    for node in NODE_CLASSES:
+        schema = node.GET_SCHEMA()
+        output_names = [output.display_name for output in schema.outputs]
+        assert output_names in (["adata"], ["result"], [])
+        assert schema.is_output_node is (not output_names)
+        for output in schema.outputs:
+            assert output.io_type == expected_types[output.display_name]
 
 
 def test_extension_loads_without_scientific_dependencies():

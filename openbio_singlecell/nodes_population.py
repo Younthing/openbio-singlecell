@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 from comfy_api.latest import io
 
 from . import dependencies
-from .analysis_utils import figure_to_png, make_result
+from .analysis_utils import figure_to_png, finish_adata, make_result
 from .node_types import AnnDataType, SingleCellResultType
 
 if TYPE_CHECKING:
@@ -15,6 +15,8 @@ if TYPE_CHECKING:
 
 PRIORITY_CATEGORY = "openbio/single-cell/cell-prioritization"
 VISUALIZATION_CATEGORY = "openbio/single-cell/visualization"
+EXPRESSION_SOURCES = ["X", "raw", "layer"]
+AUGUR_RESULT_TABLES = ["summary_metrics", "full_results", "feature_importances"]
 
 
 def _require_pertpy() -> Any:
@@ -38,19 +40,25 @@ class OpenBioSingleCellAugur(io.ComfyNode):
                 io.String.Input("condition_key", default="group"),
                 io.String.Input("control", default=""),
                 io.String.Input("treatment", default=""),
-                io.String.Input("model", default="random_forest_classifier"),
                 io.Combo.Input(
-                    "result_table",
-                    options=["summary_metrics", "full_results", "feature_importances"],
-                    default="summary_metrics",
+                    "model",
+                    options=[
+                        "random_forest_classifier",
+                        "logistic_regression_classifier",
+                        "random_forest_regressor",
+                    ],
+                    default="random_forest_classifier",
                 ),
+                io.Combo.Input("source", options=EXPRESSION_SOURCES, default="raw"),
+                io.String.Input("layer_name", default="counts"),
                 io.Int.Input("subsample_size", default=50, min=2, max=2**31 - 1),
                 io.Boolean.Input("select_variance_features", default=False),
                 io.Float.Input("span", default=0.75, min=0.0, max=1.0, step=0.05, advanced=True),
                 io.Int.Input("n_threads", default=1, min=1, max=1024, advanced=True),
                 io.Int.Input("random_seed", default=123, min=0, max=2**31 - 1, advanced=True),
+                io.String.Input("result_key", default="augurpy_results", advanced=True),
             ],
-            outputs=[SingleCellResultType.Output(display_name="result")],
+            outputs=[AnnDataType.Output(display_name="adata")],
         )
 
     @classmethod
@@ -62,12 +70,14 @@ class OpenBioSingleCellAugur(io.ComfyNode):
         control: str = "",
         treatment: str = "",
         model: str = "random_forest_classifier",
-        result_table: str = "summary_metrics",
+        source: str = "raw",
+        layer_name: str = "counts",
         subsample_size: int = 50,
         select_variance_features: bool = False,
         span: float = 0.75,
         n_threads: int = 1,
         random_seed: int = 123,
+        result_key: str = "augurpy_results",
     ) -> io.NodeOutput:
         if cell_type_key not in adata.obs:
             raise ValueError(f"Augur cell type column not found in obs: {cell_type_key!r}")
@@ -79,52 +89,115 @@ class OpenBioSingleCellAugur(io.ComfyNode):
             raise ValueError("Augur requires both control and treatment labels.")
         if control == treatment:
             raise ValueError("Augur control and treatment labels must be different.")
+        layer_name = layer_name.strip()
+        result_key = result_key.strip()
+        if not result_key:
+            raise ValueError("Augur result key cannot be empty.")
+
+        if source == "raw":
+            if adata.raw is None:
+                raise ValueError("Augur source 'raw' requires adata.raw.")
+            analysis_adata = adata.raw.to_adata()
+            analysis_adata.obs = adata.obs.copy()
+        elif source == "layer":
+            if not layer_name:
+                raise ValueError("Augur layer source requires a layer name.")
+            if layer_name not in adata.layers:
+                raise ValueError(f"Augur expression layer not found: {layer_name!r}")
+            analysis_adata = adata.copy()
+            analysis_adata.X = analysis_adata.layers[layer_name].copy()
+        elif source == "X":
+            analysis_adata = adata
+        else:
+            raise ValueError(f"Unsupported Augur expression source: {source!r}")
 
         pertpy = _require_pertpy()
-        science = dependencies.require_scientific_dependencies()
         started_at = time.perf_counter()
         augur = pertpy.tl.Augur(model)
         loaded = augur.load(
-            adata,
+            analysis_adata,
             label_col=condition_key,
             cell_type_col=cell_type_key,
             condition_label=control,
             treatment_label=treatment,
         )
-        _, results = augur.predict(
+        output, _ = augur.predict(
             loaded,
             subsample_size=subsample_size,
             n_threads=n_threads,
             select_variance_features=select_variance_features,
             span=span,
-            key_added="augurpy_results",
+            key_added=result_key,
             random_state=random_seed,
         )
-        table = science.pd.DataFrame(results[result_table]).reset_index()
         parameters = {
             "cell_type_key": cell_type_key,
             "condition_key": condition_key,
             "control": control,
             "treatment": treatment,
             "model": model,
-            "result_table": result_table,
+            "source": source,
+            "layer_name": layer_name,
             "subsample_size": subsample_size,
             "select_variance_features": select_variance_features,
             "span": span,
             "n_threads": n_threads,
             "random_seed": random_seed,
+            "result_key": result_key,
         }
+        finish_adata(
+            output,
+            "augur",
+            parameters,
+            int(adata.n_obs),
+            int(adata.n_vars),
+            started_at,
+            random_seed=random_seed,
+        )
+        return io.NodeOutput(output)
+
+
+class OpenBioSingleCellAugurResults(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellAugurResults",
+            display_name="Augur Results",
+            category=PRIORITY_CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.Combo.Input("result_table", options=AUGUR_RESULT_TABLES, default="summary_metrics"),
+                io.String.Input("result_key", default="augurpy_results", advanced=True),
+            ],
+            outputs=[SingleCellResultType.Output(display_name="result")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        adata: AnnData,
+        result_table: str = "summary_metrics",
+        result_key: str = "augurpy_results",
+    ) -> io.NodeOutput:
+        science = dependencies.require_scientific_dependencies()
+        result_key = result_key.strip()
+        stored = adata.uns.get(result_key)
+        if not isinstance(stored, dict):
+            raise ValueError(f"Augur results not found in uns[{result_key!r}].")
+        if result_table not in stored:
+            raise ValueError(f"Augur result table {result_table!r} not found in uns[{result_key!r}].")
+        started_at = time.perf_counter()
+        table = science.pd.DataFrame(stored[result_table]).reset_index()
         result = make_result(
             kind="table",
             title=f"Augur {result_table.replace('_', ' ')}",
-            operation="augur",
-            parameters=parameters,
-            description=f"Cell-type prioritization for {treatment} versus {control}.",
+            operation="augur_results",
+            parameters={"result_table": result_table, "result_key": result_key},
+            description="Stored cell-type prioritization results from Augur.",
             warnings=[],
             input_cells=int(adata.n_obs),
             input_genes=int(adata.n_vars),
             started_at=started_at,
-            random_seed=random_seed,
             table=table,
         )
         return io.NodeOutput(result)
@@ -209,12 +282,14 @@ class OpenBioSingleCellCellTypeCorrelation(io.ComfyNode):
 
 POPULATION_NODE_CLASSES = [
     OpenBioSingleCellAugur,
+    OpenBioSingleCellAugurResults,
     OpenBioSingleCellCellTypeCorrelation,
 ]
 
 
 __all__ = [
     "OpenBioSingleCellAugur",
+    "OpenBioSingleCellAugurResults",
     "OpenBioSingleCellCellTypeCorrelation",
     "POPULATION_NODE_CLASSES",
 ]
