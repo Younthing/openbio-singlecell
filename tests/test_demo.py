@@ -42,6 +42,10 @@ def test_manager_install_generates_demo(tmp_path, monkeypatch, science):
     output = comfy_root / "input" / "openbio-singlecell" / "openbio_singlecell_demo.h5ad"
     valid, reason = validate_existing(output, science.ad, science.sparse)
     assert valid, reason
+    persisted = science.ad.read_h5ad(output)
+    history = persisted.uns["openbio_singlecell"]["analysis_history"]
+    assert isinstance(history, dict)
+    assert history == {}
 
 
 def test_demo_validation_rejects_forged_same_shape_anndata(tmp_path, science):
@@ -59,6 +63,9 @@ def test_demo_validation_rejects_forged_same_shape_anndata(tmp_path, science):
         ("batches", "batches do not match"),
         ("fractional", "integer counts"),
         ("negative", "negative counts"),
+        ("metadata", "metadata must be a mapping"),
+        ("schema", "unsupported schema_version"),
+        ("history", "analysis_history must be a mapping"),
     ]
     for issue, expected_reason in cases:
         forged = demo.copy()
@@ -80,6 +87,12 @@ def test_demo_validation_rejects_forged_same_shape_anndata(tmp_path, science):
         elif issue == "negative":
             forged.X = forged.X.copy()
             forged.X.data[0] = -1
+        elif issue == "metadata":
+            forged.uns["openbio_singlecell"] = science.np.asarray([], dtype=float)
+        elif issue == "schema":
+            forged.uns["openbio_singlecell"]["schema_version"] = 999
+        elif issue == "history":
+            forged.uns["openbio_singlecell"]["analysis_history"] = science.np.asarray([], dtype=float)
 
         path = tmp_path / f"forged_{issue}.h5ad"
         forged.write_h5ad(path)

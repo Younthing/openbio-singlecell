@@ -8,6 +8,7 @@ from pathlib import Path
 CELL_COUNT = 600
 GENE_COUNT = 500
 RANDOM_SEED = 42
+METADATA_SCHEMA_VERSION = 1
 
 MT_GENES = [
     "MT-ND1",
@@ -90,6 +91,16 @@ def validate_existing(path: Path, ad, sparse) -> tuple[bool, str]:
     expected_markers = {gene for markers in KNOWN_MARKERS.values() for gene in markers}
     expected_group_counts = {group: CELL_COUNT // len(KNOWN_MARKERS) for group in KNOWN_MARKERS}
     metadata = adata.uns.get("openbio_singlecell", {})
+    if not isinstance(metadata, dict):
+        return False, "OpenBio metadata must be a mapping"
+    if metadata.get("schema_version") != METADATA_SCHEMA_VERSION:
+        return (
+            False,
+            "OpenBio metadata has unsupported schema_version "
+            f"{metadata.get('schema_version')!r}; expected {METADATA_SCHEMA_VERSION}",
+        )
+    if not isinstance(metadata.get("analysis_history"), dict):
+        return False, "OpenBio metadata analysis_history must be a mapping"
     cell_groups = set(adata.obs["cell_type"].astype(str)) if "cell_type" in adata.obs else set()
     group_counts = (
         adata.obs["cell_type"].astype(str).value_counts().to_dict() if required_obs.issubset(adata.obs.columns) else {}
@@ -164,7 +175,7 @@ def build_demo(np, pd, sparse, ad):
 
     adata = ad.AnnData(X=sparse.csr_matrix(counts), obs=obs, var=var)
     adata.uns["openbio_singlecell"] = {
-        "schema_version": 1,
+        "schema_version": METADATA_SCHEMA_VERSION,
         "version": "0.1.0",
         "display_name": "OpenBio single-cell demo",
         "source": {"kind": "generated_demo"},
