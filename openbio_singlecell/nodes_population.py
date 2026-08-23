@@ -36,8 +36,8 @@ class OpenBioSingleCellAugur(io.ComfyNode):
                 AnnDataType.Input("adata"),
                 io.String.Input("cell_type_key", default="cell_type"),
                 io.String.Input("condition_key", default="group"),
-                io.String.Input("control", default="control"),
-                io.String.Input("treatment", default="treatment"),
+                io.String.Input("control", default=""),
+                io.String.Input("treatment", default=""),
                 io.String.Input("model", default="random_forest_classifier"),
                 io.Combo.Input(
                     "result_table",
@@ -59,8 +59,8 @@ class OpenBioSingleCellAugur(io.ComfyNode):
         adata: AnnData,
         cell_type_key: str = "cell_type",
         condition_key: str = "group",
-        control: str = "control",
-        treatment: str = "treatment",
+        control: str = "",
+        treatment: str = "",
         model: str = "random_forest_classifier",
         result_table: str = "summary_metrics",
         subsample_size: int = 50,
@@ -73,6 +73,12 @@ class OpenBioSingleCellAugur(io.ComfyNode):
             raise ValueError(f"Augur cell type column not found in obs: {cell_type_key!r}")
         if condition_key not in adata.obs:
             raise ValueError(f"Augur condition column not found in obs: {condition_key!r}")
+        control = control.strip()
+        treatment = treatment.strip()
+        if not control or not treatment:
+            raise ValueError("Augur requires both control and treatment labels.")
+        if control == treatment:
+            raise ValueError("Augur control and treatment labels must be different.")
 
         pertpy = _require_pertpy()
         science = dependencies.require_scientific_dependencies()

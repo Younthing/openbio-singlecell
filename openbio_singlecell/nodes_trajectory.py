@@ -192,7 +192,7 @@ class OpenBioSingleCellDPT(io.ComfyNode):
             inputs=[
                 AnnDataType.Input("adata"),
                 io.String.Input("root_column", default="leiden"),
-                io.String.Input("root_value", default="0"),
+                io.String.Input("root_value", default=""),
                 io.Int.Input("n_dcs", default=10, min=1, max=4096, advanced=True),
                 io.String.Input("neighbors_key", default="neighbors", advanced=True),
             ],
@@ -204,7 +204,7 @@ class OpenBioSingleCellDPT(io.ComfyNode):
         cls,
         adata: AnnData,
         root_column: str = "leiden",
-        root_value: str = "0",
+        root_value: str = "",
         n_dcs: int = 10,
         neighbors_key: str = "neighbors",
     ) -> io.NodeOutput:
@@ -213,6 +213,9 @@ class OpenBioSingleCellDPT(io.ComfyNode):
             raise ValueError("DPT root_column cannot be empty.")
         if root_column not in adata.obs:
             raise ValueError(f"DPT root column not found in obs: {root_column!r}")
+        root_value = root_value.strip()
+        if not root_value:
+            raise ValueError("DPT root_value cannot be empty.")
         if neighbors_key not in adata.uns:
             raise ValueError(f"DPT requires uns[{neighbors_key!r}]; run Neighbors first.")
 

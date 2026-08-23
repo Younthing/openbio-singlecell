@@ -407,8 +407,8 @@ class OpenBioSingleCellPathwayScoreTTest(io.ComfyNode):
                 AnnDataType.Input("adata"),
                 io.String.Input("cell_type_column", default="cell_type"),
                 io.String.Input("group_column", default="group"),
-                io.String.Input("group_a", default="treatment"),
-                io.String.Input("group_b", default="control"),
+                io.String.Input("group_a", default=""),
+                io.String.Input("group_b", default=""),
                 io.String.Input("score_key", default="aucell_estimate", advanced=True),
             ],
             outputs=[SingleCellResultType.Output(display_name="result")],
@@ -420,8 +420,8 @@ class OpenBioSingleCellPathwayScoreTTest(io.ComfyNode):
         adata: AnnData,
         cell_type_column: str = "cell_type",
         group_column: str = "group",
-        group_a: str = "treatment",
-        group_b: str = "control",
+        group_a: str = "",
+        group_b: str = "",
         score_key: str = "aucell_estimate",
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
@@ -432,6 +432,8 @@ class OpenBioSingleCellPathwayScoreTTest(io.ComfyNode):
         group_column = _required_name(group_column, "Group column")
         group_a = _required_name(group_a, "First group")
         group_b = _required_name(group_b, "Second group")
+        if group_a == group_b:
+            raise ValueError("Pathway score groups must be different.")
         score_key = _required_name(score_key, "Pathway score key")
         missing_obs = [column for column in (cell_type_column, group_column) if column not in adata.obs]
         if missing_obs:
@@ -505,7 +507,7 @@ class OpenBioSingleCellRankedGSEA(io.ComfyNode):
             inputs=[
                 SingleCellResultType.Input("marker_result"),
                 io.String.Input("gene_sets_file", default="openbio-singlecell/gene_sets.csv"),
-                io.String.Input("group", default="0"),
+                io.String.Input("group", default=""),
                 io.String.Input("source_column", default="geneset", advanced=True),
                 io.String.Input("target_column", default="genesymbol", advanced=True),
                 io.String.Input("score_column", default="score", advanced=True),
@@ -533,7 +535,7 @@ class OpenBioSingleCellRankedGSEA(io.ComfyNode):
         cls,
         marker_result: SingleCellResult,
         gene_sets_file: str = "openbio-singlecell/gene_sets.csv",
-        group: str = "0",
+        group: str = "",
         source_column: str = "geneset",
         target_column: str = "genesymbol",
         score_column: str = "score",
