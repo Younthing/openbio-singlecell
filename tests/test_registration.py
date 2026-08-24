@@ -149,7 +149,7 @@ def test_input_extension_loads():
     assert asyncio.run(extension.get_node_list()) == NODE_CLASSES
 
 
-def test_node_outputs_use_only_the_public_analysis_contracts():
+def test_node_outputs_use_only_their_concrete_public_contracts():
     expected_types = {
         "adata": AnnDataType.io_type,
         "table": TableResultType.io_type,
@@ -159,13 +159,71 @@ def test_node_outputs_use_only_the_public_analysis_contracts():
         "network": ScenicNetworkType.io_type,
         "tree": CassiopeiaTreeType.io_type,
     }
+    expected_multi_outputs = {
+        "OpenBioSingleCellSCVIIntegration": [
+            ("adata", AnnDataType.io_type),
+            ("model", SCVIModelType.io_type),
+        ],
+        "OpenBioSingleCellRunPySCENIC": [
+            ("adata", AnnDataType.io_type),
+            ("network", ScenicNetworkType.io_type),
+        ],
+    }
     for node in NODE_CLASSES:
         schema = node.GET_SCHEMA()
-        output_names = [output.display_name for output in schema.outputs]
-        assert output_names in (["adata"], ["table"], ["plot"], ["summary"], ["adata", "model"], ["adata", "network"], ["tree"], [])
-        assert schema.is_output_node is (not output_names)
+        actual_outputs = [(output.display_name, output.io_type) for output in schema.outputs]
+        expected_outputs = expected_multi_outputs.get(schema.node_id)
+        if expected_outputs is not None:
+            assert actual_outputs == expected_outputs
+        elif actual_outputs:
+            assert len(actual_outputs) == 1
+            output_name, output_type = actual_outputs[0]
+            assert output_type == expected_types[output_name]
+        assert schema.is_output_node is (not actual_outputs)
+
+
+def test_registered_ports_reject_generic_and_legacy_analysis_contracts():
+    allowed_openbio_types = {
+        AnnDataType.io_type,
+        CassiopeiaTreeType.io_type,
+        PlotResultType.io_type,
+        ScenicNetworkType.io_type,
+        SCVIModelType.io_type,
+        SummaryResultType.io_type,
+        TableResultType.io_type,
+    }
+    forbidden_types = {
+        "*",
+        "MODEL",
+        "OBJECT",
+        "OPENBIO_DATASET",
+        "OPENBIO_SC_DATASET",
+        "OPENBIO_SC_RESULT",
+        "OPENBIO_SINGLE_CELL_RESULT",
+    }
+    object_consumers = {}
+
+    for node in NODE_CLASSES:
+        schema = node.GET_SCHEMA()
+        for input_ in schema.inputs:
+            port_types = set(input_.get_io_type().split(","))
+            assert not port_types & forbidden_types
+            assert {item for item in port_types if item.startswith("OPENBIO_")} <= allowed_openbio_types
+            assert input_.id.lower() not in {"dataset", "dataset_name"}
+            if port_types & {SCVIModelType.io_type, ScenicNetworkType.io_type, CassiopeiaTreeType.io_type}:
+                object_consumers[(schema.node_id, input_.id)] = port_types
+
         for output in schema.outputs:
-            assert output.io_type == expected_types[output.display_name]
+            assert output.io_type not in forbidden_types
+            assert output.io_type in allowed_openbio_types
+            assert output.display_name.lower() not in {"dataset", "dataset_name"}
+
+    assert object_consumers == {
+        ("OpenBioSingleCellSCVIDifferentialExpression", "model"): {SCVIModelType.io_type},
+        ("OpenBioSingleCellSCENICTFModules", "network"): {ScenicNetworkType.io_type},
+        ("OpenBioSingleCellCassiopeiaExpansionTest", "tree"): {CassiopeiaTreeType.io_type},
+        ("OpenBioSingleCellCassiopeiaPlasticity", "tree"): {CassiopeiaTreeType.io_type},
+    }
 
 
 def test_extension_loads_without_scientific_dependencies():
@@ -176,7 +234,17 @@ def test_extension_loads_without_scientific_dependencies():
         import importlib.abc
         import sys
 
-        blocked_roots = {"anndata", "cassiopeia", "loompy", "matplotlib", "pandas", "pyscenic", "scanpy", "scipy", "scvi"}
+        blocked_roots = {
+            "anndata",
+            "cassiopeia",
+            "loompy",
+            "matplotlib",
+            "pandas",
+            "pyscenic",
+            "scanpy",
+            "scipy",
+            "scvi",
+        }
         attempted = []
 
         class BlockScience(importlib.abc.MetaPathFinder):

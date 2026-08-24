@@ -18,6 +18,9 @@ WIRE_TYPES = {
     "OPENBIO_SINGLE_CELL_TABLE",
     "OPENBIO_SINGLE_CELL_PLOT",
     "OPENBIO_SINGLE_CELL_SUMMARY",
+    "OPENBIO_SCVI_MODEL",
+    "OPENBIO_SCENIC_NETWORK",
+    "OPENBIO_CASSIOPEIA_TREE",
 }
 
 
@@ -94,7 +97,7 @@ def test_example_workflow_matches_registered_node_schemas(filename):
         assert target_input["link"] == link_id
 
 
-def test_examples_use_only_the_explicit_anndata_and_artifact_contracts():
+def test_examples_use_only_explicit_data_artifact_and_domain_object_contracts():
     serialized = "\n".join(json.dumps(value, sort_keys=True) for value in _load_examples().values())
 
     assert "OPENBIO_ANNDATA" in serialized
