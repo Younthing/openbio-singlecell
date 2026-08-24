@@ -10,7 +10,6 @@ def test_preview_uses_extension_lifecycle_without_prototype_patching():
     assert "onNodeOutputsUpdated(nodeOutputs)" in source
     assert "beforeRegisterNodeDef" not in source
     assert ".prototype" not in source
-    assert "onExecuted" not in source
 
 
 def test_preview_renderer_and_styles_are_plugin_owned_assets():

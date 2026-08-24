@@ -7,6 +7,7 @@ import {
 
 const PREVIEW_NODE_TYPE = "OpenBioSingleCellPreviewResult";
 const STYLESHEET_ID = "openbio-single-cell-preview-styles";
+const livePreviewNodes = new WeakSet();
 
 function ensureStylesheet() {
     if (document.getElementById(STYLESHEET_ID)) return;
@@ -35,6 +36,19 @@ function getNodeByLocatorId(locatorId) {
     return null;
 }
 
+function attachLivePreview(node) {
+    if (livePreviewNodes.has(node)) return;
+
+    const onExecuted = node.onExecuted;
+    node.onExecuted = function (output) {
+        onExecuted?.apply(this, [output]);
+        if (!Array.isArray(output?.openbio_singlecell)) return;
+
+        updateSingleCellPreview(this, output.openbio_singlecell[0]);
+    };
+    livePreviewNodes.add(node);
+}
+
 app.registerExtension({
     name: "openbio-singlecell.preview",
 
@@ -43,6 +57,7 @@ app.registerExtension({
 
         ensureStylesheet();
         createSingleCellPreview(node);
+        attachLivePreview(node);
     },
 
     onNodeOutputsUpdated(nodeOutputs) {
