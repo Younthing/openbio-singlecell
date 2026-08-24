@@ -7,7 +7,8 @@ from comfy_api.latest import io
 
 from . import dependencies
 from .analysis_utils import finish_adata, make_table_result
-from .node_types import AnnDataType, TableResultType
+from .node_types import AnnDataType, SCVIModelType, TableResultType
+from .scvi_model import SCVIModel
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -334,19 +335,21 @@ class OpenBioSingleCellSCVIDifferentialExpression(io.ComfyNode):
             category=CATEGORY,
             inputs=[
                 AnnDataType.Input("adata"),
-                io.Combo.Input("source", options=["X", "layer"], default="layer"),
-                io.String.Input("layer_name", default="counts"),
+                SCVIModelType.Input("model"),
                 io.String.Input("groupby", default="group"),
                 io.String.Input("group1", default=""),
                 io.String.Input("group2", default=""),
                 io.String.Input("subset_column", default=""),
                 io.String.Input("subset_value", default=""),
-                io.Combo.Input("gene_likelihood", options=["zinb", "nb", "poisson"], default="nb"),
-                io.Int.Input("n_latent", default=10, min=1, max=4096, advanced=True),
-                io.Float.Input("delta", default=0.25, min=0.0, step=0.05),
-                io.Int.Input("max_epochs", default=0, min=0, max=100000, advanced=True),
-                io.Boolean.Input("early_stopping", default=True, advanced=True),
-                io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
+                io.Combo.Input("mode", options=["vanilla", "change"], default="vanilla"),
+                io.Float.Input(
+                    "delta",
+                    default=0.25,
+                    min=0.0,
+                    step=0.05,
+                    advanced=True,
+                    tooltip="Only used when mode is 'change'.",
+                ),
             ],
             outputs=[TableResultType.Output(display_name="table")],
         )
@@ -355,88 +358,61 @@ class OpenBioSingleCellSCVIDifferentialExpression(io.ComfyNode):
     def execute(
         cls,
         adata: AnnData,
-        source: str = "layer",
-        layer_name: str = "counts",
+        model: SCVIModel,
         groupby: str = "group",
         group1: str = "",
         group2: str = "",
         subset_column: str = "",
         subset_value: str = "",
-        gene_likelihood: str = "nb",
-        n_latent: int = 10,
+        mode: str = "vanilla",
         delta: float = 0.25,
-        max_epochs: int = 0,
-        early_stopping: bool = True,
-        random_seed: int = 0,
     ) -> io.NodeOutput:
-        if source == "layer" and layer_name not in adata.layers:
-            raise ValueError(f"scVI differential-expression layer not found: {layer_name!r}")
-        if groupby not in adata.obs:
-            raise ValueError(f"scVI differential-expression group column not found in obs: {groupby!r}")
-        if not group1 or not group2:
-            raise ValueError("scVI differential-expression group1 and group2 values are required.")
-        if bool(subset_column) != bool(subset_value):
-            raise ValueError("scVI subset_column and subset_value must be provided together.")
-        if subset_column and subset_column not in adata.obs:
-            raise ValueError(f"scVI subset column not found in obs: {subset_column!r}")
-
-        try:
-            import scvi
-        except (ImportError, OSError) as error:
-            raise RuntimeError("scVI Differential Expression requires the scvi-tools package.") from error
-
+        if not isinstance(model, SCVIModel):
+            raise TypeError("scVI Differential Expression requires an SCVIModel input.")
+        groupby = groupby.strip()
+        group1 = group1.strip()
+        group2 = group2.strip()
+        subset_column = subset_column.strip()
+        subset_value = subset_value.strip()
+        mode = mode.strip()
         science = dependencies.require_scientific_dependencies()
         started_at = time.perf_counter()
-        scvi.settings.seed = random_seed
-        work = adata.copy()
-        scvi.model.SCVI.setup_anndata(work, layer=layer_name if source == "layer" else None)
-        model = scvi.model.SCVI(work, n_latent=n_latent, gene_likelihood=gene_likelihood)
-        train_kwargs = {"early_stopping": early_stopping}
-        if max_epochs:
-            train_kwargs["max_epochs"] = max_epochs
-        model.train(**train_kwargs)
-
-        analysis_adata = work
-        if subset_column:
-            mask = work.obs[subset_column].astype(str) == subset_value
-            analysis_adata = work[mask].copy()
-            if analysis_adata.n_obs == 0:
-                raise ValueError(f"scVI subset contains no observations: {subset_column}={subset_value!r}")
         table = model.differential_expression(
-            analysis_adata,
+            adata,
             groupby=groupby,
             group1=group1,
             group2=group2,
+            subset_column=subset_column,
+            subset_value=subset_value,
+            mode=mode,
             delta=delta,
         ).reset_index()
+        input_cells = int(adata.n_obs)
+        if subset_column:
+            input_cells = int((adata.obs[subset_column].astype(str) == subset_value).sum())
         if "index" in table.columns and "gene" not in table.columns:
             table = table.rename(columns={"index": "gene"})
 
         parameters = {
-            "source": source,
-            "layer_name": layer_name,
             "groupby": groupby,
             "group1": group1,
             "group2": group2,
             "subset_column": subset_column,
             "subset_value": subset_value,
-            "gene_likelihood": gene_likelihood,
-            "n_latent": n_latent,
+            "mode": mode,
             "delta": delta,
-            "max_epochs": max_epochs,
-            "early_stopping": early_stopping,
-            "random_seed": random_seed,
+            "model_class": model.model_class,
+            "model_training_parameters": dict(model.training_parameters),
         }
         result = make_table_result(
             title=f"scVI DE: {group1} vs {group2}",
             operation="scvi_differential_expression",
             parameters=parameters,
-            description="scVI differential expression fitted and evaluated in one node.",
+            description="Differential expression evaluated with the supplied trained scVI model.",
             warnings=[],
-            input_cells=int(analysis_adata.n_obs),
-            input_genes=int(analysis_adata.n_vars),
+            input_cells=input_cells,
+            input_genes=len(model.var_names),
             started_at=started_at,
-            random_seed=random_seed,
             table=science.pd.DataFrame(table),
         )
         return io.NodeOutput(result)
