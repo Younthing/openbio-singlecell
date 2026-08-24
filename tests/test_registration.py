@@ -11,6 +11,7 @@ from openbio_singlecell import PLUGIN_VERSION, SCHEMA_VERSION, dependencies
 from openbio_singlecell.extension import NODE_CLASSES, OpenBioSingleCellExtension, comfy_entrypoint
 from openbio_singlecell.node_types import (
     AnnDataType,
+    CassiopeiaTreeType,
     PlotResultType,
     ScenicNetworkType,
     SCVIModelType,
@@ -64,6 +65,7 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellPAGA",
     "OpenBioSingleCellDPT",
     "OpenBioSingleCellCassiopeiaLineageQC",
+    "OpenBioSingleCellReconstructCassiopeiaTree",
     "OpenBioSingleCellCassiopeiaExpansionTest",
     "OpenBioSingleCellCassiopeiaPlasticity",
     "OpenBioSingleCellVelocityFilterAndNormalize",
@@ -127,6 +129,7 @@ def test_package_metadata_is_versioned():
     assert SummaryResultType.io_type == "OPENBIO_SINGLE_CELL_SUMMARY"
     assert SCVIModelType.io_type == "OPENBIO_SCVI_MODEL"
     assert ScenicNetworkType.io_type == "OPENBIO_SCENIC_NETWORK"
+    assert CassiopeiaTreeType.io_type == "OPENBIO_CASSIOPEIA_TREE"
 
 
 def test_scientific_dependency_api_is_minimal():
@@ -154,11 +157,12 @@ def test_node_outputs_use_only_the_public_analysis_contracts():
         "summary": SummaryResultType.io_type,
         "model": SCVIModelType.io_type,
         "network": ScenicNetworkType.io_type,
+        "tree": CassiopeiaTreeType.io_type,
     }
     for node in NODE_CLASSES:
         schema = node.GET_SCHEMA()
         output_names = [output.display_name for output in schema.outputs]
-        assert output_names in (["adata"], ["table"], ["plot"], ["summary"], ["adata", "model"], ["adata", "network"], [])
+        assert output_names in (["adata"], ["table"], ["plot"], ["summary"], ["adata", "model"], ["adata", "network"], ["tree"], [])
         assert schema.is_output_node is (not output_names)
         for output in schema.outputs:
             assert output.io_type == expected_types[output.display_name]
@@ -172,7 +176,7 @@ def test_extension_loads_without_scientific_dependencies():
         import importlib.abc
         import sys
 
-        blocked_roots = {"anndata", "loompy", "matplotlib", "pandas", "pyscenic", "scanpy", "scipy", "scvi"}
+        blocked_roots = {"anndata", "cassiopeia", "loompy", "matplotlib", "pandas", "pyscenic", "scanpy", "scipy", "scvi"}
         attempted = []
 
         class BlockScience(importlib.abc.MetaPathFinder):
