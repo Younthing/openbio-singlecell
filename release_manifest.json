@@ -35,6 +35,11 @@
           "table": "OPENBIO_SINGLE_CELL_TABLE",
           "plot": "OPENBIO_SINGLE_CELL_PLOT",
           "summary": "OPENBIO_SINGLE_CELL_SUMMARY"
+        },
+        "analysis_object_wire_types": {
+          "scvi_model": "OPENBIO_SCVI_MODEL",
+          "scenic_network": "OPENBIO_SCENIC_NETWORK",
+          "cassiopeia_tree": "OPENBIO_CASSIOPEIA_TREE"
         }
       }
     },

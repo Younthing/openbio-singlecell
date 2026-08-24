@@ -170,8 +170,14 @@ Additional arguments are forwarded to ComfyUI. ComfyUI's own requirements must a
 - CSV, PNG, and H5AD files are only made permanent by explicit output nodes and are written below `output/openbio-singlecell`.
 - Node UI payloads are bounded; complete tables are exported as CSV.
 - DataFrames remain inside table artifacts and plots carry rendered PNG data. Library-specific models, trees,
-  figures, and other opaque Python objects remain node implementation details unless a future workflow has a
-  concrete reusable downstream contract for them.
+  figures, and other opaque Python objects remain node implementation details unless a workflow has a concrete
+  reusable downstream contract for them.
+- Trained scVI models, pySCENIC regulatory networks, and solved Cassiopeia trees have explicit
+  `OPENBIO_SCVI_MODEL`, `OPENBIO_SCENIC_NETWORK`, and `OPENBIO_CASSIOPEIA_TREE` contracts because each has a
+  real downstream consumer. No generic Python-object or generic model wire is exposed.
+- A transformation keeps one `adata` output when it has no reusable secondary product. The deliberate exceptions
+  are scVI Integration (`adata`, `model`) and Run pySCENIC (`adata`, `network`); Cassiopeia reconstruction produces
+  one reusable `tree` for its expansion and plasticity consumers.
 
 ## Scope and limitations
 

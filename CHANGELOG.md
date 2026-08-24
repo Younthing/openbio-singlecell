@@ -10,6 +10,12 @@
 - Require dataset-specific labels explicitly and keep each node's natural domain output explicit.
 - Replace the catch-all single-cell result wire with concrete table, plot, and structured-summary contracts so
   incompatible CSV/PNG/table links are rejected on the canvas.
+- Preserve trained scVI models and pySCENIC networks as concrete reusable outputs instead of retraining or asking
+  users to pass temporary intermediate files.
+- Make scVI's counts source and DE mode explicit, keep optional latent distributions/MDE advanced and off by
+  default, and preserve pySCENIC's optional `HVG ∪ TF` inference-gene selection.
+- Reuse solved Cassiopeia trees through a dedicated reconstruction node rather than rebuilding the same tree in
+  each lineage analysis node.
 
 ## 0.1.0 - 2026-08-23
 

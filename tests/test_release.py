@@ -30,6 +30,11 @@ def test_release_manifest_records_the_public_contract_and_artifacts():
             "plot": "OPENBIO_SINGLE_CELL_PLOT",
             "summary": "OPENBIO_SINGLE_CELL_SUMMARY",
         },
+        "analysis_object_wire_types": {
+            "scvi_model": "OPENBIO_SCVI_MODEL",
+            "scenic_network": "OPENBIO_SCENIC_NETWORK",
+            "cassiopeia_tree": "OPENBIO_CASSIOPEIA_TREE",
+        },
     }
     assert all((PLUGIN_ROOT / relative).is_file() for relative in custom_node["example_workflows"])
     assert manifest["release_artifacts"]["openbio_frontend_dist"]["build_command"] == "corepack pnpm build:openbio"
