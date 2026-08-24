@@ -53,7 +53,7 @@ class FakeTrainedSCVI:
             index=["gene_0", "gene_1"],
         )
 
-    def deregister_manager(self, analysis_adata):
+    def deregister_manager(self, analysis_adata=None):
         self.deregister_manager_calls.append(analysis_adata)
         if self.deregister_manager_error is not None:
             raise self.deregister_manager_error
@@ -255,8 +255,7 @@ def test_scvi_differential_expression_reuses_model_and_aligns_group_subset(adata
     assert call["group2"] == "B"
     assert call["mode"] == "vanilla"
     assert call["delta"] == 0.5
-    assert len(raw_model.deregister_manager_calls) == 1
-    assert raw_model.deregister_manager_calls[0] is call["adata"]
+    assert raw_model.deregister_manager_calls == [None]
     science.pd.testing.assert_frame_equal(downstream.obs, downstream_obs)
     science.pd.testing.assert_frame_equal(registered.obs, registered_obs)
     assert "_fake_internal_mutation" not in downstream.obs
@@ -279,8 +278,31 @@ def test_scvi_differential_expression_preserves_primary_error_when_cleanup_fails
     with pytest.raises(ValueError, match="primary differential-expression failure"):
         OpenBioSingleCellSCVIDifferentialExpression.execute(downstream, model, "group", "A", "B")
 
-    assert len(raw_model.deregister_manager_calls) == 1
-    assert raw_model.deregister_manager_calls[0] is raw_model.differential_expression_calls[0]["adata"]
+    assert raw_model.deregister_manager_calls == [None]
+
+
+def test_scvi_differential_expression_does_not_fail_after_successful_analysis(adata, science):
+    class SCVI15TrainedModel(FakeTrainedSCVI):
+        def deregister_manager(self, analysis_adata=None):
+            self.deregister_manager_calls.append(analysis_adata)
+            if analysis_adata is not None:
+                raise ValueError("AnnData object was setup with a different model.")
+
+    registered = adata.copy()
+    raw_model = SCVI15TrainedModel(registered, science)
+    model = SCVIModel(raw_model, registered, {})
+    downstream = registered.copy()
+    downstream.obs["group"] = science.pd.Categorical(["A", "A", "A", "B", "B", "B"])
+
+    result = model.differential_expression(
+        downstream,
+        groupby="group",
+        group1="A",
+        group2="B",
+    )
+
+    assert result.index.tolist() == ["gene_0", "gene_1"]
+    assert raw_model.deregister_manager_calls == [None]
 
 
 def test_scvi_model_rejects_incompatible_observation_identity(adata, science):

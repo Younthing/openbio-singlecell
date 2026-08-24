@@ -137,7 +137,7 @@ class SCVIModel:
         finally:
             differential_error = sys.exception()
             try:
-                self._model.deregister_manager(analysis_adata)
+                self._model.deregister_manager()
             except Exception:
                 if differential_error is None:
                     raise
