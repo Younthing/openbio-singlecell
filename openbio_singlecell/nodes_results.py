@@ -8,6 +8,7 @@ from comfy_api.latest import io
 from . import dependencies
 from .analysis_utils import figure_to_png, make_plot_result, make_table_result
 from .contracts import TableResult
+from .expression_source import DynamicExpressionSource, ExpressionSourceSpec
 from .node_types import AnnDataType, PlotResultType, TableResultType
 
 if TYPE_CHECKING:
@@ -38,6 +39,12 @@ def _first_column(frame: Any, names: tuple[str, ...], science: dependencies.Scie
 
 
 class OpenBioSingleCellMarkerGenes(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="Marker source",
+        include_raw=True,
+        layer_default="log1p_norm",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -52,8 +59,7 @@ class OpenBioSingleCellMarkerGenes(io.ComfyNode):
                     options=["wilcoxon", "t-test", "t-test_overestim_var", "logreg"],
                     default="wilcoxon",
                 ),
-                io.Combo.Input("source", options=["X", "raw", "layer"], default="X"),
-                io.String.Input("layer_name", default=""),
+                cls.EXPRESSION_SOURCE.input(),
                 io.Int.Input("n_genes", default=100, min=1, max=2**31 - 1),
                 io.Boolean.Input("pts", default=True, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
@@ -67,8 +73,7 @@ class OpenBioSingleCellMarkerGenes(io.ComfyNode):
         adata: AnnData,
         groupby: str = "leiden",
         method: str = "wilcoxon",
-        source: str = "X",
-        layer_name: str = "",
+        source: DynamicExpressionSource | None = None,
         n_genes: int = 100,
         pts: bool = True,
         random_seed: int = 0,
@@ -76,29 +81,24 @@ class OpenBioSingleCellMarkerGenes(io.ComfyNode):
         science = dependencies.require_scientific_dependencies()
         if groupby not in adata.obs:
             raise ValueError(f"Marker groupby column not found in obs: {groupby!r}")
-        if source == "raw" and adata.raw is None:
-            raise ValueError("Marker source 'raw' was selected, but adata.raw is unavailable.")
-        if source == "layer" and layer_name not in adata.layers:
-            raise ValueError(f"Marker layer not found: {layer_name!r}")
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
 
         started_at = time.perf_counter()
         cells = int(adata.n_obs)
-        genes = int(adata.raw.n_vars) if source == "raw" else int(adata.n_vars)
+        genes = int(adata.raw.n_vars) if expression.use_raw else int(adata.n_vars)
         work = adata.copy()
         if not isinstance(work.obs[groupby].dtype, science.pd.CategoricalDtype):
             work.obs[groupby] = science.pd.Categorical(work.obs[groupby].astype(str))
 
         key = "_openbio_marker_genes"
-        use_raw = source == "raw"
-        layer = layer_name if source == "layer" else None
         method_options = {"random_state": random_seed} if method == "logreg" else {}
         science.sc.tl.rank_genes_groups(
             work,
             groupby=groupby,
             method=method,
             n_genes=n_genes,
-            use_raw=use_raw,
-            layer=layer,
+            use_raw=expression.use_raw,
+            layer=expression.scanpy_layer,
             pts=pts,
             key_added=key,
             **method_options,
@@ -119,8 +119,7 @@ class OpenBioSingleCellMarkerGenes(io.ComfyNode):
         parameters = {
             "groupby": groupby,
             "method": method,
-            "source": source,
-            "layer_name": layer_name,
+            **expression.parameters(),
             "n_genes": n_genes,
             "pts": pts,
             "random_seed": random_seed,
@@ -294,6 +293,12 @@ class OpenBioSingleCellFilterMarkerGenes(io.ComfyNode):
 
 
 class OpenBioSingleCellMarkerExpressionPlot(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="Marker plot source",
+        include_raw=True,
+        layer_default="log1p_norm",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -307,8 +312,7 @@ class OpenBioSingleCellMarkerExpressionPlot(io.ComfyNode):
                 io.Combo.Input(
                     "plot_type", options=["dotplot", "matrixplot", "tracksplot", "violin"], default="dotplot"
                 ),
-                io.Combo.Input("source", options=["X", "raw", "layer"], default="raw"),
-                io.String.Input("layer_name", default="log1p_norm"),
+                cls.EXPRESSION_SOURCE.input(),
                 io.Combo.Input("standard_scale", options=["none", "var", "group"], default="var", advanced=True),
                 io.Boolean.Input("dendrogram", default=False, advanced=True),
                 io.Boolean.Input("log", default=False, advanced=True),
@@ -323,8 +327,7 @@ class OpenBioSingleCellMarkerExpressionPlot(io.ComfyNode):
         genes: str = "",
         groupby: str = "leiden",
         plot_type: str = "dotplot",
-        source: str = "raw",
-        layer_name: str = "log1p_norm",
+        source: DynamicExpressionSource | None = None,
         standard_scale: str = "var",
         dendrogram: bool = False,
         log: bool = False,
@@ -335,19 +338,16 @@ class OpenBioSingleCellMarkerExpressionPlot(io.ComfyNode):
             raise ValueError("Marker Expression Plot requires at least one comma-separated gene.")
         if groupby not in adata.obs:
             raise ValueError(f"Marker plot group column not found in obs: {groupby!r}")
-        expression = adata.raw.var_names if source == "raw" and adata.raw is not None else adata.var_names
-        if source == "raw" and adata.raw is None:
-            raise ValueError("Marker plot source 'raw' was selected, but adata.raw is unavailable.")
-        if source == "layer" and layer_name not in adata.layers:
-            raise ValueError(f"Marker plot layer not found: {layer_name!r}")
-        missing = [gene for gene in gene_names if gene not in expression]
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
+        expression_var_names = adata.raw.var_names if expression.use_raw else adata.var_names
+        missing = [gene for gene in gene_names if gene not in expression_var_names]
         if missing:
             raise ValueError(f"Marker plot genes not found in the selected expression source: {missing}")
 
         started_at = time.perf_counter()
         plot_kwargs = {
-            "use_raw": source == "raw",
-            "layer": layer_name if source == "layer" else None,
+            "use_raw": expression.use_raw,
+            "layer": expression.scanpy_layer,
             "log": log,
             "show": False,
         }
@@ -399,8 +399,7 @@ class OpenBioSingleCellMarkerExpressionPlot(io.ComfyNode):
             "genes": gene_names,
             "groupby": groupby,
             "plot_type": plot_type,
-            "source": source,
-            "layer_name": layer_name,
+            **expression.parameters(),
             "standard_scale": standard_scale,
             "dendrogram": dendrogram,
             "log": log,

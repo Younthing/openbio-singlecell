@@ -1,369 +1,14 @@
 {
   "id": "dfb12d06-5cdd-5a43-9374-564be2f7bd23",
   "revision": 0,
-  "last_node_id": 9,
-  "last_link_id": 8,
-  "nodes": [
-    {
-      "id": 1,
-      "type": "OpenBioSingleCellLoadH5AD",
-      "pos": [
-        40,
-        60
-      ],
-      "size": [
-        320,
-        80
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "adata",
-          "type": "OPENBIO_ANNDATA",
-          "links": [
-            1,
-            4,
-            7
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "OpenBioSingleCellLoadH5AD"
-      },
-      "widgets_values": [
-        "openbio-singlecell/openbio_singlecell_demo.h5ad",
-        true
-      ]
-    },
-    {
-      "id": 2,
-      "type": "OpenBioSingleCellSampleCompositionSummary",
-      "pos": [
-        400,
-        -310
-      ],
-      "size": [
-        320,
-        124
-      ],
-      "flags": {},
-      "order": 1,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "adata",
-          "type": "OPENBIO_ANNDATA",
-          "link": 1
-        }
-      ],
-      "outputs": [
-        {
-          "name": "table",
-          "type": "OPENBIO_SINGLE_CELL_TABLE",
-          "links": [
-            2,
-            3
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "OpenBioSingleCellSampleCompositionSummary"
-      },
-      "widgets_values": [
-        "sample",
-        "batch",
-        "cell_type"
-      ]
-    },
-    {
-      "id": 3,
-      "type": "OpenBioSingleCellPreviewResult",
-      "pos": [
-        760,
-        -400
-      ],
-      "size": [
-        300,
-        220
-      ],
-      "flags": {},
-      "order": 2,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "result",
-          "type": "OPENBIO_SINGLE_CELL_SUMMARY,OPENBIO_SINGLE_CELL_TABLE,OPENBIO_SINGLE_CELL_PLOT",
-          "link": 2
-        }
-      ],
-      "outputs": [],
-      "properties": {
-        "Node name for S&R": "OpenBioSingleCellPreviewResult"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 4,
-      "type": "OpenBioSingleCellExportCSV",
-      "pos": [
-        760,
-        -120
-      ],
-      "size": [
-        320,
-        80
-      ],
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "table",
-          "type": "OPENBIO_SINGLE_CELL_TABLE",
-          "link": 3
-        }
-      ],
-      "outputs": [],
-      "properties": {
-        "Node name for S&R": "OpenBioSingleCellExportCSV"
-      },
-      "widgets_values": [
-        "sample_composition",
-        false
-      ]
-    },
-    {
-      "id": 5,
-      "type": "OpenBioSingleCellDifferentialCompositionTest",
-      "pos": [
-        400,
-        160
-      ],
-      "size": [
-        320,
-        172
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "adata",
-          "type": "OPENBIO_ANNDATA",
-          "link": 4
-        }
-      ],
-      "outputs": [
-        {
-          "name": "table",
-          "type": "OPENBIO_SINGLE_CELL_TABLE",
-          "links": [
-            5,
-            6
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "OpenBioSingleCellDifferentialCompositionTest"
-      },
-      "widgets_values": [
-        "sample",
-        "batch",
-        "cell_type",
-        "batch_1",
-        "batch_2",
-        0.001
-      ]
-    },
-    {
-      "id": 6,
-      "type": "OpenBioSingleCellPreviewResult",
-      "pos": [
-        760,
-        60
-      ],
-      "size": [
-        300,
-        220
-      ],
-      "flags": {},
-      "order": 5,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "result",
-          "type": "OPENBIO_SINGLE_CELL_SUMMARY,OPENBIO_SINGLE_CELL_TABLE,OPENBIO_SINGLE_CELL_PLOT",
-          "link": 5
-        }
-      ],
-      "outputs": [],
-      "properties": {
-        "Node name for S&R": "OpenBioSingleCellPreviewResult"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 7,
-      "type": "OpenBioSingleCellExportCSV",
-      "pos": [
-        760,
-        340
-      ],
-      "size": [
-        320,
-        80
-      ],
-      "flags": {},
-      "order": 6,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "table",
-          "type": "OPENBIO_SINGLE_CELL_TABLE",
-          "link": 6
-        }
-      ],
-      "outputs": [],
-      "properties": {
-        "Node name for S&R": "OpenBioSingleCellExportCSV"
-      },
-      "widgets_values": [
-        "differential_composition",
-        false
-      ]
-    },
-    {
-      "id": 8,
-      "type": "OpenBioSingleCellAnnDataSummary",
-      "pos": [
-        400,
-        650
-      ],
-      "size": [
-        320,
-        80
-      ],
-      "flags": {},
-      "order": 7,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "adata",
-          "type": "OPENBIO_ANNDATA",
-          "link": 7
-        }
-      ],
-      "outputs": [
-        {
-          "name": "summary",
-          "type": "OPENBIO_SINGLE_CELL_SUMMARY",
-          "links": [
-            8
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "OpenBioSingleCellAnnDataSummary"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 9,
-      "type": "OpenBioSingleCellPreviewResult",
-      "pos": [
-        760,
-        600
-      ],
-      "size": [
-        300,
-        220
-      ],
-      "flags": {},
-      "order": 8,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "result",
-          "type": "OPENBIO_SINGLE_CELL_SUMMARY,OPENBIO_SINGLE_CELL_TABLE,OPENBIO_SINGLE_CELL_PLOT",
-          "link": 8
-        }
-      ],
-      "outputs": [],
-      "properties": {
-        "Node name for S&R": "OpenBioSingleCellPreviewResult"
-      },
-      "widgets_values": []
-    }
-  ],
-  "links": [
-    [
-      1,
-      1,
-      0,
-      2,
-      0,
-      "OPENBIO_ANNDATA"
-    ],
-    [
-      2,
-      2,
-      0,
-      3,
-      0,
-      "OPENBIO_SINGLE_CELL_TABLE"
-    ],
-    [
-      3,
-      2,
-      0,
-      4,
-      0,
-      "OPENBIO_SINGLE_CELL_TABLE"
-    ],
-    [
-      4,
-      1,
-      0,
-      5,
-      0,
-      "OPENBIO_ANNDATA"
-    ],
-    [
-      5,
-      5,
-      0,
-      6,
-      0,
-      "OPENBIO_SINGLE_CELL_TABLE"
-    ],
-    [
-      6,
-      5,
-      0,
-      7,
-      0,
-      "OPENBIO_SINGLE_CELL_TABLE"
-    ],
-    [
-      7,
-      1,
-      0,
-      8,
-      0,
-      "OPENBIO_ANNDATA"
-    ],
-    [
-      8,
-      8,
-      0,
-      9,
-      0,
-      "OPENBIO_SINGLE_CELL_SUMMARY"
-    ]
-  ],
+  "version": 1,
+  "state": {
+    "lastGroupId": 4,
+    "lastNodeId": 9,
+    "lastLinkId": 8,
+    "lastRerouteId": 0
+  },
+  "config": {},
   "groups": [
     {
       "id": 1,
@@ -418,7 +63,396 @@
       "flags": {}
     }
   ],
-  "config": {},
+  "nodes": [
+    {
+      "id": 1,
+      "type": "OpenBioSingleCellLoadH5AD",
+      "pos": [
+        40,
+        60
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "adata",
+          "type": "OPENBIO_ANNDATA",
+          "links": [
+            1,
+            4,
+            7
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "OpenBioSingleCellLoadH5AD"
+      },
+      "widgets_values": [
+        "openbio-singlecell/openbio_singlecell_demo.h5ad",
+        true
+      ],
+      "widgets_values_named": {
+        "path": "openbio-singlecell/openbio_singlecell_demo.h5ad",
+        "make_var_names_unique": true
+      }
+    },
+    {
+      "id": 2,
+      "type": "OpenBioSingleCellSampleCompositionSummary",
+      "pos": [
+        400,
+        -310
+      ],
+      "size": [
+        320,
+        124
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "adata",
+          "type": "OPENBIO_ANNDATA",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "table",
+          "type": "OPENBIO_SINGLE_CELL_TABLE",
+          "links": [
+            2,
+            3
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "OpenBioSingleCellSampleCompositionSummary"
+      },
+      "widgets_values": [
+        "sample",
+        "batch",
+        "cell_type"
+      ],
+      "widgets_values_named": {
+        "sample_key": "sample",
+        "group_key": "batch",
+        "annotation_key": "cell_type"
+      }
+    },
+    {
+      "id": 3,
+      "type": "OpenBioSingleCellPreviewResult",
+      "pos": [
+        760,
+        -400
+      ],
+      "size": [
+        300,
+        220
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "result",
+          "type": "OPENBIO_SINGLE_CELL_SUMMARY,OPENBIO_SINGLE_CELL_TABLE,OPENBIO_SINGLE_CELL_PLOT",
+          "link": 2
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "OpenBioSingleCellPreviewResult"
+      },
+      "widgets_values": [],
+      "widgets_values_named": {}
+    },
+    {
+      "id": 4,
+      "type": "OpenBioSingleCellExportCSV",
+      "pos": [
+        760,
+        -120
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "table",
+          "type": "OPENBIO_SINGLE_CELL_TABLE",
+          "link": 3
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "OpenBioSingleCellExportCSV"
+      },
+      "widgets_values": [
+        "sample_composition",
+        false
+      ],
+      "widgets_values_named": {
+        "filename_prefix": "sample_composition",
+        "overwrite": false
+      }
+    },
+    {
+      "id": 5,
+      "type": "OpenBioSingleCellDifferentialCompositionTest",
+      "pos": [
+        400,
+        160
+      ],
+      "size": [
+        320,
+        172
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "adata",
+          "type": "OPENBIO_ANNDATA",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "table",
+          "type": "OPENBIO_SINGLE_CELL_TABLE",
+          "links": [
+            5,
+            6
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "OpenBioSingleCellDifferentialCompositionTest"
+      },
+      "widgets_values": [
+        "sample",
+        "batch",
+        "cell_type",
+        "batch_1",
+        "batch_2",
+        0.001
+      ],
+      "widgets_values_named": {
+        "sample_key": "sample",
+        "group_key": "batch",
+        "annotation_key": "cell_type",
+        "control_group": "batch_1",
+        "comparison_groups": "batch_2",
+        "pseudocount": 0.001
+      }
+    },
+    {
+      "id": 6,
+      "type": "OpenBioSingleCellPreviewResult",
+      "pos": [
+        760,
+        60
+      ],
+      "size": [
+        300,
+        220
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "result",
+          "type": "OPENBIO_SINGLE_CELL_SUMMARY,OPENBIO_SINGLE_CELL_TABLE,OPENBIO_SINGLE_CELL_PLOT",
+          "link": 5
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "OpenBioSingleCellPreviewResult"
+      },
+      "widgets_values": [],
+      "widgets_values_named": {}
+    },
+    {
+      "id": 7,
+      "type": "OpenBioSingleCellExportCSV",
+      "pos": [
+        760,
+        340
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "table",
+          "type": "OPENBIO_SINGLE_CELL_TABLE",
+          "link": 6
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "OpenBioSingleCellExportCSV"
+      },
+      "widgets_values": [
+        "differential_composition",
+        false
+      ],
+      "widgets_values_named": {
+        "filename_prefix": "differential_composition",
+        "overwrite": false
+      }
+    },
+    {
+      "id": 8,
+      "type": "OpenBioSingleCellAnnDataSummary",
+      "pos": [
+        400,
+        650
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "adata",
+          "type": "OPENBIO_ANNDATA",
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "summary",
+          "type": "OPENBIO_SINGLE_CELL_SUMMARY",
+          "links": [
+            8
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "OpenBioSingleCellAnnDataSummary"
+      },
+      "widgets_values": [],
+      "widgets_values_named": {}
+    },
+    {
+      "id": 9,
+      "type": "OpenBioSingleCellPreviewResult",
+      "pos": [
+        760,
+        600
+      ],
+      "size": [
+        300,
+        220
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "result",
+          "type": "OPENBIO_SINGLE_CELL_SUMMARY,OPENBIO_SINGLE_CELL_TABLE,OPENBIO_SINGLE_CELL_PLOT",
+          "link": 8
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "OpenBioSingleCellPreviewResult"
+      },
+      "widgets_values": [],
+      "widgets_values_named": {}
+    }
+  ],
+  "links": [
+    {
+      "id": 1,
+      "origin_id": 1,
+      "origin_slot": 0,
+      "target_id": 2,
+      "target_slot": 0,
+      "type": "OPENBIO_ANNDATA"
+    },
+    {
+      "id": 2,
+      "origin_id": 2,
+      "origin_slot": 0,
+      "target_id": 3,
+      "target_slot": 0,
+      "type": "OPENBIO_SINGLE_CELL_TABLE"
+    },
+    {
+      "id": 3,
+      "origin_id": 2,
+      "origin_slot": 0,
+      "target_id": 4,
+      "target_slot": 0,
+      "type": "OPENBIO_SINGLE_CELL_TABLE"
+    },
+    {
+      "id": 4,
+      "origin_id": 1,
+      "origin_slot": 0,
+      "target_id": 5,
+      "target_slot": 0,
+      "type": "OPENBIO_ANNDATA"
+    },
+    {
+      "id": 5,
+      "origin_id": 5,
+      "origin_slot": 0,
+      "target_id": 6,
+      "target_slot": 0,
+      "type": "OPENBIO_SINGLE_CELL_TABLE"
+    },
+    {
+      "id": 6,
+      "origin_id": 5,
+      "origin_slot": 0,
+      "target_id": 7,
+      "target_slot": 0,
+      "type": "OPENBIO_SINGLE_CELL_TABLE"
+    },
+    {
+      "id": 7,
+      "origin_id": 1,
+      "origin_slot": 0,
+      "target_id": 8,
+      "target_slot": 0,
+      "type": "OPENBIO_ANNDATA"
+    },
+    {
+      "id": 8,
+      "origin_id": 8,
+      "origin_slot": 0,
+      "target_id": 9,
+      "target_slot": 0,
+      "type": "OPENBIO_SINGLE_CELL_SUMMARY"
+    }
+  ],
   "extra": {
     "ds": {
       "scale": 0.7,
@@ -428,6 +462,5 @@
       ]
     },
     "frontendVersion": "1.52.3"
-  },
-  "version": 0.4
+  }
 }

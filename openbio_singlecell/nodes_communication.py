@@ -8,6 +8,7 @@ from comfy_api.latest import io
 
 from . import dependencies
 from .analysis_utils import figure_to_png, finish_adata, make_plot_result, make_table_result
+from .expression_source import DynamicExpressionSource, ExpressionSourceSpec
 from .node_types import AnnDataType, PlotResultType, TableResultType
 
 if TYPE_CHECKING:
@@ -67,6 +68,12 @@ def _labels(value: str) -> list[str] | None:
 
 
 class OpenBioSingleCellLianaCommunication(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="LIANA expression source",
+        include_raw=True,
+        layer_default="log1p_norm",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -78,8 +85,7 @@ class OpenBioSingleCellLianaCommunication(io.ComfyNode):
                 io.String.Input("groupby", default="cell_type"),
                 io.Combo.Input("method", options=METHODS, default="rank_aggregate"),
                 io.String.Input("resource_name", default="consensus"),
-                io.Combo.Input("source", options=["X", "raw", "layer"], default="X"),
-                io.String.Input("layer_name", default="log1p_norm"),
+                cls.EXPRESSION_SOURCE.input(),
                 io.String.Input("result_key", default="liana_res", advanced=True),
             ],
             outputs=[AnnDataType.Output(display_name="adata")],
@@ -92,8 +98,7 @@ class OpenBioSingleCellLianaCommunication(io.ComfyNode):
         groupby: str = "cell_type",
         method: str = "rank_aggregate",
         resource_name: str = "consensus",
-        source: str = "X",
-        layer_name: str = "log1p_norm",
+        source: DynamicExpressionSource | None = None,
         result_key: str = "liana_res",
     ) -> io.NodeOutput:
         groupby = _required_name(groupby, "LIANA groupby column")
@@ -101,22 +106,19 @@ class OpenBioSingleCellLianaCommunication(io.ComfyNode):
         result_key = _required_name(result_key, "LIANA result key")
         if groupby not in adata.obs:
             raise ValueError(f"LIANA groupby column not found in obs: {groupby!r}")
-        if source == "raw" and adata.raw is None:
-            raise ValueError("LIANA expression source 'raw' was selected, but adata.raw is unavailable.")
-        if source == "layer" and layer_name not in adata.layers:
-            raise ValueError(f"LIANA expression layer not found: {layer_name!r}")
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
 
         liana = _require_liana()
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        if source == "raw":
+        if expression.kind == "raw":
             work = adata.raw.to_adata()
             work.obs = adata.obs.copy()
         else:
             work = output
-            if source == "layer":
-                work.X = work.layers[layer_name].copy()
+            if expression.kind == "layer":
+                work.X = work.layers[expression.layer_name].copy()
 
         run_method = getattr(liana.method, method)
         run_method(
@@ -132,8 +134,7 @@ class OpenBioSingleCellLianaCommunication(io.ComfyNode):
             "groupby": groupby,
             "method": method,
             "resource_name": resource_name,
-            "source": source,
-            "layer_name": layer_name,
+            **expression.parameters(),
             "result_key": result_key,
             "return_all_lrs": True,
         }

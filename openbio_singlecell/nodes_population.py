@@ -7,6 +7,7 @@ from comfy_api.latest import io
 
 from . import dependencies
 from .analysis_utils import figure_to_png, finish_adata, make_plot_result, make_table_result
+from .expression_source import DynamicExpressionSource, ExpressionSourceSpec
 from .node_types import AnnDataType, PlotResultType, TableResultType
 
 if TYPE_CHECKING:
@@ -15,7 +16,6 @@ if TYPE_CHECKING:
 
 PRIORITY_CATEGORY = "openbio/single-cell/cell-prioritization"
 VISUALIZATION_CATEGORY = "openbio/single-cell/visualization"
-EXPRESSION_SOURCES = ["X", "raw", "layer"]
 AUGUR_RESULT_TABLES = ["summary_metrics", "full_results", "feature_importances"]
 
 
@@ -28,6 +28,12 @@ def _require_pertpy() -> Any:
 
 
 class OpenBioSingleCellAugur(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="Augur source",
+        include_raw=True,
+        layer_default="log1p_norm",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -49,8 +55,7 @@ class OpenBioSingleCellAugur(io.ComfyNode):
                     ],
                     default="random_forest_classifier",
                 ),
-                io.Combo.Input("source", options=EXPRESSION_SOURCES, default="raw"),
-                io.String.Input("layer_name", default="counts"),
+                cls.EXPRESSION_SOURCE.input(),
                 io.Int.Input("subsample_size", default=50, min=2, max=2**31 - 1),
                 io.Boolean.Input("select_variance_features", default=False),
                 io.Float.Input("span", default=0.75, min=0.0, max=1.0, step=0.05, advanced=True),
@@ -70,8 +75,7 @@ class OpenBioSingleCellAugur(io.ComfyNode):
         control: str = "",
         treatment: str = "",
         model: str = "random_forest_classifier",
-        source: str = "raw",
-        layer_name: str = "counts",
+        source: DynamicExpressionSource | None = None,
         subsample_size: int = 50,
         select_variance_features: bool = False,
         span: float = 0.75,
@@ -89,27 +93,19 @@ class OpenBioSingleCellAugur(io.ComfyNode):
             raise ValueError("Augur requires both control and treatment labels.")
         if control == treatment:
             raise ValueError("Augur control and treatment labels must be different.")
-        layer_name = layer_name.strip()
         result_key = result_key.strip()
         if not result_key:
             raise ValueError("Augur result key cannot be empty.")
 
-        if source == "raw":
-            if adata.raw is None:
-                raise ValueError("Augur source 'raw' requires adata.raw.")
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
+        if expression.kind == "raw":
             analysis_adata = adata.raw.to_adata()
             analysis_adata.obs = adata.obs.copy()
-        elif source == "layer":
-            if not layer_name:
-                raise ValueError("Augur layer source requires a layer name.")
-            if layer_name not in adata.layers:
-                raise ValueError(f"Augur expression layer not found: {layer_name!r}")
+        elif expression.kind == "layer":
             analysis_adata = adata.copy()
-            analysis_adata.X = analysis_adata.layers[layer_name].copy()
-        elif source == "X":
-            analysis_adata = adata
+            analysis_adata.X = analysis_adata.layers[expression.layer_name].copy()
         else:
-            raise ValueError(f"Unsupported Augur expression source: {source!r}")
+            analysis_adata = adata
 
         pertpy = _require_pertpy()
         started_at = time.perf_counter()
@@ -136,8 +132,7 @@ class OpenBioSingleCellAugur(io.ComfyNode):
             "control": control,
             "treatment": treatment,
             "model": model,
-            "source": source,
-            "layer_name": layer_name,
+            **expression.parameters(),
             "subsample_size": subsample_size,
             "select_variance_features": select_variance_features,
             "span": span,

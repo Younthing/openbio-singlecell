@@ -50,12 +50,17 @@ def test_scenic_node_schemas_use_the_network_contract():
     assert run_inputs["mask_dropouts"].advanced is True
     assert run_inputs["auc_threshold"].default == 0.05
     assert not run_inputs["auc_threshold"].advanced
+    assert run_inputs["source"].get_io_type() == "COMFY_DYNAMICCOMBO_V3"
+    assert [(option.key, [item.id for item in option.inputs]) for option in run_inputs["source"].options] == [
+        ("X", []),
+        ("raw", []),
+        ("layer", ["layer_name"]),
+    ]
     assert [input_.id for input_ in module_schema.inputs] == [
         "adata",
         "network",
         "transcription_factor",
         "source",
-        "layer_name",
     ]
     assert module_schema.inputs[1].io_type == ScenicNetworkType.io_type
     assert "validate_inputs" in OpenBioSingleCellRunPySCENIC.__dict__
@@ -238,9 +243,13 @@ def test_scenic_tf_modules_consumes_network_without_reading_a_file(adata, scienc
     monkeypatch.setattr(science.pd, "read_csv", fail_file_access)
 
     with pytest.raises(ValueError, match="missing SCENIC network genes.*G1"):
-        OpenBioSingleCellSCENICTFModules.execute(adata[:, ["TF1", "G2"]].copy(), network, "TF1", "X", "")
+        OpenBioSingleCellSCENICTFModules.execute(
+            adata[:, ["TF1", "G2"]].copy(), network, "TF1", {"source": "X"}
+        )
 
-    (result,) = output_values(OpenBioSingleCellSCENICTFModules.execute(adata, network, "TF1", "X", ""))
+    (result,) = output_values(
+        OpenBioSingleCellSCENICTFModules.execute(adata, network, "TF1", {"source": "X"})
+    )
 
     science.pd.testing.assert_frame_equal(received["adjacency"], network.adjacency)
     assert list(received["expression"].columns) == ["G1", "TF1"]
@@ -248,6 +257,5 @@ def test_scenic_tf_modules_consumes_network_without_reading_a_file(adata, scienc
         "grn_method": "grnboost2",
         "transcription_factor": "TF1",
         "source": "X",
-        "layer_name": "",
     }
     assert result.table.to_dict("records") == [{"transcription_factor": "TF1", "module": 0, "gene": "G1"}]

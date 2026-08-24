@@ -9,6 +9,11 @@ from comfy_api.latest import io
 
 from . import dependencies
 from .analysis_utils import finish_adata, make_table_result
+from .expression_source import (
+    DynamicExpressionSource,
+    ExpressionSource,
+    ExpressionSourceSpec,
+)
 from .files import input_file_fingerprint, resolve_input_path
 from .node_types import AnnDataType, TableResultType
 
@@ -67,19 +72,14 @@ def _read_gene_sets(
     return network
 
 
-def _expression_adata(adata: AnnData, source: str, layer_name: str, *, dense: bool = False) -> AnnData:
+def _expression_adata(adata: AnnData, source: ExpressionSource, *, dense: bool = False) -> AnnData:
     science = dependencies.require_scientific_dependencies()
-    if source == "raw":
-        if adata.raw is None:
-            raise ValueError("Expression source 'raw' was selected, but adata.raw is unavailable.")
+    if source.kind == "raw":
         work = adata.raw.to_adata()
     else:
         work = adata.copy()
-        if source == "layer":
-            layer_name = _required_name(layer_name, "Expression layer")
-            if layer_name not in adata.layers:
-                raise ValueError(f"Expression layer not found: {layer_name!r}")
-            work.X = adata.layers[layer_name].copy()
+        if source.kind == "layer":
+            work.X = adata.layers[source.layer_name].copy()
 
     if science.sparse.issparse(work.X):
         work.X = work.X.toarray() if dense else work.X.tocsr()
@@ -92,25 +92,19 @@ def _copy_decoupler_scores(output: AnnData, work: AnnData, generated_key: str, o
     output.obsm[_required_name(output_key, "Score output key")] = work.obsm[generated_key].copy()
 
 
-def _rank_for_enrichment(adata: AnnData, groupby: str, source: str, layer_name: str) -> AnnData:
+def _rank_for_enrichment(adata: AnnData, groupby: str, source: ExpressionSource) -> AnnData:
     science = dependencies.require_scientific_dependencies()
     groupby = _required_name(groupby, "Enrichment groupby column")
     if groupby not in adata.obs:
         raise ValueError(f"Enrichment groupby column not found in obs: {groupby!r}")
-    if source == "raw" and adata.raw is None:
-        raise ValueError("Expression source 'raw' was selected, but adata.raw is unavailable.")
-    if source == "layer":
-        layer_name = _required_name(layer_name, "Expression layer")
-        if layer_name not in adata.layers:
-            raise ValueError(f"Expression layer not found: {layer_name!r}")
 
     work = adata.copy()
     science.sc.tl.rank_genes_groups(
         work,
         groupby=groupby,
         method="wilcoxon",
-        use_raw=source == "raw",
-        layer=layer_name if source == "layer" else None,
+        use_raw=source.use_raw,
+        layer=source.scanpy_layer,
     )
     return work
 
@@ -131,6 +125,12 @@ def _pertpy_table(values: Any, science: dependencies.ScientificDependencies) -> 
 
 
 class OpenBioSingleCellAUCellScores(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="AUCell expression source",
+        include_raw=True,
+        layer_default="log1p_norm",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -140,8 +140,7 @@ class OpenBioSingleCellAUCellScores(io.ComfyNode):
             inputs=[
                 AnnDataType.Input("adata"),
                 io.String.Input("gene_sets_file", default="openbio-singlecell/gene_sets.csv"),
-                io.Combo.Input("source", options=["X", "raw", "layer"], default="raw"),
-                io.String.Input("layer_name", default="counts"),
+                cls.EXPRESSION_SOURCE.input(),
                 io.String.Input("source_column", default="geneset", advanced=True),
                 io.String.Input("target_column", default="genesymbol", advanced=True),
                 io.Int.Input("min_n", default=5, min=1, max=2**31 - 1, advanced=True),
@@ -168,8 +167,7 @@ class OpenBioSingleCellAUCellScores(io.ComfyNode):
         cls,
         adata: AnnData,
         gene_sets_file: str = "openbio-singlecell/gene_sets.csv",
-        source: str = "raw",
-        layer_name: str = "counts",
+        source: DynamicExpressionSource | None = None,
         source_column: str = "geneset",
         target_column: str = "genesymbol",
         min_n: int = 5,
@@ -182,7 +180,8 @@ class OpenBioSingleCellAUCellScores(io.ComfyNode):
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        work = _expression_adata(output, source, layer_name)
+        expression = cls.EXPRESSION_SOURCE.resolve(output, source)
+        work = _expression_adata(output, expression)
         decoupler.run_aucell(
             mat=work,
             net=network,
@@ -196,8 +195,7 @@ class OpenBioSingleCellAUCellScores(io.ComfyNode):
         _copy_decoupler_scores(output, work, "aucell_estimate", output_key)
         parameters = {
             "gene_sets_file": gene_sets_file,
-            "source": source,
-            "layer_name": layer_name,
+            **expression.parameters(),
             "source_column": source_column,
             "target_column": target_column,
             "min_n": min_n,
@@ -209,6 +207,12 @@ class OpenBioSingleCellAUCellScores(io.ComfyNode):
 
 
 class OpenBioSingleCellGSVAScores(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="GSVA expression source",
+        include_raw=True,
+        layer_default="log1p_norm",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -218,8 +222,7 @@ class OpenBioSingleCellGSVAScores(io.ComfyNode):
             inputs=[
                 AnnDataType.Input("adata"),
                 io.String.Input("gene_sets_file", default="openbio-singlecell/gene_sets.csv"),
-                io.Combo.Input("source", options=["X", "raw", "layer"], default="raw"),
-                io.String.Input("layer_name", default="counts"),
+                cls.EXPRESSION_SOURCE.input(),
                 io.String.Input("source_column", default="geneset", advanced=True),
                 io.String.Input("target_column", default="genesymbol", advanced=True),
                 io.Int.Input("min_n", default=10, min=1, max=2**31 - 1, advanced=True),
@@ -248,8 +251,7 @@ class OpenBioSingleCellGSVAScores(io.ComfyNode):
         cls,
         adata: AnnData,
         gene_sets_file: str = "openbio-singlecell/gene_sets.csv",
-        source: str = "raw",
-        layer_name: str = "counts",
+        source: DynamicExpressionSource | None = None,
         source_column: str = "geneset",
         target_column: str = "genesymbol",
         min_n: int = 10,
@@ -264,7 +266,8 @@ class OpenBioSingleCellGSVAScores(io.ComfyNode):
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        work = _expression_adata(output, source, layer_name, dense=True)
+        expression = cls.EXPRESSION_SOURCE.resolve(output, source)
+        work = _expression_adata(output, expression, dense=True)
         decoupler.run_gsva(
             mat=work,
             net=network,
@@ -280,8 +283,7 @@ class OpenBioSingleCellGSVAScores(io.ComfyNode):
         _copy_decoupler_scores(output, work, "gsva_estimate", output_key)
         parameters = {
             "gene_sets_file": gene_sets_file,
-            "source": source,
-            "layer_name": layer_name,
+            **expression.parameters(),
             "source_column": source_column,
             "target_column": target_column,
             "min_n": min_n,
@@ -295,6 +297,12 @@ class OpenBioSingleCellGSVAScores(io.ComfyNode):
 
 
 class OpenBioSingleCellGenePanelScores(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="Gene panel expression source",
+        include_raw=True,
+        layer_default="log1p_norm",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -304,8 +312,7 @@ class OpenBioSingleCellGenePanelScores(io.ComfyNode):
             inputs=[
                 AnnDataType.Input("adata"),
                 io.String.Input("gene_sets_file", default="openbio-singlecell/gene_sets.csv"),
-                io.Combo.Input("source", options=["X", "raw", "layer"], default="raw"),
-                io.String.Input("layer_name", default="counts"),
+                cls.EXPRESSION_SOURCE.input(),
                 io.String.Input("source_column", default="geneset", advanced=True),
                 io.String.Input("target_column", default="genesymbol", advanced=True),
                 io.String.Input("output_prefix", default="score_", advanced=True),
@@ -333,8 +340,7 @@ class OpenBioSingleCellGenePanelScores(io.ComfyNode):
         cls,
         adata: AnnData,
         gene_sets_file: str = "openbio-singlecell/gene_sets.csv",
-        source: str = "raw",
-        layer_name: str = "counts",
+        source: DynamicExpressionSource | None = None,
         source_column: str = "geneset",
         target_column: str = "genesymbol",
         output_prefix: str = "score_",
@@ -347,7 +353,8 @@ class OpenBioSingleCellGenePanelScores(io.ComfyNode):
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        work = _expression_adata(output, source, layer_name)
+        expression = cls.EXPRESSION_SOURCE.resolve(output, source)
+        work = _expression_adata(output, expression)
         warnings: list[str] = []
         score_columns: list[str] = []
 
@@ -373,8 +380,7 @@ class OpenBioSingleCellGenePanelScores(io.ComfyNode):
             raise ValueError("No gene panel could be scored against the selected expression source.")
         parameters = {
             "gene_sets_file": gene_sets_file,
-            "source": source,
-            "layer_name": layer_name,
+            **expression.parameters(),
             "source_column": source_column,
             "target_column": target_column,
             "output_prefix": output_prefix,
@@ -785,6 +791,11 @@ class OpenBioSingleCellDGIdbAnnotation(io.ComfyNode):
 
 
 class OpenBioSingleCellDrugScores(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="Drug-score expression source",
+        layer_default="log1p_norm",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -793,19 +804,15 @@ class OpenBioSingleCellDrugScores(io.ComfyNode):
             category=CATEGORY,
             inputs=[
                 AnnDataType.Input("adata"),
-                io.Combo.Input("source", options=["X", "layer"], default="X"),
-                io.String.Input("layer_name", default="counts"),
+                cls.EXPRESSION_SOURCE.input(),
             ],
             outputs=[AnnDataType.Output(display_name="adata")],
         )
 
     @classmethod
-    def execute(cls, adata: AnnData, source: str = "X", layer_name: str = "counts") -> io.NodeOutput:
+    def execute(cls, adata: AnnData, source: DynamicExpressionSource | None = None) -> io.NodeOutput:
         pertpy = _require_optional_dependency("pertpy")
-        if source == "layer":
-            layer_name = _required_name(layer_name, "Drug-score expression layer")
-            if layer_name not in adata.layers:
-                raise ValueError(f"Drug-score expression layer not found: {layer_name!r}")
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
 
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
@@ -814,14 +821,20 @@ class OpenBioSingleCellDrugScores(io.ComfyNode):
         pertpy.tl.Enrichment().score(
             output,
             targets=drug.dgidb.dictionary,
-            layer=layer_name if source == "layer" else None,
+            layer=expression.scanpy_layer,
         )
-        parameters = {"targets": "dgidb", "source": source, "layer_name": layer_name}
+        parameters = {"targets": "dgidb", **expression.parameters()}
         finish_adata(output, "dgidb_drug_scores", parameters, cells, genes, started_at)
         return io.NodeOutput(output)
 
 
 class OpenBioSingleCellDrugHypergeometric(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="Drug enrichment expression source",
+        include_raw=True,
+        layer_default="log1p_norm",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -831,8 +844,7 @@ class OpenBioSingleCellDrugHypergeometric(io.ComfyNode):
             inputs=[
                 AnnDataType.Input("adata"),
                 io.String.Input("groupby", default="cell_type"),
-                io.Combo.Input("source", options=["X", "raw", "layer"], default="raw"),
-                io.String.Input("layer_name", default="counts"),
+                cls.EXPRESSION_SOURCE.input(),
                 io.Float.Input("marker_padj_threshold", default=0.05, min=0.0, max=1.0, step=0.01),
             ],
             outputs=[TableResultType.Output(display_name="table")],
@@ -843,14 +855,14 @@ class OpenBioSingleCellDrugHypergeometric(io.ComfyNode):
         cls,
         adata: AnnData,
         groupby: str = "cell_type",
-        source: str = "raw",
-        layer_name: str = "counts",
+        source: DynamicExpressionSource | None = None,
         marker_padj_threshold: float = 0.05,
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
         pertpy = _require_optional_dependency("pertpy")
         started_at = time.perf_counter()
-        work = _rank_for_enrichment(adata, groupby, source, layer_name)
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
+        work = _rank_for_enrichment(adata, groupby, expression)
         drug = pertpy.md.Drug()
         values = pertpy.tl.Enrichment().hypergeometric(
             work,
@@ -860,8 +872,7 @@ class OpenBioSingleCellDrugHypergeometric(io.ComfyNode):
         table = _pertpy_table(values, science)
         parameters = {
             "groupby": groupby,
-            "source": source,
-            "layer_name": layer_name,
+            **expression.parameters(),
             "marker_padj_threshold": marker_padj_threshold,
             "targets": "dgidb",
             "rank_method": "wilcoxon",
@@ -881,6 +892,12 @@ class OpenBioSingleCellDrugHypergeometric(io.ComfyNode):
 
 
 class OpenBioSingleCellDrugGSEA(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="Drug GSEA expression source",
+        include_raw=True,
+        layer_default="log1p_norm",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -890,8 +907,7 @@ class OpenBioSingleCellDrugGSEA(io.ComfyNode):
             inputs=[
                 AnnDataType.Input("adata"),
                 io.String.Input("groupby", default="cell_type"),
-                io.Combo.Input("source", options=["X", "raw", "layer"], default="raw"),
-                io.String.Input("layer_name", default="counts"),
+                cls.EXPRESSION_SOURCE.input(),
             ],
             outputs=[TableResultType.Output(display_name="table")],
         )
@@ -901,20 +917,19 @@ class OpenBioSingleCellDrugGSEA(io.ComfyNode):
         cls,
         adata: AnnData,
         groupby: str = "cell_type",
-        source: str = "raw",
-        layer_name: str = "counts",
+        source: DynamicExpressionSource | None = None,
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
         pertpy = _require_optional_dependency("pertpy")
         started_at = time.perf_counter()
-        work = _rank_for_enrichment(adata, groupby, source, layer_name)
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
+        work = _rank_for_enrichment(adata, groupby, expression)
         drug = pertpy.md.Drug()
         values = pertpy.tl.Enrichment().gsea(work, targets=drug.dgidb.dictionary)
         table = _pertpy_table(values, science)
         parameters = {
             "groupby": groupby,
-            "source": source,
-            "layer_name": layer_name,
+            **expression.parameters(),
             "targets": "dgidb",
             "rank_method": "wilcoxon",
         }

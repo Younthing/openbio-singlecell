@@ -61,7 +61,15 @@ def test_qc_filter_and_preprocessing_chain_preserves_counts(adata, science):
     normalized = output_value(OpenBioSingleCellNormalizeTotal.execute(filtered, 10_000.0))
     before_log = dense(normalized.layers["counts"], science).copy()
     logged = output_value(OpenBioSingleCellLog1p.execute(normalized, True))
-    variable = output_value(OpenBioSingleCellHighlyVariableGenes.execute(logged, 8, "seurat", False))
+    variable = output_value(
+        OpenBioSingleCellHighlyVariableGenes.execute(
+            logged,
+            n_top_genes=8,
+            flavor="seurat",
+            source={"source": "X"},
+            subset=False,
+        )
+    )
     with pytest.warns(UserWarning, match="densifies"):
         scaled = output_value(OpenBioSingleCellScale.execute(variable, 10.0))
 
@@ -81,7 +89,13 @@ def test_modifying_nodes_do_not_mutate_upstream_anndata(adata, science):
     OpenBioSingleCellFilterGenes.execute(adata, 1, 0, 1, 0)
     OpenBioSingleCellNormalizeTotal.execute(adata, 10_000.0)
     OpenBioSingleCellLog1p.execute(adata, True)
-    OpenBioSingleCellHighlyVariableGenes.execute(adata, 8, "seurat", False)
+    OpenBioSingleCellHighlyVariableGenes.execute(
+        adata,
+        n_top_genes=8,
+        flavor="seurat",
+        source={"source": "X"},
+        subset=False,
+    )
     with pytest.warns(UserWarning, match="densifies"):
         OpenBioSingleCellScale.execute(adata, 10.0)
 

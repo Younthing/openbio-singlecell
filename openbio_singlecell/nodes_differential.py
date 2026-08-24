@@ -7,6 +7,7 @@ from comfy_api.latest import io
 
 from . import dependencies
 from .analysis_utils import finish_adata, make_table_result
+from .expression_source import DynamicExpressionSource, ExpressionSourceSpec
 from .node_types import AnnDataType, SCVIModelType, TableResultType
 from .scvi_model import SCVIModel
 
@@ -34,6 +35,12 @@ def _require_decoupler() -> Any:
 
 
 class OpenBioSingleCellPseudobulk(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="Pseudobulk expression source",
+        default="layer",
+        layer_default="counts",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -44,8 +51,7 @@ class OpenBioSingleCellPseudobulk(io.ComfyNode):
                 AnnDataType.Input("adata"),
                 io.String.Input("sample_key", default="sample"),
                 io.String.Input("groupby", default="cell_type"),
-                io.Combo.Input("source", options=["X", "layer"], default="layer"),
-                io.String.Input("layer_name", default="counts"),
+                cls.EXPRESSION_SOURCE.input(),
                 io.Combo.Input("mode", options=["sum", "mean"], default="sum"),
                 io.Int.Input("min_cells", default=10, min=1, max=2**31 - 1),
                 io.Int.Input("min_counts", default=1000, min=0, max=2**31 - 1),
@@ -59,8 +65,7 @@ class OpenBioSingleCellPseudobulk(io.ComfyNode):
         adata: AnnData,
         sample_key: str = "sample",
         groupby: str = "cell_type",
-        source: str = "layer",
-        layer_name: str = "counts",
+        source: DynamicExpressionSource | None = None,
         mode: str = "sum",
         min_cells: int = 10,
         min_counts: int = 1000,
@@ -69,11 +74,7 @@ class OpenBioSingleCellPseudobulk(io.ComfyNode):
             raise ValueError(f"Pseudobulk sample column not found in obs: {sample_key!r}")
         if groupby not in adata.obs:
             raise ValueError(f"Pseudobulk group column not found in obs: {groupby!r}")
-        if source not in {"X", "layer"}:
-            raise ValueError(f"Unsupported pseudobulk expression source: {source!r}")
-        layer_name = layer_name.strip()
-        if source == "layer" and layer_name not in adata.layers:
-            raise ValueError(f"Pseudobulk expression layer not found: {layer_name!r}")
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
 
         pertpy = _require_pertpy()
         started_at = time.perf_counter()
@@ -82,7 +83,7 @@ class OpenBioSingleCellPseudobulk(io.ComfyNode):
             adata,
             target_col=sample_key,
             groups_col=groupby,
-            layer_key=layer_name if source == "layer" else None,
+            layer_key=expression.scanpy_layer,
             mode=mode,
             min_cells=min_cells,
             min_counts=min_counts,
@@ -92,8 +93,7 @@ class OpenBioSingleCellPseudobulk(io.ComfyNode):
         parameters = {
             "sample_key": sample_key,
             "groupby": groupby,
-            "source": source,
-            "layer_name": layer_name,
+            **expression.parameters(),
             "mode": mode,
             "min_cells": min_cells,
             "min_counts": min_counts,
@@ -168,6 +168,12 @@ class OpenBioSingleCellPseudobulkEdgeR(io.ComfyNode):
 
 
 class OpenBioSingleCellDecouplerPseudobulkContrast(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="Decoupler pseudobulk source",
+        default="layer",
+        layer_default="counts",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -181,8 +187,7 @@ class OpenBioSingleCellDecouplerPseudobulkContrast(io.ComfyNode):
                 io.String.Input("condition_key", default="group"),
                 io.String.Input("condition", default=""),
                 io.String.Input("reference", default=""),
-                io.Combo.Input("source", options=["X", "layer"], default="layer"),
-                io.String.Input("layer_name", default="counts"),
+                cls.EXPRESSION_SOURCE.input(),
                 io.Combo.Input("method", options=["t-test", "wilcoxon"], default="t-test"),
                 io.Float.Input("min_prop", default=0.1, min=0.0, max=1.0, step=0.05),
                 io.Int.Input("min_samples", default=3, min=1, max=2**31 - 1),
@@ -200,8 +205,7 @@ class OpenBioSingleCellDecouplerPseudobulkContrast(io.ComfyNode):
         condition_key: str = "group",
         condition: str = "",
         reference: str = "",
-        source: str = "layer",
-        layer_name: str = "counts",
+        source: DynamicExpressionSource | None = None,
         method: str = "t-test",
         min_prop: float = 0.1,
         min_samples: int = 3,
@@ -211,8 +215,7 @@ class OpenBioSingleCellDecouplerPseudobulkContrast(io.ComfyNode):
         missing_obs = [key for key in required_obs if key not in adata.obs]
         if missing_obs:
             raise ValueError(f"Decoupler pseudobulk observation columns not found: {missing_obs}")
-        if source == "layer" and layer_name not in adata.layers:
-            raise ValueError(f"Decoupler pseudobulk layer not found: {layer_name!r}")
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
         if not condition or not reference:
             raise ValueError("Decoupler pseudobulk condition and reference values are required.")
 
@@ -225,7 +228,7 @@ class OpenBioSingleCellDecouplerPseudobulkContrast(io.ComfyNode):
             groups_col=groupby,
             min_prop=min_prop,
             min_smpls=min_samples,
-            layer=layer_name if source == "layer" else None,
+            layer=expression.scanpy_layer,
         )
         science.sc.pp.normalize_total(pdata, target_sum=target_sum)
         science.sc.pp.log1p(pdata)
@@ -245,8 +248,7 @@ class OpenBioSingleCellDecouplerPseudobulkContrast(io.ComfyNode):
             "condition_key": condition_key,
             "condition": condition,
             "reference": reference,
-            "source": source,
-            "layer_name": layer_name,
+            **expression.parameters(),
             "method": method,
             "min_prop": min_prop,
             "min_samples": min_samples,

@@ -11,6 +11,11 @@ from comfy_api.latest import io
 
 from . import dependencies
 from .analysis_utils import finish_adata
+from .expression_source import (
+    DynamicExpressionSource,
+    ExpressionSource,
+    ExpressionSourceSpec,
+)
 from .node_types import AnnDataType
 
 if TYPE_CHECKING:
@@ -18,7 +23,6 @@ if TYPE_CHECKING:
 
 
 CATEGORY = "openbio/single-cell/factorization"
-EXPRESSION_SOURCES = ["X", "raw", "layer"]
 
 
 def _require_omicverse() -> Any:
@@ -28,22 +32,15 @@ def _require_omicverse() -> Any:
         raise RuntimeError(f"The 'omicverse' package is required for cNMF ({exc}).") from exc
 
 
-def _expression_adata(adata: AnnData, source: str, layer_name: str) -> AnnData:
-    if source == "raw":
-        if adata.raw is None:
-            raise ValueError("cNMF expression source 'raw' was selected, but adata.raw is unavailable.")
+def _expression_adata(adata: AnnData, source: ExpressionSource) -> AnnData:
+    if source.kind == "raw":
         work = adata.raw.to_adata()
         work.obs = adata.obs.copy()
         return work
 
     work = adata.copy()
-    if source == "layer":
-        layer_name = layer_name.strip()
-        if not layer_name:
-            raise ValueError("cNMF expression layer cannot be empty.")
-        if layer_name not in adata.layers:
-            raise ValueError(f"cNMF expression layer not found: {layer_name!r}")
-        work.X = adata.layers[layer_name].copy()
+    if source.kind == "layer":
+        work.X = adata.layers[source.layer_name].copy()
     return work
 
 
@@ -84,6 +81,12 @@ def _align_frame(frame: Any, index: Any, science: dependencies.ScientificDepende
 
 
 class OpenBioSingleCellCNMF(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="cNMF expression source",
+        include_raw=True,
+        layer_default="counts",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -93,8 +96,7 @@ class OpenBioSingleCellCNMF(io.ComfyNode):
             description="Run the complete OmicVerse cNMF workflow and attach the selected consensus programs.",
             inputs=[
                 AnnDataType.Input("adata"),
-                io.Combo.Input("source", options=EXPRESSION_SOURCES, default="X"),
-                io.String.Input("layer_name", default="counts"),
+                cls.EXPRESSION_SOURCE.input(),
                 io.Int.Input("selected_k", default=7, min=2, max=1024),
                 io.Combo.Input("cluster_assignment", options=["rfc", "usage_argmax"], default="rfc"),
                 io.String.Input("rfc_use_rep", default="scaled|original|X_pca"),
@@ -121,8 +123,7 @@ class OpenBioSingleCellCNMF(io.ComfyNode):
     def execute(
         cls,
         adata: AnnData,
-        source: str = "X",
-        layer_name: str = "counts",
+        source: DynamicExpressionSource | None = None,
         selected_k: int = 7,
         cluster_assignment: str = "rfc",
         rfc_use_rep: str = "scaled|original|X_pca",
@@ -157,7 +158,8 @@ class OpenBioSingleCellCNMF(io.ComfyNode):
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        work = _expression_adata(adata, source, layer_name)
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
+        work = _expression_adata(adata, expression)
         cnmf = omicverse.single.cNMF(
             work,
             components=components,
@@ -242,8 +244,7 @@ class OpenBioSingleCellCNMF(io.ComfyNode):
         }
 
         parameters = {
-            "source": source,
-            "layer_name": layer_name,
+            **expression.parameters(),
             "selected_k": selected_k,
             "cluster_assignment": cluster_assignment,
             "rfc_use_rep": rfc_use_rep,

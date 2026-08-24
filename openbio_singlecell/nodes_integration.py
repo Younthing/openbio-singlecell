@@ -7,6 +7,7 @@ from comfy_api.latest import io
 
 from . import dependencies
 from .analysis_utils import finish_adata
+from .expression_source import DynamicExpressionSource, ExpressionSourceSpec
 from .node_types import AnnDataType, SCVIModelType
 from .scvi_model import SCVIModel
 
@@ -103,6 +104,13 @@ class OpenBioSingleCellHarmonyIntegration(io.ComfyNode):
 
 
 class OpenBioSingleCellSCVIIntegration(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="scVI counts source",
+        default="layer",
+        layer_input_id="counts_layer",
+        layer_default="counts",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -111,8 +119,7 @@ class OpenBioSingleCellSCVIIntegration(io.ComfyNode):
             category=INTEGRATION_CATEGORY,
             inputs=[
                 AnnDataType.Input("adata"),
-                io.Combo.Input("source", options=["X", "layer"], default="layer"),
-                io.String.Input("counts_layer", default="counts"),
+                cls.EXPRESSION_SOURCE.input(),
                 io.String.Input("batch_key", default=""),
                 io.String.Input("size_factor_key", default="", advanced=True),
                 io.String.Input("categorical_covariates", default=""),
@@ -147,8 +154,7 @@ class OpenBioSingleCellSCVIIntegration(io.ComfyNode):
     def execute(
         cls,
         adata: AnnData,
-        source: str = "layer",
-        counts_layer: str = "counts",
+        source: DynamicExpressionSource | None = None,
         batch_key: str = "",
         size_factor_key: str = "",
         categorical_covariates: str = "",
@@ -168,18 +174,13 @@ class OpenBioSingleCellSCVIIntegration(io.ComfyNode):
         mde_key: str = "X_mde",
         random_seed: int = 0,
     ) -> io.NodeOutput:
-        source = source.strip()
-        counts_layer = counts_layer.strip()
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
         batch_key = batch_key.strip()
         size_factor_key = size_factor_key.strip()
         output_key = output_key.strip()
         qzm_key = qzm_key.strip()
         qzv_key = qzv_key.strip()
         mde_key = mde_key.strip()
-        if source not in {"X", "layer"}:
-            raise ValueError(f"Unsupported scVI counts source: {source!r}")
-        if source == "layer" and (not counts_layer or counts_layer not in adata.layers):
-            raise ValueError(f"scVI counts layer not found: {counts_layer!r}")
         categorical_keys = _comma_separated_keys(categorical_covariates)
         continuous_keys = _comma_separated_keys(continuous_covariates)
         obs_keys = [batch_key, size_factor_key, *categorical_keys, *continuous_keys]
@@ -204,7 +205,7 @@ class OpenBioSingleCellSCVIIntegration(io.ComfyNode):
         scvi.settings.seed = random_seed
         scvi.model.SCVI.setup_anndata(
             output,
-            layer=counts_layer if source == "layer" else None,
+            layer=expression.scanpy_layer,
             batch_key=batch_key or None,
             size_factor_key=size_factor_key or None,
             categorical_covariate_keys=categorical_keys or None,
@@ -232,8 +233,7 @@ class OpenBioSingleCellSCVIIntegration(io.ComfyNode):
                 output.obsm[mde_key] = scvi.model.utils.mde(qzm)
 
         parameters = {
-            "source": source,
-            "counts_layer": counts_layer,
+            **expression.parameters(),
             "batch_key": batch_key,
             "size_factor_key": size_factor_key,
             "categorical_covariates": categorical_keys,

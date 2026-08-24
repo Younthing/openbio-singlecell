@@ -26,6 +26,7 @@ from openbio_singlecell.nodes_results import (
     OpenBioSingleCellMarkerGenes,
     OpenBioSingleCellUMAPPlot,
 )
+from tests.workflow_helpers import workflow_execute_kwargs
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
@@ -60,7 +61,15 @@ def adata(science):
 def prepare_embedding_input(adata):
     normalized = output_value(OpenBioSingleCellNormalizeTotal.execute(adata, 10_000.0))
     logged = output_value(OpenBioSingleCellLog1p.execute(normalized, False))
-    variable = output_value(OpenBioSingleCellHighlyVariableGenes.execute(logged, 8, "seurat", False))
+    variable = output_value(
+        OpenBioSingleCellHighlyVariableGenes.execute(
+            logged,
+            n_top_genes=8,
+            flavor="seurat",
+            source={"source": "X"},
+            subset=False,
+        )
+    )
     with pytest.warns(UserWarning, match="densifies"):
         return output_value(OpenBioSingleCellScale.execute(variable, 10.0))
 
@@ -69,6 +78,11 @@ def clustering_template_node(node_type):
     workflow_path = PLUGIN_ROOT / "example_workflows" / "Cell Clustering and Marker Discovery.json"
     workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
     return next(node for node in workflow["nodes"] if node["type"] == node_type)
+
+
+def template_widget_kwargs(node_class):
+    node = clustering_template_node(node_class.GET_SCHEMA().node_id)
+    return workflow_execute_kwargs(node_class, node)
 
 
 def test_dimension_reduction_chain_is_copy_on_write(adata):
@@ -110,8 +124,9 @@ def test_embedding_preconditions_are_clear(adata):
     [("X", ""), ("raw", ""), ("layer", "alternate")],
 )
 def test_marker_sources_have_stable_columns(adata, source, layer_name):
+    selection = {"source": source, **({"layer_name": layer_name} if source == "layer" else {})}
     result = output_value(
-        OpenBioSingleCellMarkerGenes.execute(adata, "group", "wilcoxon", source, layer_name, 3, True, 0)
+        OpenBioSingleCellMarkerGenes.execute(adata, "group", "wilcoxon", selection, 3, True, 0)
     )
 
     assert result.kind == "table"
@@ -122,19 +137,29 @@ def test_marker_sources_have_stable_columns(adata, source, layer_name):
 
 def test_marker_preconditions_are_clear(adata):
     with pytest.raises(ValueError, match="groupby column not found"):
-        OpenBioSingleCellMarkerGenes.execute(adata, "missing", "wilcoxon", "X", "", 3, True, 0)
-    with pytest.raises(ValueError, match="Marker layer not found"):
-        OpenBioSingleCellMarkerGenes.execute(adata, "group", "wilcoxon", "layer", "missing", 3, True, 0)
+        OpenBioSingleCellMarkerGenes.execute(adata, "missing", "wilcoxon", {"source": "X"}, 3, True, 0)
+    with pytest.raises(ValueError, match="Marker source layer not found"):
+        OpenBioSingleCellMarkerGenes.execute(
+            adata,
+            "group",
+            "wilcoxon",
+            {"source": "layer", "layer_name": "missing"},
+            3,
+            True,
+            0,
+        )
 
     without_raw = adata.copy()
     without_raw.raw = None
     with pytest.raises(ValueError, match="adata.raw is unavailable"):
-        OpenBioSingleCellMarkerGenes.execute(without_raw, "group", "wilcoxon", "raw", "", 3, True, 0)
+        OpenBioSingleCellMarkerGenes.execute(without_raw, "group", "wilcoxon", {"source": "raw"}, 3, True, 0)
 
 
 def test_marker_raw_provenance_uses_raw_gene_count(adata):
     subset = adata[:, :8].copy()
-    result = output_value(OpenBioSingleCellMarkerGenes.execute(subset, "group", "wilcoxon", "raw", "", 3, True, 0))
+    result = output_value(
+        OpenBioSingleCellMarkerGenes.execute(subset, "group", "wilcoxon", {"source": "raw"}, 3, True, 0)
+    )
 
     assert subset.n_vars == 8
     assert subset.raw.n_vars == adata.n_vars
@@ -143,21 +168,21 @@ def test_marker_raw_provenance_uses_raw_gene_count(adata):
 
 
 def test_clustering_template_marker_logfc_is_finite_without_runtime_warnings(adata, science):
-    normalize_values = clustering_template_node("OpenBioSingleCellNormalizeToLayer")["widgets_values"]
-    variable_values = clustering_template_node("OpenBioSingleCellHighlyVariableGenes")["widgets_values"]
-    marker_values = clustering_template_node("OpenBioSingleCellMarkerGenes")["widgets_values"]
+    normalize_values = template_widget_kwargs(OpenBioSingleCellNormalizeToLayer)
+    variable_values = template_widget_kwargs(OpenBioSingleCellHighlyVariableGenes)
+    marker_values = template_widget_kwargs(OpenBioSingleCellMarkerGenes)
 
     adata.layers["counts"] = adata.layers["counts"].copy()
     adata.layers["counts"].data += 1
     existing_counts = dense(adata.layers["counts"], science).copy()
-    normalized = output_value(OpenBioSingleCellNormalizeToLayer.execute(adata, *normalize_values))
+    normalized = output_value(OpenBioSingleCellNormalizeToLayer.execute(adata, **normalize_values))
     assert science.np.array_equal(dense(normalized.layers["counts"], science), existing_counts)
-    variable = output_value(OpenBioSingleCellHighlyVariableGenes.execute(normalized, *variable_values))
+    variable = output_value(OpenBioSingleCellHighlyVariableGenes.execute(normalized, **variable_values))
     variable.obs["leiden"] = variable.obs["group"].copy()
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        result = output_value(OpenBioSingleCellMarkerGenes.execute(variable, *marker_values))
+        result = output_value(OpenBioSingleCellMarkerGenes.execute(variable, **marker_values))
 
     runtime_warnings = [warning for warning in caught if issubclass(warning.category, RuntimeWarning)]
     assert runtime_warnings == []
@@ -192,7 +217,7 @@ def test_marker_random_seed_is_only_forwarded_to_logreg(adata, science, monkeypa
 
     monkeypatch.setattr(science.sc.tl, "rank_genes_groups", rank_genes_groups)
     monkeypatch.setattr(science.sc.get, "rank_genes_groups_df", rank_genes_groups_df)
-    OpenBioSingleCellMarkerGenes.execute(adata, "group", method, "X", "", 2, True, 17)
+    OpenBioSingleCellMarkerGenes.execute(adata, "group", method, {"source": "X"}, 2, True, 17)
 
     assert received.get("random_state") == expected_random_state
     assert ("random_state" in received) is (method == "logreg")

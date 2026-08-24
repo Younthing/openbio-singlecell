@@ -6,7 +6,10 @@ from pathlib import Path
 import pytest
 
 from openbio_singlecell.extension import NODE_CLASSES
+from openbio_singlecell.nodes_preprocess import OpenBioSingleCellNormalizeToLayer
+from scripts.generate_example_workflows import _node as generated_node
 from scripts.generate_example_workflows import main as generate_example_workflows
+from tests.workflow_helpers import selected_widget_names, workflow_execute_kwargs
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_DIRECTORY = PLUGIN_ROOT / "example_workflows"
@@ -56,9 +59,10 @@ def _node(workflow: dict, node_type: str) -> dict:
 
 def _widgets(workflow: dict, node_type: str) -> dict[str, object]:
     node = _node(workflow, node_type)
-    schema = _registered_schemas()[node_type]
-    widget_inputs = [item for item in schema.inputs if not _is_wire_input(item)]
-    return dict(zip((item.id for item in widget_inputs), node.get("widgets_values", []), strict=True))
+    return {
+        name.partition(".")[2] or name: value
+        for name, value in node.get("widgets_values_named", {}).items()
+    }
 
 
 def _assert_link(
@@ -75,7 +79,15 @@ def _assert_link(
     target_slot = next(index for index, item in enumerate(target["inputs"]) if item["name"] == target_input)
 
     assert any(
-        link[1:6] == [origin["id"], origin_slot, target["id"], target_slot, wire_type] for link in workflow["links"]
+        (
+            link["origin_id"],
+            link["origin_slot"],
+            link["target_id"],
+            link["target_slot"],
+            link["type"],
+        )
+        == (origin["id"], origin_slot, target["id"], target_slot, wire_type)
+        for link in workflow["links"]
     )
 
 
@@ -88,6 +100,77 @@ def test_example_workflows_are_the_only_packaged_workflow_source():
 
 def test_example_workflows_match_the_schema_driven_generator():
     assert generate_example_workflows(["--check"]) == 0
+
+
+def test_workflow_generator_rejects_inactive_or_unnamespaced_dynamic_overrides():
+    for overrides in [
+        {"source": "X", "source.source_layer": "counts"},
+        {"source.source_layer": "counts"},
+    ]:
+        with pytest.raises(ValueError, match="inactive for the selected dynamic option"):
+            generated_node(
+                "normalize",
+                "OpenBioSingleCellNormalizeToLayer",
+                (0, 0),
+                overrides,
+            )
+
+    with pytest.raises(ValueError, match="has no widget inputs"):
+        generated_node(
+            "normalize",
+            "OpenBioSingleCellNormalizeToLayer",
+            (0, 0),
+            {"source": "layer", "source_layer": "counts"},
+        )
+
+    node = generated_node(
+        "normalize",
+        "OpenBioSingleCellNormalizeToLayer",
+        (0, 0),
+        {"source": "layer", "source.source_layer": "counts"},
+    )
+    assert node["widgets"][:2] == [("source", "layer"), ("source.source_layer", "counts")]
+    kwargs = workflow_execute_kwargs(
+        OpenBioSingleCellNormalizeToLayer,
+        {"widgets_values_named": dict(node["widgets"])},
+    )
+    assert kwargs["source"] == {"source": "layer", "source_layer": "counts"}
+
+    x_node = generated_node(
+        "normalize",
+        "OpenBioSingleCellNormalizeToLayer",
+        (0, 0),
+        {"source": "X"},
+    )
+    x_kwargs = workflow_execute_kwargs(
+        OpenBioSingleCellNormalizeToLayer,
+        {"widgets_values_named": dict(x_node["widgets"])},
+    )
+    assert x_kwargs["source"] == {"source": "X"}
+
+    invalid_x_values = dict(x_node["widgets"])
+    invalid_x_values["source.source_layer"] = "counts"
+    with pytest.raises(ValueError, match="unknown or inactive widget values"):
+        workflow_execute_kwargs(
+            OpenBioSingleCellNormalizeToLayer,
+            {"widgets_values_named": invalid_x_values},
+        )
+
+    unknown_values = dict(x_node["widgets"])
+    unknown_values["unknown"] = "value"
+    with pytest.raises(ValueError, match="unknown or inactive widget values"):
+        workflow_execute_kwargs(
+            OpenBioSingleCellNormalizeToLayer,
+            {"widgets_values_named": unknown_values},
+        )
+
+    missing_values = dict(x_node["widgets"])
+    del missing_values["target_sum"]
+    with pytest.raises(ValueError, match="missing active widget values"):
+        workflow_execute_kwargs(
+            OpenBioSingleCellNormalizeToLayer,
+            {"widgets_values_named": missing_values},
+        )
 
 
 def test_example_workflow_covers_match_the_exact_template_set():
@@ -114,12 +197,22 @@ def test_example_workflow_matches_registered_node_schemas(filename):
     workflow = _load_examples()[filename]
     schemas = _registered_schemas()
     nodes = {node["id"]: node for node in workflow["nodes"]}
-    links = {link[0]: link for link in workflow["links"]}
+    links = {link["id"]: link for link in workflow["links"]}
 
-    assert workflow["last_node_id"] == max(nodes)
-    assert workflow["last_link_id"] == max(links)
+    assert workflow["version"] == 1
+    assert workflow["state"] == {
+        "lastGroupId": max(group["id"] for group in workflow["groups"]),
+        "lastNodeId": max(nodes),
+        "lastLinkId": max(links),
+        "lastRerouteId": 0,
+    }
+    assert "last_node_id" not in workflow
+    assert "last_link_id" not in workflow
     assert len(nodes) == len(workflow["nodes"])
     assert len(links) == len(workflow["links"])
+
+    for link in links.values():
+        assert set(link) == {"id", "origin_id", "origin_slot", "target_id", "target_slot", "type"}
 
     for node in nodes.values():
         node_id = node["type"]
@@ -137,18 +230,22 @@ def test_example_workflow_matches_registered_node_schemas(filename):
         actual_outputs = [(item["name"], item["type"]) for item in node.get("outputs", [])]
         assert actual_outputs == expected_outputs
 
+        named_values = node.get("widgets_values_named", {})
         widget_inputs = [item for item in schema.inputs if not _is_wire_input(item)]
-        assert len(node.get("widgets_values", [])) == len(widget_inputs)
+        expected_widget_names = selected_widget_names(widget_inputs, named_values)
+        assert list(named_values) == expected_widget_names
+        assert dict(zip(expected_widget_names, node.get("widgets_values", []), strict=True)) == named_values
 
-    for link_id, origin_id, origin_slot, target_id, target_slot, wire_type in links.values():
-        origin = nodes[origin_id]
-        target = nodes[target_id]
-        origin_output = origin["outputs"][origin_slot]
-        target_input = target["inputs"][target_slot]
+    for link in links.values():
+        link_id = link["id"]
+        origin = nodes[link["origin_id"]]
+        target = nodes[link["target_id"]]
+        origin_output = origin["outputs"][link["origin_slot"]]
+        target_input = target["inputs"][link["target_slot"]]
 
-        assert wire_type in WIRE_TYPES
-        assert origin_output["type"] == wire_type
-        assert wire_type in target_input["type"].split(",")
+        assert link["type"] in WIRE_TYPES
+        assert origin_output["type"] == link["type"]
+        assert link["type"] in target_input["type"].split(",")
         assert link_id in origin_output["links"]
         assert target_input["link"] == link_id
 
@@ -188,8 +285,16 @@ def test_quality_control_template_uses_reviewed_production_thresholds():
     nodes = {node["id"]: node for node in workflow["nodes"]}
     filter_cells = _node(workflow, "OpenBioSingleCellFilterCells")
     filter_genes = _node(workflow, "OpenBioSingleCellFilterGenes")
-    cell_filter_targets = {nodes[link[3]]["type"] for link in workflow["links"] if link[1] == filter_cells["id"]}
-    gene_filter_targets = {nodes[link[3]]["type"] for link in workflow["links"] if link[1] == filter_genes["id"]}
+    cell_filter_targets = {
+        nodes[link["target_id"]]["type"]
+        for link in workflow["links"]
+        if link["origin_id"] == filter_cells["id"]
+    }
+    gene_filter_targets = {
+        nodes[link["target_id"]]["type"]
+        for link in workflow["links"]
+        if link["origin_id"] == filter_genes["id"]
+    }
     assert "OpenBioSingleCellQCPlots" in cell_filter_targets
     assert "OpenBioSingleCellQCPlots" not in gene_filter_targets
 
@@ -203,7 +308,6 @@ def test_clustering_template_preserves_counts_and_uses_a_layer_aware_pipeline():
     assert "OpenBioSingleCellScale" not in node_types
     assert _widgets(workflow, "OpenBioSingleCellNormalizeToLayer") == {
         "source": "X",
-        "source_layer": "counts",
         "target_sum": 10000.0,
         "transform": "log1p",
         "output_layer": "log1p_norm",
@@ -211,6 +315,7 @@ def test_clustering_template_preserves_counts_and_uses_a_layer_aware_pipeline():
     assert _widgets(workflow, "OpenBioSingleCellHighlyVariableGenes")["source"] == "layer"
     assert _widgets(workflow, "OpenBioSingleCellHighlyVariableGenes")["layer_name"] == "log1p_norm"
     assert _widgets(workflow, "OpenBioSingleCellPCA")["layer_name"] == "log1p_norm"
+    assert _widgets(workflow, "OpenBioSingleCellPCA")["source"] == "layer"
     assert _widgets(workflow, "OpenBioSingleCellMarkerGenes")["source"] == "layer"
     assert _widgets(workflow, "OpenBioSingleCellMarkerGenes")["layer_name"] == "log1p_norm"
     _assert_link(
@@ -256,7 +361,7 @@ def test_scvi_template_uses_counts_auto_epochs_and_its_concrete_model_consumer()
     assert _widgets(workflow, "OpenBioSingleCellNormalizeToLayer")["source"] == "X"
     integration = _widgets(workflow, "OpenBioSingleCellSCVIIntegration")
     assert integration["source"] == "X"
-    assert integration["counts_layer"] == "counts"
+    assert "counts_layer" not in integration
     assert integration["batch_key"] == "batch"
     assert integration["max_epochs"] == 0
     assert integration["output_key"] == "X_scVI"

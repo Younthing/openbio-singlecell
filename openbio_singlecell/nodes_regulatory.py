@@ -12,6 +12,11 @@ from comfy_api.latest import io
 
 from . import dependencies
 from .analysis_utils import finish_adata, make_table_result, matrix_totals_and_nonzero
+from .expression_source import (
+    DynamicExpressionSource,
+    ExpressionSource,
+    ExpressionSourceSpec,
+)
 from .files import input_file_fingerprint, input_file_provenance, resolve_input_path
 from .node_types import AnnDataType, ScenicNetworkType, TableResultType
 from .scenic_network import ScenicNetwork
@@ -21,7 +26,6 @@ if TYPE_CHECKING:
 
 
 CATEGORY = "openbio/single-cell/regulatory"
-EXPRESSION_SOURCES = ["X", "raw", "layer"]
 RANKING_METHODS = ["wilcoxon", "t-test_overestim_var"]
 PYSCENIC_GRN_METHODS = ["grnboost2", "genie3"]
 
@@ -40,20 +44,15 @@ def _required_name(value: str, description: str) -> str:
     return name
 
 
-def _expression_adata(adata: AnnData, source: str, layer_name: str) -> AnnData:
-    if source == "raw":
-        if adata.raw is None:
-            raise ValueError("Expression source 'raw' was selected, but adata.raw is unavailable.")
+def _expression_adata(adata: AnnData, source: ExpressionSource) -> AnnData:
+    if source.kind == "raw":
         work = adata.raw.to_adata()
         work.obs = adata.obs.copy()
         return work
 
     work = adata.copy()
-    if source == "layer":
-        layer_name = _required_name(layer_name, "Expression layer")
-        if layer_name not in adata.layers:
-            raise ValueError(f"Expression layer not found: {layer_name!r}")
-        work.X = adata.layers[layer_name].copy()
+    if source.kind == "layer":
+        work.X = adata.layers[source.layer_name].copy()
     return work
 
 
@@ -130,6 +129,12 @@ def _attach_pyscenic_results(
 
 
 class OpenBioSingleCellCollecTRIULM(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="TF activity source",
+        include_raw=True,
+        layer_default="log1p_norm",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -140,8 +145,7 @@ class OpenBioSingleCellCollecTRIULM(io.ComfyNode):
                 AnnDataType.Input("adata"),
                 io.Combo.Input("organism", options=["human", "mouse"], default="human"),
                 io.Boolean.Input("split_complexes", default=False),
-                io.Combo.Input("source", options=EXPRESSION_SOURCES, default="X"),
-                io.String.Input("layer_name", default="log1p_norm"),
+                cls.EXPRESSION_SOURCE.input(),
                 io.String.Input("activity_key", default="collectri_ulm_estimate", advanced=True),
                 io.String.Input("pvalue_key", default="collectri_ulm_pvals", advanced=True),
             ],
@@ -154,8 +158,7 @@ class OpenBioSingleCellCollecTRIULM(io.ComfyNode):
         adata: AnnData,
         organism: str = "human",
         split_complexes: bool = False,
-        source: str = "X",
-        layer_name: str = "log1p_norm",
+        source: DynamicExpressionSource | None = None,
         activity_key: str = "collectri_ulm_estimate",
         pvalue_key: str = "collectri_ulm_pvals",
     ) -> io.NodeOutput:
@@ -168,7 +171,8 @@ class OpenBioSingleCellCollecTRIULM(io.ComfyNode):
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        work = _expression_adata(output, source, layer_name)
+        expression = cls.EXPRESSION_SOURCE.resolve(output, source)
+        work = _expression_adata(output, expression)
         network = decoupler.get_collectri(organism=organism, split_complexes=split_complexes)
         decoupler.run_ulm(
             mat=work,
@@ -184,8 +188,7 @@ class OpenBioSingleCellCollecTRIULM(io.ComfyNode):
         parameters = {
             "organism": organism,
             "split_complexes": split_complexes,
-            "source": source,
-            "layer_name": layer_name,
+            **expression.parameters(),
             "activity_key": activity_key,
             "pvalue_key": pvalue_key,
         }
@@ -272,6 +275,12 @@ class OpenBioSingleCellRankTFActivities(io.ComfyNode):
 
 
 class OpenBioSingleCellRunPySCENIC(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="pySCENIC expression source",
+        include_raw=True,
+        layer_default="log1p_norm",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -280,8 +289,7 @@ class OpenBioSingleCellRunPySCENIC(io.ComfyNode):
             category=CATEGORY,
             inputs=[
                 AnnDataType.Input("adata"),
-                io.Combo.Input("source", options=EXPRESSION_SOURCES, default="X"),
-                io.String.Input("layer_name", default="log1p_norm"),
+                cls.EXPRESSION_SOURCE.input(),
                 io.Boolean.Input("use_highly_variable", default=False),
                 io.String.Input("highly_variable_key", default="highly_variable", advanced=True),
                 io.String.Input(
@@ -357,8 +365,7 @@ class OpenBioSingleCellRunPySCENIC(io.ComfyNode):
     def execute(
         cls,
         adata: AnnData,
-        source: str = "X",
-        layer_name: str = "log1p_norm",
+        source: DynamicExpressionSource | None = None,
         use_highly_variable: bool = False,
         highly_variable_key: str = "highly_variable",
         tf_list_file: str = "",
@@ -387,7 +394,8 @@ class OpenBioSingleCellRunPySCENIC(io.ComfyNode):
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        work = _expression_adata(output, source, layer_name)
+        expression = cls.EXPRESSION_SOURCE.resolve(output, source)
+        work = _expression_adata(output, expression)
         if work.X is None:
             raise ValueError("The selected pySCENIC expression source has no matrix.")
 
@@ -459,8 +467,7 @@ class OpenBioSingleCellRunPySCENIC(io.ComfyNode):
                 provenance={
                     "operation": "run_pyscenic",
                     "expression": {
-                        "source": source,
-                        "layer_name": layer_name,
+                        **expression.parameters(),
                         "use_highly_variable": use_highly_variable,
                         "highly_variable_key": highly_variable_key,
                     },
@@ -511,8 +518,7 @@ class OpenBioSingleCellRunPySCENIC(io.ComfyNode):
             _attach_pyscenic_results(output, str(final_loom), str(regulons_csv), activity_key, science)
 
         parameters = {
-            "source": source,
-            "layer_name": layer_name,
+            **expression.parameters(),
             "use_highly_variable": use_highly_variable,
             "highly_variable_key": highly_variable_key,
             "tf_list_file": tf_list_file,
@@ -707,6 +713,12 @@ class OpenBioSingleCellSCENICActivityBinarization(io.ComfyNode):
 
 
 class OpenBioSingleCellSCENICTFModules(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="SCENIC TF module source",
+        include_raw=True,
+        layer_default="log1p_norm",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -717,8 +729,7 @@ class OpenBioSingleCellSCENICTFModules(io.ComfyNode):
                 AnnDataType.Input("adata"),
                 ScenicNetworkType.Input("network"),
                 io.String.Input("transcription_factor", default=""),
-                io.Combo.Input("source", options=EXPRESSION_SOURCES, default="X"),
-                io.String.Input("layer_name", default="log1p_norm"),
+                cls.EXPRESSION_SOURCE.input(),
             ],
             outputs=[TableResultType.Output(display_name="table")],
         )
@@ -729,12 +740,12 @@ class OpenBioSingleCellSCENICTFModules(io.ComfyNode):
         adata: AnnData,
         network: ScenicNetwork,
         transcription_factor: str = "",
-        source: str = "X",
-        layer_name: str = "log1p_norm",
+        source: DynamicExpressionSource | None = None,
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
         adjacency = network.adjacency.copy(deep=True)
-        work = _expression_adata(adata, source, layer_name)
+        expression_source = cls.EXPRESSION_SOURCE.resolve(adata, source)
+        work = _expression_adata(adata, expression_source)
         if not work.var_names.is_unique:
             raise ValueError("SCENIC TF Modules requires unique expression gene names.")
         missing_genes = [name for name in network.gene_names if name not in work.var_names]
@@ -768,8 +779,7 @@ class OpenBioSingleCellSCENICTFModules(io.ComfyNode):
         parameters = {
             "grn_method": network.grn_method,
             "transcription_factor": transcription_factor,
-            "source": source,
-            "layer_name": layer_name,
+            **expression_source.parameters(),
         }
         result = make_table_result(
             title=f"SCENIC modules: {transcription_factor or 'all TFs'}",

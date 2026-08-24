@@ -6,6 +6,7 @@ from pathlib import Path
 from install import main as manager_install
 from openbio_singlecell.extension import NODE_CLASSES
 from scripts.generate_demo import KNOWN_MARKERS, build_demo, validate_existing
+from tests.workflow_helpers import workflow_execute_kwargs
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
@@ -22,8 +23,9 @@ def template_runner(template_name):
 
     def run(node_type, input_value=None):
         args = [] if input_value is None else [input_value]
-        args.extend(workflow_nodes[node_type].get("widgets_values", []))
-        return output_value(node_classes[node_type].execute(*args))
+        node_class = node_classes[node_type]
+        kwargs = workflow_execute_kwargs(node_class, workflow_nodes[node_type])
+        return output_value(node_class.execute(*args, **kwargs))
 
     return run
 

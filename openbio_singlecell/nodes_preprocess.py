@@ -7,6 +7,7 @@ from comfy_api.latest import io
 
 from . import dependencies
 from .analysis_utils import finish_adata
+from .expression_source import DynamicExpressionSource, ExpressionSourceSpec
 from .node_types import AnnDataType
 
 if TYPE_CHECKING:
@@ -73,6 +74,12 @@ class OpenBioSingleCellLog1p(io.ComfyNode):
 
 
 class OpenBioSingleCellNormalizeToLayer(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="Normalize source",
+        layer_input_id="source_layer",
+        layer_default="counts",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -82,8 +89,7 @@ class OpenBioSingleCellNormalizeToLayer(io.ComfyNode):
             description="Normalize an expression matrix into a named layer without replacing adata.X.",
             inputs=[
                 AnnDataType.Input("adata"),
-                io.Combo.Input("source", options=["X", "layer"], default="X"),
-                io.String.Input("source_layer", default="counts"),
+                cls.EXPRESSION_SOURCE.input(),
                 io.Float.Input("target_sum", default=10000.0, min=0.0, step=1000.0),
                 io.Combo.Input("transform", options=["none", "log1p", "sqrt"], default="log1p"),
                 io.String.Input("output_layer", default="log1p_norm", advanced=True),
@@ -95,8 +101,7 @@ class OpenBioSingleCellNormalizeToLayer(io.ComfyNode):
     def execute(
         cls,
         adata: AnnData,
-        source: str = "X",
-        source_layer: str = "counts",
+        source: DynamicExpressionSource | None = None,
         target_sum: float = 10000.0,
         transform: str = "log1p",
         output_layer: str = "log1p_norm",
@@ -104,13 +109,12 @@ class OpenBioSingleCellNormalizeToLayer(io.ComfyNode):
         science = dependencies.require_scientific_dependencies()
         if not output_layer.strip():
             raise ValueError("Normalize output_layer cannot be empty.")
-        if source == "layer" and source_layer not in adata.layers:
-            raise ValueError(f"Normalize source layer not found: {source_layer!r}")
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
 
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        matrix = output.X if source == "X" else output.layers[source_layer]
+        matrix = expression.matrix(output)
         work = science.ad.AnnData(X=matrix.copy(), obs=output.obs.copy(), var=output.var.copy())
         science.sc.pp.normalize_total(work, target_sum=target_sum or None, inplace=True)
         if transform == "log1p":
@@ -119,8 +123,7 @@ class OpenBioSingleCellNormalizeToLayer(io.ComfyNode):
             work.X = work.X.sqrt() if science.sparse.issparse(work.X) else science.np.sqrt(work.X)
         output.layers[output_layer.strip()] = work.X.copy()
         parameters = {
-            "source": source,
-            "source_layer": source_layer,
+            **expression.parameters(),
             "target_sum": target_sum,
             "transform": transform,
             "output_layer": output_layer.strip(),
@@ -130,6 +133,12 @@ class OpenBioSingleCellNormalizeToLayer(io.ComfyNode):
 
 
 class OpenBioSingleCellPearsonResidualsToLayer(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="Pearson residual source",
+        layer_input_id="source_layer",
+        layer_default="counts",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -139,8 +148,7 @@ class OpenBioSingleCellPearsonResidualsToLayer(io.ComfyNode):
             description="Compute analytic Pearson residuals and store them in an AnnData layer.",
             inputs=[
                 AnnDataType.Input("adata"),
-                io.Combo.Input("source", options=["X", "layer"], default="X"),
-                io.String.Input("source_layer", default="counts"),
+                cls.EXPRESSION_SOURCE.input(),
                 io.Float.Input("theta", default=100.0, min=0.000001, step=10.0),
                 io.Float.Input("clip", default=0.0, min=0.0, step=1.0, advanced=True),
                 io.String.Input("output_layer", default="analytic_pearson_residuals", advanced=True),
@@ -152,15 +160,13 @@ class OpenBioSingleCellPearsonResidualsToLayer(io.ComfyNode):
     def execute(
         cls,
         adata: AnnData,
-        source: str = "X",
-        source_layer: str = "counts",
+        source: DynamicExpressionSource | None = None,
         theta: float = 100.0,
         clip: float = 0.0,
         output_layer: str = "analytic_pearson_residuals",
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
-        if source == "layer" and source_layer not in adata.layers:
-            raise ValueError(f"Pearson residual source layer not found: {source_layer!r}")
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
         output_layer = output_layer.strip()
         if not output_layer:
             raise ValueError("Pearson residual output_layer cannot be empty.")
@@ -172,13 +178,12 @@ class OpenBioSingleCellPearsonResidualsToLayer(io.ComfyNode):
             output,
             theta=theta,
             clip=clip or None,
-            layer=source_layer if source == "layer" else None,
+            layer=expression.scanpy_layer,
             inplace=False,
         )
         output.layers[output_layer] = normalized["X"]
         parameters = {
-            "source": source,
-            "source_layer": source_layer,
+            **expression.parameters(),
             "theta": theta,
             "clip": clip,
             "output_layer": output_layer,
@@ -188,6 +193,11 @@ class OpenBioSingleCellPearsonResidualsToLayer(io.ComfyNode):
 
 
 class OpenBioSingleCellHighlyVariableGenes(io.ComfyNode):
+    EXPRESSION_SOURCE = ExpressionSourceSpec(
+        description="Highly Variable Genes source",
+        layer_default="log1p_norm",
+    )
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -202,8 +212,7 @@ class OpenBioSingleCellHighlyVariableGenes(io.ComfyNode):
                     options=["seurat", "cell_ranger", "seurat_v3", "seurat_v3_paper", "pearson_residuals"],
                     default="seurat",
                 ),
-                io.Combo.Input("source", options=["X", "layer"], default="X"),
-                io.String.Input("layer_name", default="log1p_norm"),
+                cls.EXPRESSION_SOURCE.input(),
                 io.String.Input("batch_key", default=""),
                 io.String.Input("always_keep_genes", default=""),
                 io.Boolean.Input("subset", default=False),
@@ -217,8 +226,7 @@ class OpenBioSingleCellHighlyVariableGenes(io.ComfyNode):
         adata: AnnData,
         n_top_genes: int = 2000,
         flavor: str = "seurat",
-        source: str = "X",
-        layer_name: str = "log1p_norm",
+        source: DynamicExpressionSource | None = None,
         batch_key: str = "",
         always_keep_genes: str = "",
         subset: bool = False,
@@ -227,8 +235,7 @@ class OpenBioSingleCellHighlyVariableGenes(io.ComfyNode):
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        if source == "layer" and layer_name not in output.layers:
-            raise ValueError(f"Highly Variable Genes layer not found: {layer_name!r}")
+        expression = cls.EXPRESSION_SOURCE.resolve(output, source)
         if batch_key and batch_key not in output.obs:
             raise ValueError(f"Highly Variable Genes batch column not found in obs: {batch_key!r}")
         requested_keep = list(dict.fromkeys(gene.strip() for gene in always_keep_genes.split(",") if gene.strip()))
@@ -239,7 +246,7 @@ class OpenBioSingleCellHighlyVariableGenes(io.ComfyNode):
         )
         hvg(
             output,
-            layer=layer_name if source == "layer" else None,
+            layer=expression.scanpy_layer,
             n_top_genes=n_top_genes,
             flavor=flavor,
             batch_key=batch_key or None,
@@ -255,8 +262,7 @@ class OpenBioSingleCellHighlyVariableGenes(io.ComfyNode):
         parameters = {
             "n_top_genes": n_top_genes,
             "flavor": flavor,
-            "source": source,
-            "layer_name": layer_name,
+            **expression.parameters(),
             "batch_key": batch_key,
             "always_keep_genes": requested_keep,
             "subset": subset,

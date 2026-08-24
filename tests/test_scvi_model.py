@@ -66,9 +66,12 @@ def test_scvi_schemas_use_the_concrete_model_wire():
         ("adata", AnnDataType.io_type),
         ("model", SCVIModelType.io_type),
     ]
-    assert integration_inputs["source"].default == "layer"
+    assert integration_inputs["source"].get_io_type() == "COMFY_DYNAMICCOMBO_V3"
     assert integration_inputs["source"].advanced is not True
-    assert integration_inputs["counts_layer"].advanced is not True
+    assert [(option.key, [item.id for item in option.inputs]) for option in integration_inputs["source"].options] == [
+        ("layer", ["counts_layer"]),
+        ("X", []),
+    ]
     assert integration_inputs["batch_key"].default == ""
     assert integration_inputs["size_factor_key"].advanced is True
     assert integration_inputs["compute_mde"].default is False
@@ -150,8 +153,7 @@ def test_scvi_integration_returns_the_trained_model_wrapper(adata, science, monk
     output, trained_model = output_values(
         OpenBioSingleCellSCVIIntegration.execute(
             adata,
-            source="X",
-            counts_layer="missing_is_unused_for_x",
+            source={"source": "X"},
             batch_key="",
             size_factor_key="total_counts",
             n_latent=2,
@@ -179,6 +181,7 @@ def test_scvi_integration_returns_the_trained_model_wrapper(adata, science, monk
     assert trained_model.training_parameters["n_latent"] == 2
     assert trained_model.training_parameters["random_seed"] == 17
     assert trained_model.training_parameters["source"] == "X"
+    assert "counts_layer" not in trained_model.training_parameters
     assert trained_model.training_parameters["size_factor_key"] == "total_counts"
     assert list(trained_model.obs_names) == list(output.obs_names)
     assert list(trained_model.var_names) == list(output.var_names)
@@ -191,8 +194,7 @@ def test_scvi_integration_returns_the_trained_model_wrapper(adata, science, monk
     mde_output, _ = output_values(
         OpenBioSingleCellSCVIIntegration.execute(
             adata,
-            source="layer",
-            counts_layer="counts",
+            source={"source": "layer", "counts_layer": "counts"},
             compute_mde=True,
             store_latent_distribution=False,
             n_latent=2,
@@ -208,8 +210,7 @@ def test_scvi_integration_returns_the_trained_model_wrapper(adata, science, monk
     distribution_output, _ = output_values(
         OpenBioSingleCellSCVIIntegration.execute(
             adata,
-            source="layer",
-            counts_layer="counts",
+            source={"source": "layer", "counts_layer": "counts"},
             compute_mde=False,
             store_latent_distribution=True,
             n_latent=2,

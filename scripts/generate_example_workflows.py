@@ -22,6 +22,23 @@ def _is_wire_input(item: Any) -> bool:
     return bool(set(item.get_io_type().split(",")) & WIRE_TYPES)
 
 
+def _widget_entries(item: Any, overrides: dict[str, Any]) -> list[tuple[str, Any, bool]]:
+    if item.get_io_type() != "COMFY_DYNAMICCOMBO_V3":
+        return [(item.id, overrides.get(item.id, item.default), item.advanced is True)]
+
+    selected = overrides.get(item.id, item.options[0].key)
+    option = next((option for option in item.options if option.key == selected), None)
+    if option is None:
+        raise ValueError(f"{item.id} has no dynamic option named {selected!r}")
+
+    entries = [(item.id, selected, item.advanced is True)]
+    for nested in option.inputs:
+        name = f"{item.id}.{nested.id}"
+        value = overrides.get(name, nested.default)
+        entries.append((name, value, nested.advanced is True))
+    return entries
+
+
 def _node(
     alias: str,
     node_type: str,
@@ -34,12 +51,26 @@ def _node(
     widget_inputs = [item for item in schema.inputs if not _is_wire_input(item)]
     overrides = widgets or {}
     widget_ids = {item.id for item in widget_inputs}
+    widget_ids.update(
+        f"{item.id}.{nested.id}"
+        for item in widget_inputs
+        if item.get_io_type() == "COMFY_DYNAMICCOMBO_V3"
+        for option in item.options
+        for nested in option.inputs
+    )
     unknown = set(overrides) - widget_ids
     if unknown:
         raise ValueError(f"{node_type} has no widget inputs named {sorted(unknown)}")
 
+    widget_entries = [entry for item in widget_inputs for entry in _widget_entries(item, overrides)]
+    active_widget_ids = {name for name, _, _ in widget_entries}
+    inactive = set(overrides) - active_widget_ids
+    if inactive:
+        raise ValueError(
+            f"{node_type} widget inputs are inactive for the selected dynamic option: {sorted(inactive)}"
+        )
     if size is None:
-        visible_widget_count = sum(item.advanced is not True for item in widget_inputs)
+        visible_widget_count = sum(not advanced for _, _, advanced in widget_entries)
         size = (320, max(80, 52 + 24 * visible_widget_count))
     if node_type == "OpenBioSingleCellPreviewResult":
         size = (300, 220)
@@ -51,7 +82,7 @@ def _node(
         "size": list(size),
         "wire_inputs": [(item.id, item.get_io_type()) for item in wire_inputs],
         "outputs": [(output.display_name, output.io_type) for output in schema.outputs],
-        "widgets_values": [overrides.get(item.id, item.default) for item in widget_inputs],
+        "widgets": [(name, value) for name, value, _ in widget_entries],
     }
 
 
@@ -93,7 +124,8 @@ def _workflow(
                 "inputs": [{"name": name, "type": wire_type, "link": None} for name, wire_type in spec["wire_inputs"]],
                 "outputs": [{"name": name, "type": wire_type, "links": []} for name, wire_type in spec["outputs"]],
                 "properties": {"Node name for S&R": spec["type"]},
-                "widgets_values": spec["widgets_values"],
+                "widgets_values": [value for _, value in spec["widgets"]],
+                "widgets_values_named": dict(spec["widgets"]),
             }
         )
 
@@ -115,7 +147,16 @@ def _workflow(
 
         source["outputs"][source_slot]["links"].append(link_id)
         target["inputs"][target_slot]["link"] = link_id
-        links.append([link_id, source["id"], source_slot, target["id"], target_slot, source_type])
+        links.append(
+            {
+                "id": link_id,
+                "origin_id": source["id"],
+                "origin_slot": source_slot,
+                "target_id": target["id"],
+                "target_slot": target_slot,
+                "type": source_type,
+            }
+        )
 
     for node in nodes:
         disconnected = [item["name"] for item in node["inputs"] if item["link"] is None]
@@ -125,17 +166,21 @@ def _workflow(
     return {
         "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"openbio-singlecell:{stem}")),
         "revision": 0,
-        "last_node_id": len(nodes),
-        "last_link_id": len(links),
+        "version": 1,
+        "state": {
+            "lastGroupId": max((group["id"] for group in groups), default=0),
+            "lastNodeId": len(nodes),
+            "lastLinkId": len(links),
+            "lastRerouteId": 0,
+        },
+        "config": {},
+        "groups": groups,
         "nodes": nodes,
         "links": links,
-        "groups": groups,
-        "config": {},
         "extra": {
             "ds": {"scale": scale, "offset": list(offset)},
             "frontendVersion": "1.52.3",
         },
-        "version": 0.4,
     }
 
 
@@ -216,7 +261,6 @@ def _cell_clustering() -> tuple[str, dict[str, Any]]:
             (400, 70),
             {
                 "source": "X",
-                "source_layer": "counts",
                 "target_sum": 10000.0,
                 "transform": "log1p",
                 "output_layer": "log1p_norm",
@@ -230,7 +274,7 @@ def _cell_clustering() -> tuple[str, dict[str, Any]]:
                 "n_top_genes": 200,
                 "flavor": "seurat",
                 "source": "layer",
-                "layer_name": "log1p_norm",
+                "source.layer_name": "log1p_norm",
                 "batch_key": "",
                 "always_keep_genes": "",
                 "subset": False,
@@ -240,7 +284,13 @@ def _cell_clustering() -> tuple[str, dict[str, Any]]:
             "pca",
             "OpenBioSingleCellPCA",
             (1140, 70),
-            {"n_comps": 30, "use_hvg": True, "layer_name": "log1p_norm", "random_seed": 0},
+            {
+                "n_comps": 30,
+                "use_hvg": True,
+                "source": "layer",
+                "source.layer_name": "log1p_norm",
+                "random_seed": 0,
+            },
         ),
         _node(
             "neighbors",
@@ -265,7 +315,7 @@ def _cell_clustering() -> tuple[str, dict[str, Any]]:
                 "groupby": "leiden",
                 "method": "wilcoxon",
                 "source": "layer",
-                "layer_name": "log1p_norm",
+                "source.layer_name": "log1p_norm",
                 "n_genes": 100,
                 "pts": True,
                 "random_seed": 0,
@@ -424,7 +474,6 @@ def _scvi_integration() -> tuple[str, dict[str, Any]]:
             (1500, 60),
             {
                 "source": "X",
-                "source_layer": "counts",
                 "target_sum": 10000.0,
                 "transform": "log1p",
                 "output_layer": "log1p_norm",
@@ -434,7 +483,7 @@ def _scvi_integration() -> tuple[str, dict[str, Any]]:
             "scvi",
             "OpenBioSingleCellSCVIIntegration",
             (1840, 50),
-            {"source": "X", "counts_layer": "counts", "batch_key": "batch"},
+            {"source": "X", "batch_key": "batch"},
         ),
         _node(
             "neighbors",
