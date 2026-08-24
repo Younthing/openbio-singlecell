@@ -24,8 +24,16 @@
       "license": "LICENSE",
       "third_party_notices": "THIRD_PARTY_NOTICES.md",
       "example_workflows": [
-        "example_workflows/openbio_singlecell_basic_qc.json",
-        "example_workflows/openbio_singlecell_full_analysis.json"
+        "example_workflows/Quality Control and Clean Counts.json",
+        "example_workflows/Cell Clustering and Marker Discovery.json",
+        "example_workflows/Sample Composition Comparison.json",
+        "example_workflows/scVI Batch Integration and Contrast.json"
+      ],
+      "workflow_covers": [
+        "example_workflows/Quality Control and Clean Counts.jpg",
+        "example_workflows/Cell Clustering and Marker Discovery.jpg",
+        "example_workflows/Sample Composition Comparison.jpg",
+        "example_workflows/scVI Batch Integration and Contrast.jpg"
       ],
       "contract": {
         "node_id_prefix": "OpenBioSingleCell",

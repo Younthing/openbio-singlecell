@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from install import main as manager_install
 from openbio_singlecell.extension import NODE_CLASSES
 from scripts.generate_demo import KNOWN_MARKERS, build_demo, validate_existing
@@ -16,8 +14,8 @@ def output_value(node_output):
     return node_output.result[0]
 
 
-def full_example_runner():
-    workflow_path = PLUGIN_ROOT / "example_workflows" / "openbio_singlecell_full_analysis.json"
+def template_runner(template_name):
+    workflow_path = PLUGIN_ROOT / "example_workflows" / f"{template_name}.json"
     workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
     workflow_nodes = {node["type"]: node for node in workflow["nodes"]}
     node_classes = {node.GET_SCHEMA().node_id: node for node in NODE_CLASSES}
@@ -28,6 +26,12 @@ def full_example_runner():
         return output_value(node_classes[node_type].execute(*args))
 
     return run
+
+
+def write_demo(input_dir, science):
+    demo_path = input_dir / "openbio-singlecell" / "openbio_singlecell_demo.h5ad"
+    demo_path.parent.mkdir()
+    build_demo(science.np, science.pd, science.sparse, science.ad).write_h5ad(demo_path)
 
 
 def test_manager_install_generates_demo(tmp_path, monkeypatch, science):
@@ -101,38 +105,61 @@ def test_demo_validation_rejects_forged_same_shape_anndata(tmp_path, science):
         assert expected_reason in reason
 
 
-def test_full_example_reduces_demo_and_completes_analysis(comfy_directories, science):
+def test_clustering_template_completes_demo_analysis(comfy_directories, science):
     input_dir, _, _ = comfy_directories
-    demo_path = input_dir / "openbio-singlecell" / "openbio_singlecell_demo.h5ad"
-    demo_path.parent.mkdir()
-    build_demo(science.np, science.pd, science.sparse, science.ad).write_h5ad(demo_path)
-    run = full_example_runner()
+    write_demo(input_dir, science)
+    run = template_runner("Cell Clustering and Marker Discovery")
 
     loaded = run("OpenBioSingleCellLoadH5AD")
-    qc = run("OpenBioSingleCellCalculateQC", loaded)
-    filtered_cells = run("OpenBioSingleCellFilterCells", qc)
-    filtered = run("OpenBioSingleCellFilterGenes", filtered_cells)
-
-    assert 0 < filtered.n_obs < 600
-    assert 0 < filtered.n_vars < 500
-
-    normalized = run("OpenBioSingleCellNormalizeTotal", filtered)
-    logged = run("OpenBioSingleCellLog1p", normalized)
-    variable = run("OpenBioSingleCellHighlyVariableGenes", logged)
+    normalized = run("OpenBioSingleCellNormalizeToLayer", loaded)
+    variable = run("OpenBioSingleCellHighlyVariableGenes", normalized)
     highly_variable = int(variable.var["highly_variable"].sum())
     assert 0 < highly_variable < variable.n_vars
 
-    with pytest.warns(UserWarning, match="densifies"):
-        scaled = run("OpenBioSingleCellScale", variable)
-    pca = run("OpenBioSingleCellPCA", scaled)
+    pca = run("OpenBioSingleCellPCA", variable)
     neighbors = run("OpenBioSingleCellNeighbors", pca)
     umap = run("OpenBioSingleCellUMAP", neighbors)
     clustered = run("OpenBioSingleCellLeiden", umap)
     markers = run("OpenBioSingleCellMarkerGenes", clustered)
+    filtered_markers = run("OpenBioSingleCellFilterMarkerGenes", markers)
     plot = run("OpenBioSingleCellUMAPPlot", clustered)
     summary = run("OpenBioSingleCellAnnDataSummary", clustered)
 
     assert markers.kind == "table" and not markers.table.empty
     assert science.np.isfinite(markers.table["logFC"].to_numpy(dtype=float)).all()
+    assert filtered_markers.kind == "table" and not filtered_markers.table.empty
     assert plot.kind == "plot" and plot.png
     assert summary.kind == "summary" and summary.summary["shape"] == [clustered.n_obs, clustered.n_vars]
+
+
+def test_quality_control_template_filters_demo_and_produces_consistent_plots(comfy_directories, science):
+    input_dir, _, _ = comfy_directories
+    write_demo(input_dir, science)
+    run = template_runner("Quality Control and Clean Counts")
+
+    loaded = run("OpenBioSingleCellLoadH5AD")
+    qc = run("OpenBioSingleCellCalculateQC", loaded)
+    before_plot = run("OpenBioSingleCellQCPlots", qc)
+    filtered_cells = run("OpenBioSingleCellFilterCells", qc)
+    retained_plot = run("OpenBioSingleCellQCPlots", filtered_cells)
+    filtered = run("OpenBioSingleCellFilterGenes", filtered_cells)
+    summary = run("OpenBioSingleCellAnnDataSummary", filtered)
+
+    assert (filtered.n_obs, filtered.n_vars) == (577, 500)
+    assert before_plot.kind == "plot" and before_plot.png
+    assert retained_plot.kind == "plot" and retained_plot.png
+    assert summary.summary["shape"] == [577, 500]
+
+
+def test_composition_template_produces_sample_level_tables(comfy_directories, science):
+    input_dir, _, _ = comfy_directories
+    write_demo(input_dir, science)
+    run = template_runner("Sample Composition Comparison")
+
+    loaded = run("OpenBioSingleCellLoadH5AD")
+    composition = run("OpenBioSingleCellSampleCompositionSummary", loaded)
+    contrast = run("OpenBioSingleCellDifferentialCompositionTest", loaded)
+
+    assert composition.kind == "table" and len(composition.table) == 12
+    assert contrast.kind == "table" and len(contrast.table) == 6
+    assert set(contrast.table["scope"]) == {"global", "pairwise"}

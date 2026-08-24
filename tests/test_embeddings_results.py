@@ -17,6 +17,7 @@ from openbio_singlecell.nodes_embedding import (
 from openbio_singlecell.nodes_preprocess import (
     OpenBioSingleCellHighlyVariableGenes,
     OpenBioSingleCellLog1p,
+    OpenBioSingleCellNormalizeToLayer,
     OpenBioSingleCellNormalizeTotal,
     OpenBioSingleCellScale,
 )
@@ -64,8 +65,8 @@ def prepare_embedding_input(adata):
         return output_value(OpenBioSingleCellScale.execute(variable, 10.0))
 
 
-def full_example_node(node_type):
-    workflow_path = PLUGIN_ROOT / "example_workflows" / "openbio_singlecell_full_analysis.json"
+def clustering_template_node(node_type):
+    workflow_path = PLUGIN_ROOT / "example_workflows" / "Cell Clustering and Marker Discovery.json"
     workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
     return next(node for node in workflow["nodes"] if node["type"] == node_type)
 
@@ -141,26 +142,27 @@ def test_marker_raw_provenance_uses_raw_gene_count(adata):
     assert result.source["input_genes"] == adata.n_vars
 
 
-def test_full_example_marker_logfc_is_finite_after_scaling_without_runtime_warnings(adata, science):
-    log1p_values = full_example_node("OpenBioSingleCellLog1p")["widgets_values"]
-    variable_values = full_example_node("OpenBioSingleCellHighlyVariableGenes")["widgets_values"]
-    scale_values = full_example_node("OpenBioSingleCellScale")["widgets_values"]
-    marker_values = full_example_node("OpenBioSingleCellMarkerGenes")["widgets_values"]
+def test_clustering_template_marker_logfc_is_finite_without_runtime_warnings(adata, science):
+    normalize_values = clustering_template_node("OpenBioSingleCellNormalizeToLayer")["widgets_values"]
+    variable_values = clustering_template_node("OpenBioSingleCellHighlyVariableGenes")["widgets_values"]
+    marker_values = clustering_template_node("OpenBioSingleCellMarkerGenes")["widgets_values"]
 
-    normalized = output_value(OpenBioSingleCellNormalizeTotal.execute(adata, 10_000.0))
-    logged = output_value(OpenBioSingleCellLog1p.execute(normalized, *log1p_values))
-    variable = output_value(OpenBioSingleCellHighlyVariableGenes.execute(logged, *variable_values))
-    with pytest.warns(UserWarning, match="densifies"):
-        scaled = output_value(OpenBioSingleCellScale.execute(variable, *scale_values))
-    scaled.obs["leiden"] = scaled.obs["group"].copy()
+    adata.layers["counts"] = adata.layers["counts"].copy()
+    adata.layers["counts"].data += 1
+    existing_counts = dense(adata.layers["counts"], science).copy()
+    normalized = output_value(OpenBioSingleCellNormalizeToLayer.execute(adata, *normalize_values))
+    assert science.np.array_equal(dense(normalized.layers["counts"], science), existing_counts)
+    variable = output_value(OpenBioSingleCellHighlyVariableGenes.execute(normalized, *variable_values))
+    variable.obs["leiden"] = variable.obs["group"].copy()
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        result = output_value(OpenBioSingleCellMarkerGenes.execute(scaled, *marker_values))
+        result = output_value(OpenBioSingleCellMarkerGenes.execute(variable, *marker_values))
 
     runtime_warnings = [warning for warning in caught if issubclass(warning.category, RuntimeWarning)]
     assert runtime_warnings == []
-    assert result.parameters["source"] == "raw"
+    assert result.parameters["source"] == "layer"
+    assert result.parameters["layer_name"] == "log1p_norm"
     assert science.np.isfinite(result.table["logFC"].to_numpy(dtype=float)).all()
 
 

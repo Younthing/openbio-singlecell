@@ -94,12 +94,46 @@ It contains 600 cells, 500 genes, three known cell groups, mitochondrial genes, 
 
 ## Example workflows
 
-Open either workflow from the repository's `example_workflows` directory:
+Open one of the four production starting-point templates in `example_workflows`:
 
-- `openbio_singlecell_basic_qc.json` loads the demo AnnData, calculates and filters QC metrics, previews a structural summary and QC plots, and writes H5AD only through the explicit save node.
-- `openbio_singlecell_full_analysis.json` adds normalization, log transformation, highly variable genes, scaling, PCA, neighbors, UMAP, Leiden clustering, marker genes, previews, and explicit CSV, PNG, and H5AD outputs.
+- `Quality Control and Clean Counts.json` loads raw counts, calculates and filters QC metrics, previews the
+  retained data, and writes a clean H5AD only through the explicit save node.
+- `Cell Clustering and Marker Discovery.json` reads raw counts from `adata.X`, leaves `X` and existing layers
+  unchanged, and creates a normalized `log1p_norm` layer for highly variable genes, PCA, clustering, marker ranking,
+  plots, and explicit outputs. It deliberately omits Scale so the production path does not densify the expression
+  matrix merely to reach PCA.
+- `Sample Composition Comparison.json` summarizes cell-type proportions per sample and compares `batch_2` with
+  the `batch_1` control using concrete table outputs that can be previewed or exported.
+- `scVI Batch Integration and Contrast.json` trains scVI from raw counts in `adata.X`, constructs neighbors
+  from `X_scVI`, visualizes the integrated embedding, and passes the concrete in-memory model to scVI differential
+  expression instead of retraining it.
 
-`example_workflows` is the only packaged workflow source. There is no mirrored copy under `web`, so examples cannot drift from the files reviewed and released here.
+Every workflow JSON has a same-stem 768 x 768 JPEG cover in the same directory. The JSON and cover lists are
+explicit release artifacts, so a renamed, missing, extra, malformed, or mismatched template asset fails the release
+contract tests. `example_workflows` remains the only packaged workflow source; there is no mirrored copy under
+`web` that can drift from the reviewed files.
+
+The bundled values are reviewed starting points for the generated demonstration data, not universal scientific
+thresholds. Before using a template in production, replace the input path and review its visible QC thresholds,
+feature count, grouping columns, labels, comparison groups, and output names for the study design. In particular:
+
+- QC assumes gene symbols use the `MT-` mitochondrial prefix. Its starting cell thresholds are 90 minimum genes
+  and 20% maximum mitochondrial counts, and its starting gene threshold is 3 minimum cells.
+- composition requires `adata.obs["sample"]`, `adata.obs["batch"]`, and `adata.obs["cell_type"]`; each sample must
+  map to exactly one batch. `batch_1` and `batch_2` are values from the generated demonstration data and must be
+  changed when a study uses different conditions. Its Kruskal-Wallis and pairwise Mann-Whitney results are an
+  exploratory sample-level comparison; use a covariate-aware compositional model when the study design requires it.
+- QC and the complete scVI template require non-negative integer counts in `adata.X` at entry because QC and
+  filtering operate on `X`. If counts only exist in a layer, first use Use Expression Layer to restore that layer to
+  `X`, then keep the scVI template's source set to `X`. The clustering template can instead read a counts layer by
+  changing Normalize to Layer's `source` and `source_layer`; it does not overwrite `X` or existing layers.
+- scVI also requires `adata.obs["batch"]`; its downstream contrast requires the grouping column and labels shown on
+  that node. Install the optional `scvi-tools` dependency in the same Python environment that runs ComfyUI before
+  executing this template.
+
+The scVI `model` output is an ephemeral Python object for downstream nodes in the current execution. Saving the
+workflow records the connection and parameters, not trained model weights; after restarting ComfyUI, rerun scVI
+Integration before executing its differential-expression consumer.
 
 ## Run modes
 

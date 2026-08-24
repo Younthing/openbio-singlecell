@@ -8,8 +8,16 @@ from openbio_singlecell import PLUGIN_VERSION
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_EXAMPLES = [
-    "example_workflows/openbio_singlecell_basic_qc.json",
-    "example_workflows/openbio_singlecell_full_analysis.json",
+    "example_workflows/Quality Control and Clean Counts.json",
+    "example_workflows/Cell Clustering and Marker Discovery.json",
+    "example_workflows/Sample Composition Comparison.json",
+    "example_workflows/scVI Batch Integration and Contrast.json",
+]
+EXPECTED_COVERS = [
+    "example_workflows/Quality Control and Clean Counts.jpg",
+    "example_workflows/Cell Clustering and Marker Discovery.jpg",
+    "example_workflows/Sample Composition Comparison.jpg",
+    "example_workflows/scVI Batch Integration and Contrast.jpg",
 ]
 
 
@@ -21,6 +29,7 @@ def test_release_manifest_records_the_public_contract_and_artifacts():
     assert manifest["product"] == "openbio-singlecell"
     assert manifest["version"] == PLUGIN_VERSION
     assert custom_node["example_workflows"] == EXPECTED_EXAMPLES
+    assert custom_node["workflow_covers"] == EXPECTED_COVERS
     assert custom_node["contract"] == {
         "node_id_prefix": "OpenBioSingleCell",
         "category_prefix": "openbio/single-cell/",
@@ -37,6 +46,10 @@ def test_release_manifest_records_the_public_contract_and_artifacts():
         },
     }
     assert all((PLUGIN_ROOT / relative).is_file() for relative in custom_node["example_workflows"])
+    assert all((PLUGIN_ROOT / relative).is_file() for relative in custom_node["workflow_covers"])
+    assert [Path(relative).stem for relative in custom_node["example_workflows"]] == [
+        Path(relative).stem for relative in custom_node["workflow_covers"]
+    ]
     assert manifest["release_artifacts"]["openbio_frontend_dist"]["build_command"] == "corepack pnpm build:openbio"
 
 

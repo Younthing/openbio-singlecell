@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Replace the two development examples with four production starting-point templates for QC, layer-aware
+  clustering and marker discovery, sample composition, and scVI batch integration with a reusable model contrast.
+- Add a generated 768 x 768 JPEG cover for every workflow and release contracts that keep template names, covers,
+  node schemas, reviewed parameters, and required metadata aligned.
+- Document that template values must be reviewed for each study and that the optional scVI model output is an
+  ephemeral in-memory workflow object rather than persisted model weights.
+
 ## 0.2.0 - 2026-08-24
 
 - Add notebook-derived AnnData preparation, QC correction, Harmony/scVI, clustering, annotation, pseudobulk, enrichment, communication, abundance, regulatory, trajectory, RNA velocity, and inferCNV nodes.
