@@ -12,6 +12,7 @@ from openbio_singlecell.extension import NODE_CLASSES, OpenBioSingleCellExtensio
 from openbio_singlecell.node_types import (
     AnnDataType,
     PlotResultType,
+    ScenicNetworkType,
     SCVIModelType,
     SummaryResultType,
     TableResultType,
@@ -125,6 +126,7 @@ def test_package_metadata_is_versioned():
     assert PlotResultType.io_type == "OPENBIO_SINGLE_CELL_PLOT"
     assert SummaryResultType.io_type == "OPENBIO_SINGLE_CELL_SUMMARY"
     assert SCVIModelType.io_type == "OPENBIO_SCVI_MODEL"
+    assert ScenicNetworkType.io_type == "OPENBIO_SCENIC_NETWORK"
 
 
 def test_scientific_dependency_api_is_minimal():
@@ -151,11 +153,12 @@ def test_node_outputs_use_only_the_public_analysis_contracts():
         "plot": PlotResultType.io_type,
         "summary": SummaryResultType.io_type,
         "model": SCVIModelType.io_type,
+        "network": ScenicNetworkType.io_type,
     }
     for node in NODE_CLASSES:
         schema = node.GET_SCHEMA()
         output_names = [output.display_name for output in schema.outputs]
-        assert output_names in (["adata"], ["table"], ["plot"], ["summary"], ["adata", "model"], [])
+        assert output_names in (["adata"], ["table"], ["plot"], ["summary"], ["adata", "model"], ["adata", "network"], [])
         assert schema.is_output_node is (not output_names)
         for output in schema.outputs:
             assert output.io_type == expected_types[output.display_name]
@@ -169,7 +172,7 @@ def test_extension_loads_without_scientific_dependencies():
         import importlib.abc
         import sys
 
-        blocked_roots = {"anndata", "matplotlib", "pandas", "scanpy", "scipy", "scvi"}
+        blocked_roots = {"anndata", "loompy", "matplotlib", "pandas", "pyscenic", "scanpy", "scipy", "scvi"}
         attempted = []
 
         class BlockScience(importlib.abc.MetaPathFinder):

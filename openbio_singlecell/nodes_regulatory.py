@@ -12,8 +12,9 @@ from comfy_api.latest import io
 
 from . import dependencies
 from .analysis_utils import finish_adata, make_table_result, matrix_totals_and_nonzero
-from .files import input_file_fingerprint, resolve_input_path
-from .node_types import AnnDataType, TableResultType
+from .files import input_file_fingerprint, input_file_provenance, resolve_input_path
+from .node_types import AnnDataType, ScenicNetworkType, TableResultType
+from .scenic_network import ScenicNetwork
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -281,6 +282,8 @@ class OpenBioSingleCellRunPySCENIC(io.ComfyNode):
                 AnnDataType.Input("adata"),
                 io.Combo.Input("source", options=EXPRESSION_SOURCES, default="X"),
                 io.String.Input("layer_name", default="log1p_norm"),
+                io.Boolean.Input("use_highly_variable", default=False),
+                io.String.Input("highly_variable_key", default="highly_variable", advanced=True),
                 io.String.Input(
                     "tf_list_file",
                     display_name="TF list",
@@ -303,14 +306,22 @@ class OpenBioSingleCellRunPySCENIC(io.ComfyNode):
                     placeholder="openbio-singlecell/motifs-v9-nr.hgnc-m0.001-o0.0.tbl",
                     tooltip="Motif-to-TF annotations under the ComfyUI input directory.",
                 ),
-                io.Combo.Input("grn_method", options=PYSCENIC_GRN_METHODS, default="grnboost2"),
-                io.Boolean.Input("mask_dropouts", default=True),
+                io.Combo.Input(
+                    "grn_method",
+                    options=PYSCENIC_GRN_METHODS,
+                    default="grnboost2",
+                    advanced=True,
+                ),
+                io.Boolean.Input("mask_dropouts", default=True, advanced=True),
                 io.Float.Input("auc_threshold", default=0.05, min=0.0, max=1.0, step=0.01),
                 io.Int.Input("num_workers", default=4, min=1, max=1024, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
                 io.String.Input("activity_key", default="scenic_auc", advanced=True),
             ],
-            outputs=[AnnDataType.Output(display_name="adata")],
+            outputs=[
+                AnnDataType.Output(display_name="adata"),
+                ScenicNetworkType.Output(display_name="network"),
+            ],
         )
 
     @classmethod
@@ -348,6 +359,8 @@ class OpenBioSingleCellRunPySCENIC(io.ComfyNode):
         adata: AnnData,
         source: str = "X",
         layer_name: str = "log1p_norm",
+        use_highly_variable: bool = False,
+        highly_variable_key: str = "highly_variable",
         tf_list_file: str = "",
         ranking_database_files: str = "",
         motif_annotations_file: str = "",
@@ -365,8 +378,6 @@ class OpenBioSingleCellRunPySCENIC(io.ComfyNode):
             ranking_database_files,
             motif_annotations_file,
         )
-        _require_optional_dependency("pyscenic.cli.pyscenic")
-        loompy = _require_optional_dependency("loompy")
 
         if adata.n_obs == 0 or adata.n_vars == 0:
             raise ValueError("pySCENIC requires a non-empty AnnData object.")
@@ -387,9 +398,27 @@ class OpenBioSingleCellRunPySCENIC(io.ComfyNode):
         }
         if not tf_names:
             raise ValueError("The pySCENIC TF list is empty.")
+        if use_highly_variable:
+            highly_variable_key = _required_name(highly_variable_key, "Highly-variable gene key")
+            if highly_variable_key not in work.var:
+                raise ValueError(f"Highly-variable gene key not found in var: {highly_variable_key!r}")
+            highly_variable = work.var[highly_variable_key]
+            if not science.pd.api.types.is_bool_dtype(highly_variable.dtype):
+                raise ValueError(f"var[{highly_variable_key!r}] must contain boolean highly-variable flags.")
+            selected_genes = highly_variable.fillna(False).to_numpy(dtype=bool) | science.np.asarray(
+                work.var_names.isin(tf_names), dtype=bool
+            )
+            if not selected_genes.any():
+                raise ValueError("No highly-variable or TF-list genes are available for pySCENIC inference.")
+            work = work[:, selected_genes].copy()
+
+        if not work.var_names.is_unique:
+            raise ValueError("pySCENIC inference gene names must be unique.")
         if not work.var_names.isin(tf_names).any():
             raise ValueError("No genes in the selected expression source occur in the pySCENIC TF list.")
 
+        _require_optional_dependency("pyscenic.cli.pyscenic")
+        loompy = _require_optional_dependency("loompy")
         total_counts, detected_genes = matrix_totals_and_nonzero(work.X, axis=1)
         row_attributes = {"Gene": science.np.asarray(work.var_names.astype(str))}
         column_attributes = {
@@ -421,6 +450,28 @@ class OpenBioSingleCellRunPySCENIC(io.ComfyNode):
                     str(random_seed),
                 ],
                 temporary_directory,
+            )
+
+            network = ScenicNetwork(
+                adjacency=science.pd.read_csv(adjacency_csv),
+                gene_names=tuple(work.var_names.astype(str)),
+                grn_method=grn_method,
+                provenance={
+                    "operation": "run_pyscenic",
+                    "expression": {
+                        "source": source,
+                        "layer_name": layer_name,
+                        "use_highly_variable": use_highly_variable,
+                        "highly_variable_key": highly_variable_key,
+                    },
+                    "tf_list": input_file_provenance(tf_list_file, (".txt",)),
+                    "ranking_databases": [
+                        input_file_provenance(name, (".feather",))
+                        for name in _resource_names(ranking_database_files, "Ranking database files")
+                    ],
+                    "motif_annotations": input_file_provenance(motif_annotations_file, (".tbl",)),
+                    "random_seed": random_seed,
+                },
             )
 
             ctx_arguments = [
@@ -462,6 +513,8 @@ class OpenBioSingleCellRunPySCENIC(io.ComfyNode):
         parameters = {
             "source": source,
             "layer_name": layer_name,
+            "use_highly_variable": use_highly_variable,
+            "highly_variable_key": highly_variable_key,
             "tf_list_file": tf_list_file,
             "ranking_database_files": list(_resource_names(ranking_database_files, "Ranking database files")),
             "motif_annotations_file": motif_annotations_file,
@@ -481,7 +534,7 @@ class OpenBioSingleCellRunPySCENIC(io.ComfyNode):
             started_at,
             random_seed=random_seed,
         )
-        return io.NodeOutput(output)
+        return io.NodeOutput(output, network)
 
 
 class OpenBioSingleCellImportPySCENICResults(io.ComfyNode):
@@ -662,7 +715,7 @@ class OpenBioSingleCellSCENICTFModules(io.ComfyNode):
             category=CATEGORY,
             inputs=[
                 AnnDataType.Input("adata"),
-                io.String.Input("adjacency_csv", default="openbio-singlecell/adjacencies.csv"),
+                ScenicNetworkType.Input("network"),
                 io.String.Input("transcription_factor", default=""),
                 io.Combo.Input("source", options=EXPRESSION_SOURCES, default="X"),
                 io.String.Input("layer_name", default="log1p_norm"),
@@ -671,34 +724,25 @@ class OpenBioSingleCellSCENICTFModules(io.ComfyNode):
         )
 
     @classmethod
-    def validate_inputs(cls, adjacency_csv: str, **kwargs: Any) -> bool | str:
-        try:
-            resolve_input_path(adjacency_csv, extensions=(".csv",))
-        except (ValueError, FileNotFoundError, OSError) as exc:
-            return str(exc)
-        return True
-
-    @classmethod
-    def fingerprint_inputs(cls, adjacency_csv: str, **kwargs: Any) -> Any:
-        return input_file_fingerprint(adjacency_csv, (".csv",))
-
-    @classmethod
     def execute(
         cls,
         adata: AnnData,
-        adjacency_csv: str = "openbio-singlecell/adjacencies.csv",
+        network: ScenicNetwork,
         transcription_factor: str = "",
         source: str = "X",
         layer_name: str = "log1p_norm",
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
-        path = resolve_input_path(adjacency_csv, extensions=(".csv",))
-        adjacency = science.pd.read_csv(path)
-        if adjacency.empty:
-            raise ValueError("SCENIC adjacency file is empty.")
+        adjacency = network.adjacency.copy(deep=True)
         work = _expression_adata(adata, source, layer_name)
+        if not work.var_names.is_unique:
+            raise ValueError("SCENIC TF Modules requires unique expression gene names.")
+        missing_genes = [name for name in network.gene_names if name not in work.var_names]
+        if missing_genes:
+            raise ValueError(f"Selected expression source is missing SCENIC network genes: {missing_genes}")
+        work = work[:, list(network.gene_names)].copy()
         matrix = work.X.toarray() if science.sparse.issparse(work.X) else science.np.asarray(work.X)
-        expression = science.pd.DataFrame(matrix, index=work.obs_names, columns=work.var_names)
+        expression = science.pd.DataFrame(matrix, index=work.obs_names, columns=network.gene_names)
 
         scenic_utils = _require_optional_dependency("pyscenic.utils")
         started_at = time.perf_counter()
@@ -722,7 +766,7 @@ class OpenBioSingleCellSCENICTFModules(io.ComfyNode):
         )
         warnings = [] if not table.empty else ["No SCENIC modules matched the requested transcription factor."]
         parameters = {
-            "adjacency_csv": adjacency_csv,
+            "grn_method": network.grn_method,
             "transcription_factor": transcription_factor,
             "source": source,
             "layer_name": layer_name,
