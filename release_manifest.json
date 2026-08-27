@@ -27,13 +27,15 @@
         "example_workflows/Quality Control and Clean Counts.json",
         "example_workflows/Cell Clustering and Marker Discovery.json",
         "example_workflows/Sample Composition Comparison.json",
-        "example_workflows/scVI Batch Integration and Contrast.json"
+        "example_workflows/scVI Batch Integration and Contrast.json",
+        "example_workflows/Single-Cell Best Practice.json"
       ],
       "workflow_covers": [
         "example_workflows/Quality Control and Clean Counts.jpg",
         "example_workflows/Cell Clustering and Marker Discovery.jpg",
         "example_workflows/Sample Composition Comparison.jpg",
-        "example_workflows/scVI Batch Integration and Contrast.jpg"
+        "example_workflows/scVI Batch Integration and Contrast.jpg",
+        "example_workflows/Single-Cell Best Practice.jpg"
       ],
       "contract": {
         "node_id_prefix": "OpenBioSingleCell",

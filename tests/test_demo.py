@@ -12,7 +12,9 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
 
 def output_value(node_output):
-    return node_output.result[0]
+    if len(node_output.result) == 1:
+        return node_output.result[0]
+    return node_output.result
 
 
 def template_runner(template_name):
@@ -21,11 +23,10 @@ def template_runner(template_name):
     workflow_nodes = {node["type"]: node for node in workflow["nodes"]}
     node_classes = {node.GET_SCHEMA().node_id: node for node in NODE_CLASSES}
 
-    def run(node_type, input_value=None):
-        args = [] if input_value is None else [input_value]
+    def run(node_type, *input_values):
         node_class = node_classes[node_type]
         kwargs = workflow_execute_kwargs(node_class, workflow_nodes[node_type])
-        return output_value(node_class.execute(*args, **kwargs))
+        return output_value(node_class.execute(*input_values, **kwargs))
 
     return run
 
@@ -34,6 +35,18 @@ def write_demo(input_dir, science):
     demo_path = input_dir / "openbio-singlecell" / "openbio_singlecell_demo.h5ad"
     demo_path.parent.mkdir()
     build_demo(science.np, science.pd, science.sparse, science.ad).write_h5ad(demo_path)
+
+
+def test_demo_conditions_are_biological_cohorts_balanced_across_technical_batches(science):
+    demo = build_demo(science.np, science.pd, science.sparse, science.ad)
+
+    sample_metadata = demo.obs[["sample", "condition", "batch"]].astype(str).drop_duplicates()
+    assert set(sample_metadata.itertuples(index=False, name=None)) == {
+        ("sample_1", "control", "batch_1"),
+        ("sample_2", "treated", "batch_1"),
+        ("sample_3", "control", "batch_2"),
+        ("sample_4", "treated", "batch_2"),
+    }
 
 
 def test_manager_install_generates_demo(tmp_path, monkeypatch, science):
@@ -66,6 +79,7 @@ def test_demo_validation_rejects_forged_same_shape_anndata(tmp_path, science):
         ("markers", "known marker genes"),
         ("groups", "exactly 200"),
         ("samples", "samples do not match"),
+        ("conditions", "conditions do not match"),
         ("batches", "batches do not match"),
         ("fractional", "integer counts"),
         ("negative", "negative counts"),
@@ -85,6 +99,8 @@ def test_demo_validation_rejects_forged_same_shape_anndata(tmp_path, science):
             forged.obs["cell_type"] = science.pd.Categorical(groups, categories=list(KNOWN_MARKERS))
         elif issue == "samples":
             forged.obs["sample"] = science.pd.Categorical(["sample_1"] * forged.n_obs)
+        elif issue == "conditions":
+            forged.obs["condition"] = science.pd.Categorical(["control"] * forged.n_obs)
         elif issue == "batches":
             forged.obs["batch"] = science.pd.Categorical(["batch_1"] * forged.n_obs)
         elif issue == "fractional":
@@ -158,10 +174,32 @@ def test_composition_template_produces_sample_level_tables(comfy_directories, sc
     write_demo(input_dir, science)
     run = template_runner("Sample Composition Comparison")
 
+    sample_column, condition_column, batch_column, annotation_column, reference, comparison = run(
+        "OpenBioSingleCellCoreStudyParameters"
+    )
     loaded = run("OpenBioSingleCellLoadH5AD")
-    composition = run("OpenBioSingleCellSampleCompositionSummary", loaded)
-    contrast = run("OpenBioSingleCellDifferentialCompositionTest", loaded)
+    composition = run(
+        "OpenBioSingleCellSampleCompositionSummary",
+        loaded,
+        sample_column,
+        condition_column,
+        annotation_column,
+    )
+    contrast = run(
+        "OpenBioSingleCellDifferentialCompositionTest",
+        loaded,
+        sample_column,
+        condition_column,
+        annotation_column,
+        reference,
+        comparison,
+    )
 
+    assert set(loaded.obs["condition"].astype(str)) == {"control", "treated"}
+    assert batch_column == "batch"
+    assert condition_column == "condition"
+    assert reference == "control"
+    assert comparison == "treated"
     assert composition.kind == "table" and len(composition.table) == 12
     assert contrast.kind == "table" and len(contrast.table) == 6
     assert set(contrast.table["scope"]) == {"global", "pairwise"}

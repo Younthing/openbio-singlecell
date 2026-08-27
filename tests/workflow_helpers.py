@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from comfy_api.latest import io
+
 DYNAMIC_COMBO_TYPE = "COMFY_DYNAMICCOMBO_V3"
 
 
@@ -17,7 +19,7 @@ def _selected_option(item: Any, named_values: Mapping[str, object]) -> Any:
 
 
 def _is_widget_input(item: Any) -> bool:
-    return item.get_io_type() == DYNAMIC_COMBO_TYPE or hasattr(item, "default")
+    return isinstance(item, io.WidgetInput) or item.get_io_type() == DYNAMIC_COMBO_TYPE
 
 
 def selected_widget_names(widget_inputs: Iterable[Any], named_values: Mapping[str, object]) -> list[str]:
@@ -32,8 +34,9 @@ def selected_widget_names(widget_inputs: Iterable[Any], named_values: Mapping[st
 
 def workflow_execute_kwargs(node_class: Any, workflow_node: Mapping[str, Any]) -> dict[str, Any]:
     named_values = workflow_node["widgets_values_named"]
-    widget_inputs = [item for item in node_class.GET_SCHEMA().inputs if _is_widget_input(item)]
-    expected_names = selected_widget_names(widget_inputs, named_values)
+    wired_input_names = {item["name"] for item in workflow_node.get("inputs", [])}
+    all_widget_inputs = [item for item in node_class.GET_SCHEMA().inputs if _is_widget_input(item)]
+    expected_names = selected_widget_names(all_widget_inputs, named_values)
     expected = set(expected_names)
     actual = set(named_values)
     missing = expected - actual
@@ -43,6 +46,7 @@ def workflow_execute_kwargs(node_class: Any, workflow_node: Mapping[str, Any]) -
     if unexpected:
         raise ValueError(f"workflow has unknown or inactive widget values {sorted(unexpected)}")
 
+    widget_inputs = [item for item in all_widget_inputs if item.id not in wired_input_names]
     kwargs = {}
     for item in widget_inputs:
         if item.get_io_type() != DYNAMIC_COMBO_TYPE:

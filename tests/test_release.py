@@ -12,12 +12,14 @@ EXPECTED_EXAMPLES = [
     "example_workflows/Cell Clustering and Marker Discovery.json",
     "example_workflows/Sample Composition Comparison.json",
     "example_workflows/scVI Batch Integration and Contrast.json",
+    "example_workflows/Single-Cell Best Practice.json",
 ]
 EXPECTED_COVERS = [
     "example_workflows/Quality Control and Clean Counts.jpg",
     "example_workflows/Cell Clustering and Marker Discovery.jpg",
     "example_workflows/Sample Composition Comparison.jpg",
     "example_workflows/scVI Batch Integration and Contrast.jpg",
+    "example_workflows/Single-Cell Best Practice.jpg",
 ]
 
 

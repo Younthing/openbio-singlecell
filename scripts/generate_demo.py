@@ -87,7 +87,7 @@ def validate_existing(path: Path, ad, sparse) -> tuple[bool, str]:
     except Exception as error:
         return False, str(error)
 
-    required_obs = {"cell_type", "sample", "batch"}
+    required_obs = {"cell_type", "sample", "condition", "batch"}
     expected_markers = {gene for markers in KNOWN_MARKERS.values() for gene in markers}
     expected_group_counts = {group: CELL_COUNT // len(KNOWN_MARKERS) for group in KNOWN_MARKERS}
     metadata = adata.uns.get("openbio_singlecell", {})
@@ -106,6 +106,7 @@ def validate_existing(path: Path, ad, sparse) -> tuple[bool, str]:
         adata.obs["cell_type"].astype(str).value_counts().to_dict() if required_obs.issubset(adata.obs.columns) else {}
     )
     sample_names = set(adata.obs["sample"].astype(str)) if "sample" in adata.obs else set()
+    condition_names = set(adata.obs["condition"].astype(str)) if "condition" in adata.obs else set()
     batch_names = set(adata.obs["batch"].astype(str)) if "batch" in adata.obs else set()
     integer_counts = sparse.isspmatrix_csr(adata.X) and adata.X.dtype.kind in "iu"
     nonnegative_counts = integer_counts and (adata.X.data.size == 0 or bool((adata.X.data >= 0).all()))
@@ -116,6 +117,7 @@ def validate_existing(path: Path, ad, sparse) -> tuple[bool, str]:
         (cell_groups == set(KNOWN_MARKERS), "cell groups do not match"),
         (group_counts == expected_group_counts, "cell groups do not contain exactly 200 cells each"),
         (sample_names == {"sample_1", "sample_2", "sample_3", "sample_4"}, "samples do not match"),
+        (condition_names == {"control", "treated"}, "conditions do not match"),
         (batch_names == {"batch_1", "batch_2"}, "batches do not match"),
         (expected_markers.issubset(set(adata.var_names.astype(str))), "known marker genes are missing"),
         (sum(name.startswith("MT-") for name in adata.var_names) == len(MT_GENES), "MT genes do not match"),
@@ -139,6 +141,7 @@ def build_demo(np, pd, sparse, ad):
     rng.shuffle(groups)
     samples = rng.choice(["sample_1", "sample_2", "sample_3", "sample_4"], size=CELL_COUNT)
     batches = np.where(np.isin(samples, ["sample_1", "sample_2"]), "batch_1", "batch_2")
+    conditions = np.where(np.isin(samples, ["sample_1", "sample_3"]), "control", "treated")
 
     counts = rng.negative_binomial(1, 0.8, size=(CELL_COUNT, GENE_COUNT)).astype(np.int32)
     gene_index = {gene: index for index, gene in enumerate(gene_names)}
@@ -159,6 +162,7 @@ def build_demo(np, pd, sparse, ad):
         {
             "cell_type": pd.Categorical(groups, categories=list(KNOWN_MARKERS)),
             "sample": pd.Categorical(samples),
+            "condition": pd.Categorical(conditions, categories=["control", "treated"]),
             "batch": pd.Categorical(batches),
         },
         index=[f"cell_{index:04d}" for index in range(1, CELL_COUNT + 1)],
