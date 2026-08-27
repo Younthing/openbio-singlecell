@@ -676,3 +676,53 @@ def test_best_practice_template_uses_existing_nodes_for_the_reviewed_two_branch_
         "best_practice_full_gene_results",
         "best_practice_hvg_scvi_results",
     }
+
+
+def test_best_practice_template_only_links_the_two_condition_values_from_study_parameters():
+    workflow = _load_examples()["Single-Cell Best Practice.json"]
+    nodes_by_id = {node["id"]: node for node in workflow["nodes"]}
+    study_parameters = _node(workflow, "OpenBioSingleCellCoreStudyParameters")
+
+    outgoing_links = {
+        (
+            study_parameters["outputs"][link["origin_slot"]]["name"],
+            nodes_by_id[link["target_id"]]["type"],
+            nodes_by_id[link["target_id"]]["inputs"][link["target_slot"]]["name"],
+        )
+        for link in workflow["links"]
+        if link["origin_id"] == study_parameters["id"]
+    }
+
+    assert outgoing_links == {
+        ("reference", "OpenBioSingleCellPseudobulkDESeq2", "baseline"),
+        ("comparison", "OpenBioSingleCellPseudobulkDESeq2", "comparison"),
+    }
+
+    assert _widgets(workflow, "OpenBioSingleCellScrublet")["batch_key"] == "sample"
+    assert {node["widgets_values_named"]["batch_key"] for node in _nodes(workflow, "OpenBioSingleCellMarkMADOutliers")} == {
+        "sample"
+    }
+    assert {
+        node["widgets_values_named"]["batch_key"] for node in _nodes(workflow, "OpenBioSingleCellHighlyVariableGenes")
+    } == {"sample"}
+    assert _widgets(workflow, "OpenBioSingleCellSCVIIntegration")["batch_key"] == "batch"
+    assert _widgets(workflow, "OpenBioSingleCellSampleCompositionSummary") == {
+        "sample_key": "sample",
+        "group_key": "group",
+        "annotation_key": "celltypist_cell_type",
+    }
+    assert _widgets(workflow, "OpenBioSingleCellPseudobulk")["sample_key"] == "sample"
+    assert _widgets(workflow, "OpenBioSingleCellPseudobulk")["groupby"] == "celltypist_cell_type"
+    assert _node_with_widget(
+        workflow,
+        "OpenBioSingleCellSubsetObservations",
+        "values",
+        "Normal,nonDM_ED",
+    )["widgets_values_named"]["column"] == "group"
+    assert _node_with_widget(
+        workflow,
+        "OpenBioSingleCellSubsetObservations",
+        "values",
+        "smc_pc_intermediate",
+    )["widgets_values_named"]["column"] == "celltypist_cell_type"
+    assert _widgets(workflow, "OpenBioSingleCellPseudobulkDESeq2")["contrast_column"] == "group"
