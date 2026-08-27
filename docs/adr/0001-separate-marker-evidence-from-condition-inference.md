@@ -1,0 +1,3 @@
+# Separate marker evidence from condition inference
+
+The production-oriented workflow uses cluster marker evidence only for annotation review and reserves formal condition contrasts for sample-level pseudobulk counts within one selected population. scVI is trained on a 5,000-HVG view for representation learning, so its Leiden labels are joined back to the full-gene object for exploratory marker ranking; it is not presented as a full-gene or replicate-aware differential-expression model. This separation preserves the biological sample as the inference unit and keeps provisional CellTypist labels visibly distinct from curated annotations.
