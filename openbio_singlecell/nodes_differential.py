@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 from comfy_api.latest import io
 
 from . import dependencies
-from .analysis_utils import finish_adata, make_table_result
+from .analysis_utils import finish_adata, make_table_result, matrix_totals_and_nonzero
 from .expression_source import DynamicExpressionSource, ExpressionSourceSpec
 from .node_types import AnnDataType, SCVIModelType, TableResultType
 from .scvi_model import SCVIModel
@@ -77,6 +77,7 @@ class OpenBioSingleCellPseudobulk(io.ComfyNode):
         expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
 
         pertpy = _require_pertpy()
+        science = dependencies.require_scientific_dependencies()
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = pertpy.tl.PseudobulkSpace().compute(
@@ -85,9 +86,36 @@ class OpenBioSingleCellPseudobulk(io.ComfyNode):
             groups_col=groupby,
             layer_key=expression.scanpy_layer,
             mode=mode,
-            min_cells=min_cells,
-            min_counts=min_counts,
         )
+
+        cell_totals, _ = matrix_totals_and_nonzero(expression.matrix(adata), axis=1)
+        aggregate_stats = adata.obs[[sample_key, groupby]].copy()
+        aggregate_stats["_openbio_total_counts"] = science.np.asarray(cell_totals, dtype=float)
+        aggregate_stats = (
+            aggregate_stats.groupby([sample_key, groupby], observed=True, sort=False, dropna=False)
+            .agg(
+                n_cells=("_openbio_total_counts", "size"),
+                total_counts=("_openbio_total_counts", "sum"),
+            )
+            .reset_index()
+        )
+        output_stats = output.obs[[sample_key, groupby]].merge(
+            aggregate_stats,
+            on=[sample_key, groupby],
+            how="left",
+            sort=False,
+            validate="one_to_one",
+        )
+        if output_stats[["n_cells", "total_counts"]].isna().any(axis=None):
+            raise RuntimeError("Pertpy pseudobulk output could not be aligned to the input sample/group aggregates.")
+        output.obs["n_cells"] = science.np.asarray(output_stats["n_cells"], dtype=int)
+        output.obs["total_counts"] = science.np.asarray(output_stats["total_counts"], dtype=float)
+        retained = (output.obs["n_cells"] >= min_cells) & (output.obs["total_counts"] >= min_counts)
+        output = output[retained].copy()
+        if output.n_obs == 0:
+            raise ValueError(
+                "No pseudobulk aggregates passed the configured min_cells and min_counts thresholds."
+            )
         if mode == "sum":
             output.layers["counts"] = output.X.copy()
         parameters = {
@@ -304,9 +332,12 @@ class OpenBioSingleCellPseudobulkDESeq2(io.ComfyNode):
         started_at = time.perf_counter()
         model = pertpy.tl.PyDESeq2(adata=adata, design=design)
         model.fit()
-        table = model.test_contrasts([contrast_column, baseline, comparison]).reset_index()
-        if "index" in table.columns and "gene" not in table.columns:
-            table = table.rename(columns={"index": "gene"})
+        contrast = model.contrast(
+            column=contrast_column,
+            baseline=baseline,
+            group_to_compare=comparison,
+        )
+        table = model.test_contrasts(contrast).rename(columns={"variable": "gene"})
 
         parameters = {
             "design": design,
