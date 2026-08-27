@@ -90,11 +90,13 @@ The generated file is:
 ComfyUI/input/openbio-singlecell/openbio_singlecell_demo.h5ad
 ```
 
-It contains 600 cells, 500 genes, three known cell groups, mitochondrial genes, `sample` and `batch` metadata, known marker genes, and CSR sparse integer counts. A valid existing file is left unchanged; replacing an invalid file requires the explicit force option.
+It contains 600 cells, 500 genes, three known cell groups, mitochondrial genes, `sample`, `condition`, and `batch`
+metadata, known marker genes, and CSR sparse integer counts. A valid existing file is left unchanged; replacing an
+invalid file requires the explicit force option.
 
 ## Example workflows
 
-Open one of the four production starting-point templates in `example_workflows`:
+Open one of the five production starting-point templates in `example_workflows`:
 
 - `Quality Control and Clean Counts.json` loads raw counts, calculates and filters QC metrics, previews the
   retained data, and writes a clean H5AD only through the explicit save node.
@@ -102,11 +104,17 @@ Open one of the four production starting-point templates in `example_workflows`:
   unchanged, and creates a normalized `log1p_norm` layer for highly variable genes, PCA, clustering, marker ranking,
   plots, and explicit outputs. It deliberately omits Scale so the production path does not densify the expression
   matrix merely to reach PCA.
-- `Sample Composition Comparison.json` summarizes cell-type proportions per sample and compares `batch_2` with
-  the `batch_1` control using concrete table outputs that can be previewed or exported.
+- `Sample Composition Comparison.json` loads AnnData that already contains sample metadata and fans reusable
+  sample, condition, annotation, reference, and comparison strings into two composition nodes whose concrete
+  table outputs can be previewed or exported.
 - `scVI Batch Integration and Contrast.json` trains scVI from raw counts in `adata.X`, constructs neighbors
   from `X_scVI`, visualizes the integrated embedding, and passes the concrete in-memory model to scVI differential
   expression instead of retraining it.
+- `Single-Cell Best Practice.json` is the production-oriented end-to-end example for the supplied multi-sample
+  study. It re-audits QC, removes predicted doublets, applies sample-wise MAD rules, preserves full-gene counts in
+  both `layers["counts"]` and `raw`, trains scVI on a 5,000-HVG count view, joins its Leiden labels back to the
+  full-gene object, compares two exploratory marker rankings, adds provisional CellTypist labels, and runs one
+  explicit PyDESeq2 pseudobulk contrast.
 
 Every workflow JSON has a same-stem 768 x 768 JPEG cover in the same directory. The JSON and cover lists are
 explicit release artifacts, so a renamed, missing, extra, malformed, or mismatched template asset fails the release
@@ -115,14 +123,14 @@ contract tests. `example_workflows` remains the only packaged workflow source; t
 
 The bundled values are reviewed starting points for the generated demonstration data, not universal scientific
 thresholds. Before using a template in production, replace the input path and review its visible QC thresholds,
-feature count, grouping columns, labels, comparison groups, and output names for the study design. In particular:
+feature count, grouping columns, labels, comparison groups, and output names. In particular:
 
 - QC assumes gene symbols use the `MT-` mitochondrial prefix. Its starting cell thresholds are 90 minimum genes
   and 20% maximum mitochondrial counts, and its starting gene threshold is 3 minimum cells.
-- composition requires `adata.obs["sample"]`, `adata.obs["batch"]`, and `adata.obs["cell_type"]`; each sample must
-  map to exactly one batch. `batch_1` and `batch_2` are values from the generated demonstration data and must be
-  changed when a study uses different conditions. Its Kruskal-Wallis and pairwise Mann-Whitney results are an
-  exploratory sample-level comparison; use a covariate-aware compositional model when the study design requires it.
+- composition requires `adata.obs["sample"]`, `adata.obs["condition"]`, and `adata.obs["cell_type"]`. The demonstration
+  compares the `control` and `treated` biological conditions, balanced across `adata.obs["batch"]`. Its Kruskal-Wallis
+  and Mann-Whitney results are an exploratory sample-level comparison; use a covariate-aware compositional model when
+  the study design requires it.
 - QC and the complete scVI template require non-negative integer counts in `adata.X` at entry because QC and
   filtering operate on `X`. If counts only exist in a layer, first use Use Expression Layer to restore that layer to
   `X`, then keep the scVI template's source set to `X`. The clustering template can instead read a counts layer by
@@ -130,10 +138,40 @@ feature count, grouping columns, labels, comparison groups, and output names for
 - scVI also requires `adata.obs["batch"]`; its downstream contrast requires the grouping column and labels shown on
   that node. Install the optional `scvi-tools` dependency in the same Python environment that runs ComfyUI before
   executing this template.
+- `Single-Cell Best Practice` expects the external file
+  `ComfyUI/input/openbio-singlecell/anndata_qc.h5ad`; it is not bundled with the plugin or generated by the
+  installer. The reviewed contract uses raw integer counts in `X` and the `sample`, `batch`, and `group` observation
+  columns. Install `scvi-tools`, `celltypist`, and `pertpy` with its PyDESeq2 requirements before executing the
+  corresponding branches.
+
+The best-practice workflow keeps two deliberate output objects. The full-gene H5AD retains active full-gene counts,
+`raw`, `log1p_norm`, HVG flags, provisional CellTypist labels, and the joined `leiden_scvi` column, but it does not
+contain the scVI embedding or graph. The HVG-scVI H5AD retains the 5,000-gene active matrices, `X_scVI`, neighbors,
+UMAP, and Leiden results; AnnData's full-gene `raw` snapshot remains available for recovery after variable
+subsetting. Neither H5AD stores the trained scVI model weights.
+
+Within this existing-node implementation, sample-wise MAD decisions are exact but the before/after QC plots are
+global rather than sample-faceted. The HVG and full-gene top-marker tables are Scanpy cluster rankings used as
+annotation evidence; they are not scVI all-cluster DE or replicate-aware condition tests. The reference dotplot is a
+fixed canonical marker panel because marker tables cannot currently drive a gene-list input dynamically. CellTypist
+uses `Adult_Human_Vascular.pkl` as a provisional reference. The pseudobulk branch selects its provisional
+`smc_pc_intermediate` label before fitting `~group` for `nonDM_ED` versus `Normal`; this is a real model label but
+is only a runnable starting choice. Replace it with a populated provisional label after reviewing CellTypist output,
+or connect the same branch to the later curated `cell_type` column. Duplicate the explicit population-selection
+branch for additional cell types.
 
 The scVI `model` output is an ephemeral Python object for downstream nodes in the current execution. Saving the
 workflow records the connection and parameters, not trained model weights; after restarting ComfyUI, rerun scVI
 Integration before executing its differential-expression consumer.
+
+## Study parameters
+
+`Core Study Parameters` is an optional, interactive parameter source. It outputs six ordinary `STRING` values:
+`sample_column`, `condition_column`, `batch_column`, `annotation_column`, `reference`, and `comparison`. Connect only
+the values an analysis needs, and fan out the same output to several nodes when that avoids repeated typing. The node
+does not load or modify AnnData, bundle the selections into an opaque design object, or make analysis nodes depend on
+it; every compatible string input remains independently editable when it is not connected. Its custom parameter
+editor is implemented entirely inside this plugin and does not patch ComfyUI or ComfyUI_frontend.
 
 ## Run modes
 
@@ -189,6 +227,8 @@ Additional arguments are forwarded to ComfyUI. ComfyUI's own requirements must a
 ## Data and output behavior
 
 - AnnData values use `adata` ports and the `OPENBIO_ANNDATA` wire type.
+- Core Study Parameters exposes its six selections as standard ComfyUI `STRING` wires, so they can connect to any
+  compatible string input.
 - Tables, plots, and structured summaries use distinct `table`, `plot`, and `summary` ports with the
   plugin-owned `OPENBIO_SINGLE_CELL_TABLE`, `OPENBIO_SINGLE_CELL_PLOT`, and
   `OPENBIO_SINGLE_CELL_SUMMARY` wire types.
@@ -197,8 +237,13 @@ Additional arguments are forwarded to ComfyUI. ComfyUI's own requirements must a
   preview and save nodes are terminal and have no data output.
 - Preview accepts all three artifact types, while CSV and PNG outputs accept only tables and plots respectively,
   so incompatible links are rejected before execution.
-- Frequently tuned analysis choices, expression sources, grouping columns, and result-defining thresholds stay visible. Random seeds, internal storage keys, output column names, and iteration limits are advanced inputs.
+- Frequently tuned analysis choices, expression sources, and result-defining thresholds stay visible. Core Study
+  Parameters is an optional source for reusing sample, condition, annotation, and primary-contrast strings; analysis
+  nodes keep their ordinary explicit inputs and do not consume a combined design object. Random seeds, internal
+  storage keys, output column names, and iteration limits are advanced inputs.
 - Dataset-specific condition, tumor, cluster, and cell-type values are never supplied as defaults; nodes that need them require an explicit value.
+- Load H5AD and Load 10x H5 accept a browser file selection or a file dropped directly onto the node; uploads are
+  stored under `ComfyUI/input/openbio-singlecell` and the node keeps the resulting relative path.
 - Inputs are limited to relative paths under the ComfyUI `input` directory and are checked again at the read boundary.
 - Temporary plots are written below `temp/openbio-singlecell`; ComfyUI clears its temp directory at startup.
 - CSV, PNG, and H5AD files are only made permanent by explicit output nodes and are written below `output/openbio-singlecell`.

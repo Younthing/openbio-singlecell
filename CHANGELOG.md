@@ -2,8 +2,17 @@
 
 ## Unreleased
 
-- Replace the two development examples with four production starting-point templates for QC, layer-aware
-  clustering and marker discovery, sample composition, and scVI batch integration with a reusable model contrast.
+- Add browser file selection and node-level drag-and-drop uploads to the H5AD and 10x H5 input nodes.
+- Add an interactive Core Study Parameters node whose six selections are ordinary `STRING` outputs that can be
+  connected and fanned out wherever useful, without coupling analysis nodes to an opaque combined design object.
+- Replace the two development examples with five production starting-point templates for QC, layer-aware
+  clustering and marker discovery, sample composition, scVI batch integration with a reusable model contrast, and
+  an end-to-end multi-sample best-practice workflow built entirely from the existing node catalog.
+- Add the `Single-Cell Best Practice` template with hard and sample-wise robust QC, Scrublet, full-gene raw/counts
+  snapshots, 5,000-HVG scVI clustering, parallel marker evidence, provisional CellTypist annotation, and a
+  `nonDM_ED` versus `Normal` PyDESeq2 pseudobulk branch for one explicitly selected population.
+- Keep the existing pseudobulk and PyDESeq2 nodes compatible with the current Pertpy API while preserving their
+  public node inputs and applying aggregate thresholds within the pseudobulk node.
 - Add a generated 768 x 768 JPEG cover for every workflow and release contracts that keep template names, covers,
   node schemas, reviewed parameters, and required metadata aligned.
 - Document that template values must be reviewed for each study and that the optional scVI model output is an
