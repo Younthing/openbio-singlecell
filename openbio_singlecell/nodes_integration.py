@@ -196,41 +196,47 @@ class OpenBioSingleCellSCVIIntegration(io.ComfyNode):
 
         try:
             import scvi
+            import torch
         except (ImportError, OSError) as error:
             raise RuntimeError("scVI Integration requires the scvi-tools package.") from error
 
         started_at = time.perf_counter()
         cells, genes = int(adata.n_obs), int(adata.n_vars)
         output = adata.copy()
-        scvi.settings.seed = random_seed
-        scvi.model.SCVI.setup_anndata(
-            output,
-            layer=expression.scanpy_layer,
-            batch_key=batch_key or None,
-            size_factor_key=size_factor_key or None,
-            categorical_covariate_keys=categorical_keys or None,
-            continuous_covariate_keys=continuous_keys or None,
-        )
-        model = scvi.model.SCVI(
-            output,
-            n_layers=n_layers,
-            n_latent=n_latent,
-            gene_likelihood=gene_likelihood,
-            dispersion=dispersion,
-            dropout_rate=dropout_rate,
-        )
-        train_kwargs = {"early_stopping": early_stopping}
-        if max_epochs:
-            train_kwargs["max_epochs"] = max_epochs
-        model.train(**train_kwargs)
-        output.obsm[output_key] = model.get_latent_representation()
-        if store_latent_distribution or compute_mde:
-            qzm, qzv = model.get_latent_representation(give_mean=False, return_dist=True)
-            if store_latent_distribution:
-                output.obsm[qzm_key] = qzm
-                output.obsm[qzv_key] = qzv
-            if compute_mde:
-                output.obsm[mde_key] = scvi.model.utils.mde(qzm)
+        # ComfyUI executes nodes under torch.inference_mode(), but scVI creates and
+        # trains a gradient-based model. Constructing the model inside inference
+        # mode also turns its parameters into inference tensors, so the entire
+        # scVI lifecycle must opt out locally.
+        with torch.inference_mode(False):
+            scvi.settings.seed = random_seed
+            scvi.model.SCVI.setup_anndata(
+                output,
+                layer=expression.scanpy_layer,
+                batch_key=batch_key or None,
+                size_factor_key=size_factor_key or None,
+                categorical_covariate_keys=categorical_keys or None,
+                continuous_covariate_keys=continuous_keys or None,
+            )
+            model = scvi.model.SCVI(
+                output,
+                n_layers=n_layers,
+                n_latent=n_latent,
+                gene_likelihood=gene_likelihood,
+                dispersion=dispersion,
+                dropout_rate=dropout_rate,
+            )
+            train_kwargs = {"early_stopping": early_stopping}
+            if max_epochs:
+                train_kwargs["max_epochs"] = max_epochs
+            model.train(**train_kwargs)
+            output.obsm[output_key] = model.get_latent_representation()
+            if store_latent_distribution or compute_mde:
+                qzm, qzv = model.get_latent_representation(give_mean=False, return_dist=True)
+                if store_latent_distribution:
+                    output.obsm[qzm_key] = qzm
+                    output.obsm[qzv_key] = qzv
+                if compute_mde:
+                    output.obsm[mde_key] = scvi.model.utils.mde(qzm)
 
         parameters = {
             **expression.parameters(),

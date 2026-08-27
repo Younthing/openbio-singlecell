@@ -223,6 +223,70 @@ def test_scvi_integration_returns_the_trained_model_wrapper(adata, science, monk
     assert distribution_output.obsm["X_latent_qzv"].shape == (adata.n_obs, 2)
 
 
+def test_scvi_integration_restores_gradients_inside_comfyui_inference_mode(adata, science, monkeypatch):
+    import torch
+
+    inference_modes = []
+
+    class GradientTrainingSCVI:
+        instances = []
+
+        @classmethod
+        def setup_anndata(cls, registered_adata, **kwargs):
+            inference_modes.append(("setup", torch.is_inference_mode_enabled()))
+
+        def __init__(self, registered_adata, **kwargs):
+            inference_modes.append(("init", torch.is_inference_mode_enabled()))
+            self.adata = registered_adata
+            self.is_trained = False
+            self.n_latent = kwargs["n_latent"]
+            self.weight = torch.nn.Parameter(torch.ones((1, registered_adata.n_vars)))
+            type(self).instances.append(self)
+
+        def train(self, **kwargs):
+            inference_modes.append(("train", torch.is_inference_mode_enabled()))
+            inputs = torch.ones((1, self.adata.n_vars))
+            loss = (inputs @ self.weight.T).square().sum()
+            loss.backward()
+            self.is_trained = True
+
+        def get_latent_representation(self, *, give_mean=True, return_dist=False):
+            inference_modes.append(("latent", torch.is_inference_mode_enabled()))
+            return science.np.ones((self.adata.n_obs, self.n_latent))
+
+        def differential_expression(self, **kwargs):
+            raise AssertionError("Integration must not run differential expression.")
+
+        def deregister_manager(self, analysis_adata):
+            raise AssertionError("Integration must not create temporary AnnData managers.")
+
+    fake_scvi = types.ModuleType("scvi")
+    fake_scvi.settings = types.SimpleNamespace(seed=None)
+    fake_scvi.model = types.SimpleNamespace(SCVI=GradientTrainingSCVI)
+    monkeypatch.setitem(sys.modules, "scvi", fake_scvi)
+
+    with torch.inference_mode():
+        output, trained_model = output_values(
+            OpenBioSingleCellSCVIIntegration.execute(
+                adata,
+                source={"source": "X"},
+                n_latent=2,
+                max_epochs=1,
+            )
+        )
+        assert torch.is_inference_mode_enabled() is True
+
+    assert output.obsm["X_scVI"].shape == (adata.n_obs, 2)
+    assert isinstance(trained_model, SCVIModel)
+    assert GradientTrainingSCVI.instances[0].weight.grad is not None
+    assert inference_modes == [
+        ("setup", False),
+        ("init", False),
+        ("train", False),
+        ("latent", False),
+    ]
+
+
 def test_scvi_differential_expression_reuses_model_and_aligns_group_subset(adata, science):
     registered = adata.copy()
     raw_model = FakeTrainedSCVI(registered, science)
