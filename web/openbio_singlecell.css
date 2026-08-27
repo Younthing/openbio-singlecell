@@ -74,3 +74,128 @@
     margin: 4px 0 0 18px;
     padding: 0;
 }
+
+.openbio-study-parameters {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 8px;
+    border: 1px solid var(--border-color, #454545);
+    border-radius: 6px;
+    background: var(--comfy-input-bg, #222);
+    color: var(--input-text, #ddd);
+    font-size: 11px;
+}
+
+.openbio-study-parameters__control:focus-visible {
+    outline: 2px solid var(--p-primary-color, #5d9cec);
+    outline-offset: 1px;
+}
+
+.openbio-study-parameters__table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.openbio-study-parameters__control {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 96px;
+    min-height: 26px;
+    padding: 3px 6px;
+    border: 1px solid var(--border-color, #555);
+    border-radius: 4px;
+    background: var(--comfy-input-bg, #292929);
+    color: inherit;
+    font: inherit;
+}
+
+.openbio-study-parameters__control:focus {
+    border-color: var(--p-primary-color, #5d9cec);
+}
+
+.openbio-study-parameters__label,
+.openbio-study-parameters__value {
+    padding: 4px;
+    border-bottom: 1px solid color-mix(in srgb, var(--border-color, #555) 65%, transparent);
+}
+
+.openbio-study-parameters__label {
+    width: 42%;
+    text-align: left;
+    font-weight: 500;
+}
+
+.openbio-input-file {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 8px;
+    border: 1px solid var(--border-color, #454545);
+    border-radius: 6px;
+    background: var(--comfy-input-bg, #222);
+    color: var(--input-text, #ddd);
+    font-size: 11px;
+}
+
+.openbio-input-file__controls {
+    display: flex;
+    gap: 6px;
+}
+
+.openbio-input-file__path,
+.openbio-input-file__button {
+    box-sizing: border-box;
+    min-height: 28px;
+    border: 1px solid var(--border-color, #555);
+    border-radius: 4px;
+    background: var(--comfy-input-bg, #292929);
+    color: inherit;
+    font: inherit;
+}
+
+.openbio-input-file__path {
+    min-width: 0;
+    flex: 1;
+    padding: 4px 6px;
+}
+
+.openbio-input-file__button {
+    padding: 4px 10px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.openbio-input-file__button:hover,
+.openbio-input-file__button:focus-visible,
+.openbio-input-file__path:focus-visible {
+    border-color: var(--p-primary-color, #5d9cec);
+    outline: 2px solid color-mix(in srgb, var(--p-primary-color, #5d9cec) 45%, transparent);
+    outline-offset: 1px;
+}
+
+.openbio-input-file__drop-zone {
+    margin-top: 7px;
+    padding: 10px 8px;
+    border: 1px dashed var(--border-color, #666);
+    border-radius: 5px;
+    text-align: center;
+    opacity: 0.82;
+}
+
+.openbio-input-file--dragging,
+.openbio-input-file--dragging .openbio-input-file__drop-zone {
+    border-color: var(--p-primary-color, #5d9cec);
+    background: color-mix(in srgb, var(--p-primary-color, #5d9cec) 14%, var(--comfy-input-bg, #222));
+    opacity: 1;
+}
+
+.openbio-input-file__status {
+    margin: 6px 0 0;
+    overflow: hidden;
+    opacity: 0.72;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.openbio-input-file__native {
+    display: none;
+}

@@ -1,13 +1,17 @@
 import { app } from "/scripts/app.js";
+import { api } from "/scripts/api.js";
 
 import {
     createSingleCellPreview,
     updateSingleCellPreview,
 } from "./single_cell_result_renderer.mjs";
+import { createInputFileUploadWidgets } from "./input_file_upload_widget.mjs";
+import { coreStudyParameterWidgets } from "./study_input_widgets.mjs";
 
 const PREVIEW_NODE_TYPE = "OpenBioSingleCellPreviewResult";
 const STYLESHEET_ID = "openbio-single-cell-preview-styles";
 const livePreviewNodes = new WeakSet();
+const inputFileUploadWidgets = createInputFileUploadWidgets({ fetchApi: api.fetchApi.bind(api) });
 
 function ensureStylesheet() {
     if (document.getElementById(STYLESHEET_ID)) return;
@@ -50,7 +54,12 @@ function attachLivePreview(node) {
 }
 
 app.registerExtension({
-    name: "openbio-singlecell.preview",
+    name: "openbio-singlecell",
+
+    getCustomWidgets() {
+        ensureStylesheet();
+        return { ...coreStudyParameterWidgets, ...inputFileUploadWidgets };
+    },
 
     nodeCreated(node) {
         if (!isPreviewNode(node)) return;

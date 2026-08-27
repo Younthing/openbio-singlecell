@@ -9,6 +9,11 @@ globalThis.__openbioTestApp = {
         registeredExtension = extension;
     },
 };
+globalThis.__openbioTestApi = {
+    fetchApi() {
+        throw new Error("Unexpected upload request in preview lifecycle test.");
+    },
+};
 
 registerHooks({
     resolve(specifier, context, nextResolve) {
@@ -16,6 +21,12 @@ registerHooks({
             return {
                 shortCircuit: true,
                 url: "data:text/javascript,export const app=globalThis.__openbioTestApp",
+            };
+        }
+        if (specifier === "/scripts/api.js") {
+            return {
+                shortCircuit: true,
+                url: "data:text/javascript,export const api=globalThis.__openbioTestApi",
             };
         }
         return nextResolve(specifier, context);
@@ -54,6 +65,12 @@ test("live execution replaces the preview placeholder with a summary", async () 
 
     try {
         await import("../web/openbio_singlecell.js?live-execution-test");
+
+        assert.deepEqual(Object.keys(registeredExtension.getCustomWidgets()), [
+            "OPENBIO_CORE_STUDY_PARAMETERS_WIDGET",
+            "OPENBIO_INPUT_FILE_UPLOAD_WIDGET",
+        ]);
+        assert.equal(head.children.length, 1);
 
         const widgets = [];
         const previousMessages = [];
@@ -107,5 +124,6 @@ test("live execution replaces the preview placeholder with a summary", async () 
         if (originalDocument === undefined) delete globalThis.document;
         else globalThis.document = originalDocument;
         delete globalThis.__openbioTestApp;
+        delete globalThis.__openbioTestApi;
     }
 });

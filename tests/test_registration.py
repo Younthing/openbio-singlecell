@@ -7,6 +7,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+from comfy_api.latest import io
+
 from openbio_singlecell import PLUGIN_VERSION, SCHEMA_VERSION, dependencies
 from openbio_singlecell.extension import NODE_CLASSES, OpenBioSingleCellExtension, comfy_entrypoint
 from openbio_singlecell.node_types import (
@@ -24,6 +26,7 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellLoad10xMTX",
     "OpenBioSingleCellLoad10xStudy",
     "OpenBioSingleCellLoad10xH5",
+    "OpenBioSingleCellCoreStudyParameters",
     "OpenBioSingleCellAnnDataSummary",
     "OpenBioSingleCellUseExpressionLayer",
     "OpenBioSingleCellNormalizeGeneNames",
@@ -168,6 +171,14 @@ def test_node_outputs_use_only_their_concrete_public_contracts():
             ("adata", AnnDataType.io_type),
             ("network", ScenicNetworkType.io_type),
         ],
+        "OpenBioSingleCellCoreStudyParameters": [
+            ("sample_column", "STRING"),
+            ("condition_column", "STRING"),
+            ("batch_column", "STRING"),
+            ("annotation_column", "STRING"),
+            ("reference", "STRING"),
+            ("comparison", "STRING"),
+        ],
     }
     for node in NODE_CLASSES:
         schema = node.GET_SCHEMA()
@@ -192,6 +203,7 @@ def test_registered_ports_reject_generic_and_legacy_analysis_contracts():
         SummaryResultType.io_type,
         TableResultType.io_type,
     }
+    allowed_output_types = allowed_openbio_types | {"STRING"}
     forbidden_types = {
         "*",
         "MODEL",
@@ -199,6 +211,8 @@ def test_registered_ports_reject_generic_and_legacy_analysis_contracts():
         "OPENBIO_DATASET",
         "OPENBIO_SC_DATASET",
         "OPENBIO_SC_RESULT",
+        "OPENBIO_SAMPLE_SHEET",
+        "OPENBIO_SINGLE_CELL_STUDY_DESIGN",
         "OPENBIO_SINGLE_CELL_RESULT",
     }
     object_consumers = {}
@@ -215,7 +229,7 @@ def test_registered_ports_reject_generic_and_legacy_analysis_contracts():
 
         for output in schema.outputs:
             assert output.io_type not in forbidden_types
-            assert output.io_type in allowed_openbio_types
+            assert output.io_type in allowed_output_types
             assert output.display_name.lower() not in {"dataset", "dataset_name"}
 
     assert object_consumers == {
@@ -224,6 +238,39 @@ def test_registered_ports_reject_generic_and_legacy_analysis_contracts():
         ("OpenBioSingleCellCassiopeiaExpansionTest", "tree"): {CassiopeiaTreeType.io_type},
         ("OpenBioSingleCellCassiopeiaPlasticity", "tree"): {CassiopeiaTreeType.io_type},
     }
+
+
+def test_parameter_consumers_keep_native_string_widget_inputs():
+    expected_inputs = {
+        "OpenBioSingleCellSampleCompositionSummary": {"sample_key", "group_key", "annotation_key"},
+        "OpenBioSingleCellDifferentialCompositionTest": {
+            "sample_key",
+            "group_key",
+            "annotation_key",
+            "control_group",
+            "comparison_groups",
+        },
+        "OpenBioSingleCellPseudobulkEdgeR": {"contrast_column", "baseline", "comparison"},
+        "OpenBioSingleCellPseudobulkDESeq2": {"contrast_column", "baseline", "comparison"},
+        "OpenBioSingleCellDecouplerPseudobulkContrast": {
+            "sample_key",
+            "groupby",
+            "condition_key",
+            "condition",
+            "reference",
+        },
+        "OpenBioSingleCellAugur": {"cell_type_key", "condition_key", "control", "treatment"},
+    }
+    schemas = {node.GET_SCHEMA().node_id: node.GET_SCHEMA() for node in NODE_CLASSES}
+
+    for node_id, input_ids in expected_inputs.items():
+        inputs = {input_.id: input_ for input_ in schemas[node_id].inputs}
+        for input_id in input_ids:
+            input_ = inputs[input_id]
+            assert isinstance(input_, io.WidgetInput)
+            assert input_.get_io_type() == "STRING"
+            assert input_.socketless is not True
+            assert input_.force_input is not True
 
 
 def test_extension_loads_without_scientific_dependencies():

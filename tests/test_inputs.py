@@ -18,6 +18,19 @@ def output_value(node_output):
     return node_output.result[0]
 
 
+def test_binary_file_loaders_use_the_web_upload_widget():
+    expected = {
+        OpenBioSingleCellLoadH5AD: [".h5ad"],
+        OpenBioSingleCellLoad10xH5: [".h5", ".hdf5"],
+    }
+
+    for node_class, extensions in expected.items():
+        path_input = next(input_ for input_ in node_class.GET_SCHEMA().inputs if input_.id == "path")
+        assert path_input.extra_dict["widgetType"] == "OPENBIO_INPUT_FILE_UPLOAD_WIDGET"
+        assert path_input.extra_dict["allowed_extensions"] == extensions
+        assert path_input.extra_dict["upload_subfolder"] == "openbio-singlecell"
+
+
 @pytest.fixture
 def adata(science):
     counts = science.sparse.csr_matrix(science.np.arange(24).reshape(6, 4))

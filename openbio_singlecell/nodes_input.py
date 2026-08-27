@@ -26,6 +26,18 @@ if TYPE_CHECKING:
 
 
 CATEGORY = "openbio/single-cell/input"
+INPUT_FILE_UPLOAD_WIDGET = "OPENBIO_INPUT_FILE_UPLOAD_WIDGET"
+
+
+def _file_upload_widget(*extensions: str, label: str, drop_label: str) -> dict[str, Any]:
+    return {
+        "widgetType": INPUT_FILE_UPLOAD_WIDGET,
+        "allowed_extensions": list(extensions),
+        "accept": ",".join(extensions),
+        "upload_subfolder": "openbio-singlecell",
+        "upload_label": label,
+        "drop_label": drop_label,
+    }
 
 
 def _validate_nonempty(adata: AnnData) -> None:
@@ -121,7 +133,16 @@ class OpenBioSingleCellLoadH5AD(io.ComfyNode):
             category=CATEGORY,
             description="Load an AnnData H5AD file from the ComfyUI input directory.",
             inputs=[
-                io.String.Input("path", default="openbio-singlecell/openbio_singlecell_demo.h5ad"),
+                io.String.Input(
+                    "path",
+                    display_name="H5AD file",
+                    default="openbio-singlecell/openbio_singlecell_demo.h5ad",
+                    extra_dict=_file_upload_widget(
+                        ".h5ad",
+                        label="Choose H5AD file",
+                        drop_label="Drop an .h5ad file here",
+                    ),
+                ),
                 io.Boolean.Input("make_var_names_unique", default=True, advanced=True),
             ],
             outputs=[AnnDataType.Output(display_name="adata")],
@@ -290,7 +311,17 @@ class OpenBioSingleCellLoad10xH5(io.ComfyNode):
             category=CATEGORY,
             description="Load a 10x Genomics HDF5 matrix from the ComfyUI input directory.",
             inputs=[
-                io.String.Input("path", default="openbio-singlecell/filtered_feature_bc_matrix.h5"),
+                io.String.Input(
+                    "path",
+                    display_name="10x H5 file",
+                    default="openbio-singlecell/filtered_feature_bc_matrix.h5",
+                    extra_dict=_file_upload_widget(
+                        ".h5",
+                        ".hdf5",
+                        label="Choose 10x H5 file",
+                        drop_label="Drop a 10x .h5 or .hdf5 file here",
+                    ),
+                ),
                 io.String.Input("genome", default="", advanced=True),
                 io.Boolean.Input("gex_only", default=True),
                 io.Boolean.Input("make_unique", default=True, advanced=True),
