@@ -1,88 +1,208 @@
 from __future__ import annotations
 
-import copy
-import importlib
-import os
 import time
-from typing import TYPE_CHECKING, Any
+from dataclasses import asdict
+from typing import TYPE_CHECKING
 
-import folder_paths
 from comfy_api.latest import io
 
-from . import dependencies
-from .analysis_utils import finish_adata
-from .expression_source import (
-    DynamicExpressionSource,
-    ExpressionSource,
-    ExpressionSourceSpec,
+from .analysis_reporting import AnalysisReference, make_analysis_report, summarize_numeric
+from .analysis_utils import finish_adata, make_table_result, matrix_totals_and_nonzero
+from .cnmf_run import CNMFRun
+from .cnmf_standalone import (
+    CNMF_AUDITED_PYPI_WHEEL_SHA256,
+    CNMF_LOCAL_NEIGHBORHOOD_SIZE,
+    CNMF_REQUIRED_VERSION,
+    close_run_preserving_primary,
+    cnmf_consensus_programs,
+    cnmf_rank_survey,
+    equivalent_source,
 )
-from .node_types import AnnDataType
+from .expression_source import DynamicExpressionSource, ExpressionSource, ExpressionSourceSpec
+from .node_types import AnnDataType, CNMFRunType, SummaryResultType, TableResultType
 
 if TYPE_CHECKING:
     from anndata import AnnData
 
 
 CATEGORY = "openbio/single-cell/factorization"
+CNMF_SOFTWARE_PACKAGES = (
+    "cnmf",
+    "anndata",
+    "scanpy",
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "pyyaml",
+)
+
+CNMF_REFERENCE = AnalysisReference(
+    citation=(
+        "Kotliar D, Veres A, Nagy MA, et al. Identifying gene expression programs of cell-type "
+        "identity and cellular activity with single-cell RNA-Seq. eLife. 2019;8:e43803."
+    ),
+    doi="10.7554/eLife.43803",
+    url="https://doi.org/10.7554/eLife.43803",
+    kind="method",
+)
+CNMF_REPOSITORY_REFERENCE = AnalysisReference(
+    citation="Kotliar et al. cNMF method-author repository and implementation.",
+    url="https://github.com/dylkot/cNMF",
+    kind="software_documentation",
+)
+CNMF_GUIDE_REFERENCE = AnalysisReference(
+    citation="Kotliar et al. cNMF stepwise guide.",
+    url="https://github.com/dylkot/cNMF/blob/master/Stepwise_Guide.md",
+    kind="software_documentation",
+)
+CNMF_PYPI_REFERENCE = AnalysisReference(
+    citation=(
+        "cNMF 1.7.1 Python distribution (MIT); audited PyPI wheel SHA-256 "
+        f"{CNMF_AUDITED_PYPI_WHEEL_SHA256}. The installed artifact is not attested by this runtime check."
+    ),
+    url="https://pypi.org/project/cnmf/1.7.1/",
+    kind="software_documentation",
+)
+ANNDATA_REFERENCE = AnalysisReference(
+    citation=(
+        "Virshup I, Rybakov S, Theis FJ, Angerer P, Wolf FA. anndata: Access and store annotated "
+        "data matrices. Journal of Open Source Software. 2024;9(101):4371."
+    ),
+    doi="10.21105/joss.04371",
+    url="https://doi.org/10.21105/joss.04371",
+    kind="software",
+)
+NUMPY_REFERENCE = AnalysisReference(
+    citation="Harris CR, Millman KJ, van der Walt SJ, et al. Array programming with NumPy. Nature. 2020;585:357-362.",
+    doi="10.1038/s41586-020-2649-2",
+    url="https://doi.org/10.1038/s41586-020-2649-2",
+    kind="software",
+)
+PANDAS_REFERENCE = AnalysisReference(
+    citation="The pandas development team. pandas-dev/pandas: Pandas. Zenodo.",
+    doi="10.5281/zenodo.3509134",
+    url="https://doi.org/10.5281/zenodo.3509134",
+    kind="software",
+)
+SCIPY_REFERENCE = AnalysisReference(
+    citation="Virtanen P, Gommers R, Oliphant TE, et al. SciPy 1.0. Nature Methods. 2020;17:261-272.",
+    doi="10.1038/s41592-019-0686-2",
+    url="https://doi.org/10.1038/s41592-019-0686-2",
+    kind="software",
+)
+SCIKIT_LEARN_REFERENCE = AnalysisReference(
+    citation="Pedregosa F, Varoquaux G, Gramfort A, et al. Scikit-learn. JMLR. 2011;12:2825-2830.",
+    url="https://jmlr.org/papers/v12/pedregosa11a.html",
+    kind="software",
+)
+CNMF_REFERENCES = (
+    CNMF_REFERENCE,
+    CNMF_REPOSITORY_REFERENCE,
+    CNMF_GUIDE_REFERENCE,
+    CNMF_PYPI_REFERENCE,
+    ANNDATA_REFERENCE,
+    NUMPY_REFERENCE,
+    PANDAS_REFERENCE,
+    SCIPY_REFERENCE,
+    SCIKIT_LEARN_REFERENCE,
+)
 
 
-def _require_omicverse() -> Any:
-    try:
-        return importlib.import_module("omicverse")
-    except (ImportError, OSError) as exc:
-        raise RuntimeError(f"The 'omicverse' package is required for cNMF ({exc}).") from exc
+def _source_string(expression: ExpressionSource) -> str:
+    if expression.kind == "X":
+        return "X"
+    if expression.kind == "raw":
+        return "raw"
+    if expression.kind == "layer":
+        return f"layer:{expression.layer_name}"
+    raise ValueError(f"Unsupported cNMF expression source: {expression.kind!r}.")
 
 
-def _expression_adata(adata: AnnData, source: ExpressionSource) -> AnnData:
-    if source.kind == "raw":
-        work = adata.raw.to_adata()
-        work.obs = adata.obs.copy()
-        return work
-
-    work = adata.copy()
-    if source.kind == "layer":
-        work.X = adata.layers[source.layer_name].copy()
-    return work
+def _source_label(expression: ExpressionSource) -> str:
+    return f"layer:{expression.layer_name}" if expression.kind == "layer" else expression.kind
 
 
-def _working_directory(relative_directory: str) -> str:
-    relative_directory = relative_directory.strip()
-    if not relative_directory:
-        raise ValueError("cNMF working directory cannot be empty.")
-    if os.path.isabs(relative_directory) or os.path.splitdrive(relative_directory)[0]:
-        raise ValueError("cNMF working directory must be relative to the ComfyUI temp directory.")
-
-    root = folder_paths.get_temp_directory()
-    target = os.path.abspath(os.path.join(root, os.path.normpath(relative_directory)))
-    if not folder_paths.is_within_directory(root, target):
-        raise ValueError("cNMF working directory escapes the ComfyUI temp directory.")
-    os.makedirs(target, exist_ok=True)
-    return target
-
-
-def _analysis_name(value: str) -> str:
-    name = value.strip()
-    if not name or name in {".", ".."}:
-        raise ValueError("cNMF analysis name cannot be empty.")
-    if os.path.basename(name) != name or os.path.splitdrive(name)[0]:
-        raise ValueError("cNMF analysis name must be a single directory name.")
-    return name
-
-
-def _align_frame(frame: Any, index: Any, science: dependencies.ScientificDependencies, description: str) -> Any:
-    table = science.pd.DataFrame(frame).copy()
-    table.index = table.index.astype(str)
-    target_index = science.pd.Index(index.astype(str))
-    missing = target_index[~target_index.isin(table.index)]
-    if len(missing):
-        raise RuntimeError(f"cNMF {description} is missing {len(missing)} AnnData entries.")
-    table = table.reindex(target_index)
-    table.index = index
-    return table
+def _survey_code(
+    expression: ExpressionSource,
+    *,
+    components_min: int,
+    components_max: int,
+    n_iter: int,
+    num_highvar_genes: int,
+    random_seed: int,
+) -> str:
+    source = equivalent_source().rstrip()
+    return (
+        f"{source}\n\n"
+        "_cnmf_rank_survey_equivalent = cnmf_rank_survey\n\n"
+        "def cnmf_rank_survey(adata):\n"
+        "    return _cnmf_rank_survey_equivalent(\n"
+        "        adata,\n"
+        f"        source={_source_string(expression)!r},\n"
+        f"        components_min={components_min},\n"
+        f"        components_max={components_max},\n"
+        f"        n_iter={n_iter},\n"
+        f"        num_highvar_genes={num_highvar_genes},\n"
+        f"        random_seed={random_seed},\n"
+        "    )\n"
+    )
 
 
-class OpenBioSingleCellCNMF(io.ComfyNode):
+def _consensus_code(
+    *,
+    selected_k: int,
+    density_threshold: float,
+    local_neighborhood_size: float,
+    n_top_genes: int,
+    overwrite_existing: bool,
+) -> str:
+    source = equivalent_source().rstrip()
+    return (
+        f"{source}\n\n"
+        "_cnmf_consensus_programs_equivalent = cnmf_consensus_programs\n\n"
+        "def cnmf_consensus_programs(run):\n"
+        "    return _cnmf_consensus_programs_equivalent(\n"
+        "        run,\n"
+        f"        selected_k={selected_k},\n"
+        f"        density_threshold={density_threshold!r},\n"
+        f"        local_neighborhood_size={local_neighborhood_size!r},\n"
+        f"        n_top_genes={n_top_genes},\n"
+        f"        overwrite_existing={overwrite_existing!r},\n"
+        "    )\n"
+    )
+
+
+def _warning_text(records: tuple[tuple[str, int], ...]) -> list[str]:
+    messages: list[str] = []
+    for label, count in records:
+        if label == "cnmf-1.7.1-unclosed-yaml-reader":
+            messages.append(
+                f"cnmf==1.7.1 emitted its known unclosed YAML-reader ResourceWarning {count} time(s); "
+                "only the exact audited warning was isolated."
+            )
+        elif label == "cnmf-1.7.1-unclosed-hvg-reader":
+            messages.append(
+                f"cnmf==1.7.1 emitted its known unclosed high-variance-gene reader ResourceWarning {count} "
+                "time(s); only the exact audited warning was isolated."
+            )
+        elif label == "cnmf-1.7.1-anndata-view-materialization":
+            messages.append(
+                f"cnmf==1.7.1 emitted its known AnnData view-materialization warning {count} time(s) during "
+                "final usage refitting; only the exact audited warning was isolated."
+            )
+        elif label == "cnmf-1.7.1-pandas4-sum-positional":
+            messages.append(
+                f"cnmf==1.7.1 emitted its known pandas-4 positional-sum compatibility warning {count} time(s); "
+                "only the exact audited warning was isolated."
+            )
+    return messages
+
+
+class OpenBioSingleCellCNMFRankSurvey(io.ComfyNode):
     EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="cNMF expression source",
+        description="cNMF count source",
+        default="layer",
         include_raw=True,
         layer_default="counts",
     )
@@ -90,33 +210,25 @@ class OpenBioSingleCellCNMF(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
-            node_id="OpenBioSingleCellCNMF",
-            display_name="cNMF Gene Programs",
+            node_id="OpenBioSingleCellCNMFRankSurvey",
+            display_name="cNMF Rank Survey",
             category=CATEGORY,
-            description="Run the complete OmicVerse cNMF workflow and attach the selected consensus programs.",
+            description="Run the complete official cNMF rank family in an owned private file-backed artifact.",
             inputs=[
                 AnnDataType.Input("adata"),
                 cls.EXPRESSION_SOURCE.input(),
-                io.Int.Input("selected_k", default=7, min=2, max=1024),
-                io.Combo.Input("cluster_assignment", options=["rfc", "usage_argmax"], default="rfc"),
-                io.String.Input("rfc_use_rep", default="scaled|original|X_pca"),
-                io.Float.Input("rfc_threshold", default=0.5, min=0.0, max=1.0, step=0.05),
-                io.Int.Input("components_min", default=3, min=2, max=1024, advanced=True),
-                io.Int.Input("components_max", default=19, min=2, max=1024, advanced=True),
-                io.Int.Input("n_iter", default=200, min=1, max=100000, advanced=True),
-                io.Int.Input("num_highvar_genes", default=2000, min=1, max=2**31 - 1, advanced=True),
-                io.Float.Input("density_threshold", default=0.1, min=0.0, max=2.0, step=0.05),
-                io.Int.Input("n_top_genes", default=100, min=1, max=2**31 - 1, advanced=True),
-                io.Int.Input("workers", default=1, min=1, max=1024, advanced=True),
+                io.Int.Input("components_min", default=3, min=2),
+                io.Int.Input("components_max", default=19, min=2),
+                io.Int.Input("n_iter", default=100, min=2),
+                io.Int.Input("num_highvar_genes", default=2000, min=1),
                 io.Int.Input("random_seed", default=123, min=0, max=2**31 - 1, advanced=True),
-                io.String.Input(
-                    "working_directory",
-                    default="openbio-singlecell/cnmf",
-                    advanced=True,
-                ),
-                io.String.Input("name", default="cnmf", advanced=True),
             ],
-            outputs=[AnnDataType.Output(display_name="adata")],
+            outputs=[
+                CNMFRunType.Output(display_name="run"),
+                TableResultType.Output(display_name="k_metrics"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
@@ -124,155 +236,375 @@ class OpenBioSingleCellCNMF(io.ComfyNode):
         cls,
         adata: AnnData,
         source: DynamicExpressionSource | None = None,
-        selected_k: int = 7,
-        cluster_assignment: str = "rfc",
-        rfc_use_rep: str = "scaled|original|X_pca",
-        rfc_threshold: float = 0.5,
         components_min: int = 3,
         components_max: int = 19,
-        n_iter: int = 200,
+        n_iter: int = 100,
         num_highvar_genes: int = 2000,
-        density_threshold: float = 0.1,
-        n_top_genes: int = 100,
-        workers: int = 1,
         random_seed: int = 123,
-        working_directory: str = "openbio-singlecell/cnmf",
-        name: str = "cnmf",
     ) -> io.NodeOutput:
-        if components_min > components_max:
-            raise ValueError("cNMF components_min cannot exceed components_max.")
-        if not components_min <= selected_k <= components_max:
-            raise ValueError("cNMF selected_k must be within the requested component range.")
-        if cluster_assignment not in {"rfc", "usage_argmax"}:
-            raise ValueError(f"Unsupported cNMF cluster assignment method: {cluster_assignment!r}")
-        rfc_use_rep = rfc_use_rep.strip()
-        if cluster_assignment == "rfc" and not rfc_use_rep:
-            raise ValueError("cNMF RFC representation cannot be empty.")
-
-        science = dependencies.require_scientific_dependencies()
-        omicverse = _require_omicverse()
-        resolved_working_directory = _working_directory(working_directory)
-        name = _analysis_name(name)
-        components = science.np.arange(components_min, components_max + 1, dtype=int)
-
-        started_at = time.perf_counter()
-        cells, genes = int(adata.n_obs), int(adata.n_vars)
-        output = adata.copy()
         expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
-        work = _expression_adata(adata, expression)
-        cnmf = omicverse.single.cNMF(
-            work,
-            components=components,
+        started_at = time.perf_counter()
+        run, metric_table = cnmf_rank_survey(
+            adata,
+            source=_source_string(expression),
+            components_min=components_min,
+            components_max=components_max,
             n_iter=n_iter,
-            seed=random_seed,
             num_highvar_genes=num_highvar_genes,
-            output_dir=resolved_working_directory,
-            name=name,
-        )
-        for worker_i in range(workers):
-            cnmf.factorize(worker_i=worker_i, total_workers=workers)
-        cnmf.combine(skip_missing_files=True)
-        cnmf.consensus(
-            k=selected_k,
-            density_threshold=density_threshold,
-            show_clustering=False,
-            close_clustergram_fig=True,
-        )
-        result_dict = cnmf.load_results(
-            K=selected_k,
-            density_threshold=density_threshold,
-            n_top_genes=n_top_genes,
-        )
-
-        obs_columns_before = set(work.obs.columns)
-        var_columns_before = set(work.var.columns)
-        obsm_keys_before = set(work.obsm)
-        uns_keys_before = set(work.uns)
-        cnmf.get_results(work, result_dict)
-        if cluster_assignment == "rfc":
-            cnmf.get_results_rfc(
-                work,
-                result_dict,
-                use_rep=rfc_use_rep,
-                cNMF_threshold=rfc_threshold,
-            )
-
-        for column in work.obs.columns:
-            if column not in obs_columns_before or str(column).lower().startswith(("cnmf", "nmf")):
-                output.obs[column] = work.obs[column].reindex(output.obs_names)
-        for column in work.var.columns:
-            if column not in var_columns_before or str(column).lower().startswith(("cnmf", "nmf")):
-                output.var[column] = work.var[column].reindex(output.var_names)
-        for key in work.obsm:
-            if key not in obsm_keys_before or str(key).lower().startswith(("cnmf", "nmf")):
-                value = work.obsm[key]
-                output.obsm[key] = value.copy() if hasattr(value, "copy") else copy.deepcopy(value)
-        for key in work.uns:
-            if key not in uns_keys_before or str(key).lower().startswith(("cnmf", "nmf")):
-                output.uns[key] = copy.deepcopy(work.uns[key])
-
-        if "usage_norm" not in result_dict or "gep_scores" not in result_dict:
-            raise RuntimeError("cNMF did not return usage_norm and gep_scores results.")
-        usage = _align_frame(result_dict["usage_norm"], output.obs_names, science, "cell usage matrix")
-        gene_scores = _align_frame(result_dict["gep_scores"], output.var_names, science, "gene score matrix")
-        for column in usage.columns:
-            output.obs[str(column)] = usage[column].to_numpy()
-        if cluster_assignment == "rfc":
-            if "cNMF_cluster_rfc" not in work.obs:
-                raise RuntimeError("cNMF RFC assignment did not produce obs['cNMF_cluster_rfc'].")
-            assigned = work.obs["cNMF_cluster_rfc"].reindex(output.obs_names).astype(str)
-            assigned = assigned.map(lambda value: value if value.startswith("cNMF_") else f"cNMF_{value}")
-        else:
-            assigned = usage.idxmax(axis=1).astype(str)
-        output.obs["cNMF_cluster"] = science.pd.Categorical(assigned.to_numpy())
-        output.obsm["cNMF_usage"] = usage
-        for column in gene_scores.columns:
-            output.var[str(column)] = gene_scores[column].to_numpy()
-
-        top_genes = result_dict.get("top_genes")
-        if top_genes is None:
-            top_gene_records: dict[str, list[Any]] = {}
-        else:
-            top_gene_records = science.pd.DataFrame(top_genes).to_dict(orient="list")
-        output.uns["cnmf"] = {
-            "selected_k": int(selected_k),
-            "component_range": [int(components_min), int(components_max)],
-            "usage_key": "cNMF_usage",
-            "cluster_key": "cNMF_cluster",
-            "cluster_assignment": cluster_assignment,
-            "top_genes": top_gene_records,
-        }
-
-        parameters = {
-            **expression.parameters(),
-            "selected_k": selected_k,
-            "cluster_assignment": cluster_assignment,
-            "rfc_use_rep": rfc_use_rep,
-            "rfc_threshold": rfc_threshold,
-            "components_min": components_min,
-            "components_max": components_max,
-            "n_iter": n_iter,
-            "num_highvar_genes": num_highvar_genes,
-            "density_threshold": density_threshold,
-            "n_top_genes": n_top_genes,
-            "workers": workers,
-            "random_seed": random_seed,
-            "working_directory": working_directory,
-            "name": name,
-        }
-        finish_adata(
-            output,
-            "cnmf_gene_programs",
-            parameters,
-            cells,
-            genes,
-            started_at,
             random_seed=random_seed,
         )
-        return io.NodeOutput(output)
+        try:
+            metadata = run.metadata
+            matrix = expression.matrix(adata)
+            cell_totals, _ = matrix_totals_and_nonzero(matrix, axis=1)
+            gene_totals, _ = matrix_totals_and_nonzero(matrix, axis=0)
+            metric_records = [metric.as_dict() for metric in run.metrics]
+            parameters = {
+                **expression.parameters(),
+                "components_min": metadata.candidate_ks[0],
+                "components_max": metadata.candidate_ks[-1],
+                "candidate_ks": list(metadata.candidate_ks),
+                "n_iter": metadata.n_iter,
+                "num_highvar_genes": metadata.num_highvar_genes,
+                "random_seed": metadata.random_seed,
+                "total_restarts": metadata.total_restarts,
+                "source_features": metadata.input_genes,
+                "current_features": metadata.current_features,
+                "fixed_policy": asdict(metadata.fixed_policy),
+                "requested_resource": metadata.requested_resource.as_dict(),
+            }
+            warning_messages = [
+                "OPENBIO_CNMF_RUN is process-local and non-serializable. Equivalent Python callers should call "
+                "run.close() after the final consensus; node-graph storage is released by the finalizer only after "
+                "the engine evicts all cached references, so the private directory may persist until cache eviction "
+                "or process exit.",
+                "The audited PyPI wheel SHA-256 is reference evidence only; this runtime did not attest the installed artifact.",
+            ]
+            warning_messages.extend(_warning_text(metadata.known_upstream_warnings))
+            warning_messages.extend(metadata.input_advisories)
+            if metadata.source_state == "unknown":
+                warning_messages.append(
+                    "OpenBio provenance cannot establish the selected source's measurement scale or transformation "
+                    "history; confirm the external data contract before interpretation."
+                )
+            if metadata.n_iter < 100:
+                warning_messages.append(
+                    "This survey uses fewer than the commonly documented 100 NMF restarts per K; stability evidence may be weak."
+                )
+            code = _survey_code(
+                expression,
+                components_min=metadata.candidate_ks[0],
+                components_max=metadata.candidate_ks[-1],
+                n_iter=metadata.n_iter,
+                num_highvar_genes=metadata.num_highvar_genes,
+                random_seed=metadata.random_seed,
+            )
+            results_text = (
+                f"Completed {len(metadata.candidate_ks)} candidate ranks "
+                f"({metadata.candidate_ks[0]}–{metadata.candidate_ks[-1]}) with {metadata.n_iter} complete "
+                "NMF restarts per rank. Stability and prediction error were disclosed for analyst review; "
+                "no rank was selected automatically and no final programs were calculated."
+            )
+            table_result = make_table_result(
+                table=metric_table,
+                title="cNMF rank-survey metrics",
+                operation="cnmf_rank_survey",
+                parameters=parameters,
+                description=results_text,
+                warnings=warning_messages,
+                input_cells=metadata.input_cells,
+                input_genes=metadata.input_genes,
+                started_at=started_at,
+                random_seed=metadata.random_seed,
+            )
+            report, code = make_analysis_report(
+                node_id="OpenBioSingleCellCNMFRankSurvey",
+                title="cNMF rank-survey summary",
+                operation="cnmf_rank_survey",
+                methods=(
+                    f"The method authors' exact cnmf=={CNMF_REQUIRED_VERSION} file-backed implementation was run "
+                    f"on declared non-negative expression source {_source_label(expression)!r}. A unique owned "
+                    "temporary directory "
+                    f"held {metadata.total_restarts} strict CPU/single-worker restarts, combined spectra, and no-filter "
+                    "consensus statistics. Every official file path, axis, restart family, SHA-256 manifest, and "
+                    "backend signature was validated."
+                ),
+                results=results_text,
+                key_results={
+                    "cells": metadata.input_cells,
+                    "genes": metadata.input_genes,
+                    "source": _source_label(expression),
+                    "source_features": metadata.input_genes,
+                    "current_features": metadata.current_features,
+                    "source_state": metadata.source_state,
+                    "source_state_evidence": metadata.source_state_evidence,
+                    "input_advisories": list(metadata.input_advisories),
+                    "total_counts": metadata.input_total_counts,
+                    "nonzero_entries": metadata.input_nonzero_entries,
+                    "cell_totals": summarize_numeric(cell_totals),
+                    "gene_totals": summarize_numeric(gene_totals),
+                    "realized_highvar_genes": len(metadata.realized_highvar_genes),
+                    "positive_variance_highvar_genes": metadata.positive_variance_highvar_genes,
+                    "candidate_ks": list(metadata.candidate_ks),
+                    "k_metrics": metric_records,
+                    "total_restarts": metadata.total_restarts,
+                    "completed_restarts": sum(metric.completed_restarts for metric in run.metrics),
+                    "requested_resource": metadata.requested_resource.as_dict(),
+                    "realized_resource": metadata.realized_resource.as_dict(),
+                    "input_fingerprint": metadata.input_fingerprint,
+                    "parameters_fingerprint": metadata.parameters_fingerprint,
+                    "backend": metadata.backend_name,
+                    "backend_version": metadata.backend_version,
+                    "backend_paths_fingerprint": metadata.backend_paths_fingerprint,
+                    "prepare_manifest_sha256": metadata.prepare_manifest_sha256,
+                    "factorization_manifest_sha256": metadata.factorization_manifest_sha256,
+                    "artifact_manifest_sha256": metadata.artifact_manifest_sha256,
+                    "integrity_manifest_artifact_count": len(metadata.artifact_hashes),
+                    "cleanup_ownership": {
+                        "owner": "OPENBIO_CNMF_RUN",
+                        "explicit_python": "run.close() or context-manager exit",
+                        "node_graph": "finalizer after engine cache/reference release",
+                        "cached_directory_may_persist": True,
+                    },
+                    "execution_mode": "CPU, single-worker, owned private file-backed run",
+                    "audited_pypi_wheel_sha256": metadata.audited_pypi_wheel_sha256,
+                    "installed_distribution_attested": metadata.installed_distribution_attested,
+                    "known_upstream_warnings": [
+                        {"id": label, "count": count} for label, count in metadata.known_upstream_warnings
+                    ],
+                },
+                parameters=parameters,
+                references=CNMF_REFERENCES,
+                software_packages=CNMF_SOFTWARE_PACKAGES,
+                warnings=warning_messages,
+                limitations=(
+                    "Rank selection remains an analyst decision supported by stability, reconstruction error, and biological interpretability.",
+                    "Numeric validation alone cannot establish an externally supplied matrix's measurement scale or transformation provenance.",
+                    "The survey pools cells and may reflect Sample or Technical batch effects; it is not replicate-aware Condition inference.",
+                    "The typed run is process-local; only final annotated AnnData should be persisted across application restarts.",
+                ),
+                input_cells=metadata.input_cells,
+                input_genes=metadata.input_genes,
+                started_at=started_at,
+                code=code,
+                random_seed=metadata.random_seed,
+            )
+            return io.NodeOutput(run, table_result, report, code)
+        except BaseException as primary:
+            close_run_preserving_primary(
+                run,
+                primary,
+                context="cNMF Rank Survey node-report rollback",
+            )
+            raise
 
 
-FACTORIZATION_NODE_CLASSES = [OpenBioSingleCellCNMF]
+class OpenBioSingleCellCNMF(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellCNMF",
+            display_name="cNMF Consensus Programs",
+            category=CATEGORY,
+            description="Apply one surveyed rank/density choice to a live owned official cNMF run.",
+            inputs=[
+                CNMFRunType.Input("run"),
+                io.Int.Input("selected_k", default=7, min=2),
+                io.Float.Input("density_threshold", default=2.0, min=0.0, max=2.0, step=0.05),
+                io.Float.Input(
+                    "local_neighborhood_size",
+                    default=CNMF_LOCAL_NEIGHBORHOOD_SIZE,
+                    min=0.001,
+                    max=1.0,
+                    step=0.05,
+                    advanced=True,
+                ),
+                io.Int.Input("n_top_genes", default=100, min=1, max=2**31 - 1, advanced=True),
+                io.Boolean.Input("overwrite_existing", default=False, advanced=True),
+            ],
+            outputs=[
+                AnnDataType.Output(display_name="adata"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        run: CNMFRun,
+        selected_k: int = 7,
+        density_threshold: float = 2.0,
+        local_neighborhood_size: float = CNMF_LOCAL_NEIGHBORHOOD_SIZE,
+        n_top_genes: int = 100,
+        overwrite_existing: bool = False,
+    ) -> io.NodeOutput:
+        if not isinstance(run, CNMFRun):
+            raise TypeError("cNMF Consensus Programs requires an OPENBIO_CNMF_RUN from cNMF Rank Survey.")
+        started_at = time.perf_counter()
+        output = cnmf_consensus_programs(
+            run,
+            selected_k=selected_k,
+            density_threshold=density_threshold,
+            local_neighborhood_size=local_neighborhood_size,
+            n_top_genes=n_top_genes,
+            overwrite_existing=overwrite_existing,
+        )
+        state = output.uns["cnmf"]
+        survey = state["survey"]
+        source = state["source"]
+        source_label = f"layer:{source['layer']}" if source["kind"] == "layer" else source["kind"]
+        parameters = {
+            "source": source_label,
+            "source_features": survey["source_features"],
+            "current_features": survey["current_features"],
+            "selected_k": state["selected_k"],
+            "density_threshold": state["density_threshold"],
+            "local_neighborhood_size": state["local_neighborhood_size"],
+            "density_neighbors": state["density_neighbors"],
+            "n_top_genes": n_top_genes,
+            "overwrite_existing": bool(overwrite_existing),
+            "survey_candidate_ks": state["candidate_ks"],
+            "survey_n_iter": survey["n_iter"],
+            "survey_num_highvar_genes": survey["num_highvar_genes"],
+            "survey_realized_highvar_genes": survey["realized_highvar_genes"],
+            "survey_random_seed": survey["random_seed"],
+            "survey_backend": survey["backend"],
+            "survey_backend_version": survey["backend_version"],
+            "survey_execution_mode": "CPU, single-worker, owned private file-backed run",
+            "survey_fixed_policy": survey["fixed_policy"],
+            "survey_k_metrics": survey["k_metrics"],
+            "survey_total_restarts": survey["total_restarts"],
+            "survey_completed_restarts": survey["completed_restarts"],
+            "survey_requested_resource": survey["requested_resource"],
+            "survey_realized_resource": survey["realized_resource"],
+            "input_fingerprint": survey["input_fingerprint"],
+        }
+        warning_messages: list[str] = []
+        warning_messages.extend(str(message) for message in survey["input_advisories"])
+        if survey["source_state"] == "unknown":
+            warning_messages.append(
+                "OpenBio provenance cannot establish the selected source's measurement scale or transformation "
+                "history; confirm the external data contract before interpretation."
+            )
+        warning_messages.append(
+            "The reusable OPENBIO_CNMF_RUN remains owned by the upstream node. Equivalent Python callers should "
+            "close it after their final decision; a node graph releases its private directory after cached references "
+            "are evicted, which may be as late as process exit."
+        )
+        if state["density_threshold"] >= 2.0:
+            warning_messages.append("Density threshold 2.0 retained the documented no-filter initial consensus.")
+        warning_records = tuple((item["id"], item["count"]) for item in state["known_upstream_warnings"])
+        warning_messages.extend(_warning_text(warning_records))
+        finish_adata(
+            output,
+            "cnmf_consensus_programs",
+            parameters,
+            run.metadata.input_cells,
+            run.metadata.input_genes,
+            started_at,
+            random_seed=run.metadata.random_seed,
+            warnings=warning_messages,
+        )
+        code = _consensus_code(
+            selected_k=state["selected_k"],
+            density_threshold=state["density_threshold"],
+            local_neighborhood_size=state["local_neighborhood_size"],
+            n_top_genes=n_top_genes,
+            overwrite_existing=bool(overwrite_existing),
+        )
+        usage_summaries = {
+            program: summarize_numeric(output.obsm["X_cnmf_usage"][program].to_numpy())
+            for program in state["program_names"]
+        }
+        results_text = (
+            f"Resolved {state['selected_k']} consensus gene-expression programs for {output.n_obs:,} cells. "
+            f"Local-density filtering retained {state['components_after_filtering']:,} of "
+            f"{state['components_before_filtering']:,} restart components "
+            f"({state['components_filtered']:,} removed); program usages remain continuous mixtures."
+        )
+        report, code = make_analysis_report(
+            node_id="OpenBioSingleCellCNMF",
+            title="cNMF consensus-program summary",
+            operation="cnmf_consensus_programs",
+            methods=(
+                f"The method authors' exact cnmf=={CNMF_REQUIRED_VERSION} final consensus was applied to the live "
+                f"integrity-checked staged run at analyst-selected K={state['selected_k']}. Local density and KMeans "
+                "labels were independently reconstructed from the Survey-snapshotted merged spectrum, the exact upstream "
+                "cache/result family was isolated, and the official four-tuple load_results output was aligned by identifiers."
+            ),
+            results=results_text,
+            key_results={
+                "cells": int(output.n_obs),
+                "genes": int(output.n_vars),
+                "source": source_label,
+                "source_features": survey["source_features"],
+                "current_features": survey["current_features"],
+                "selected_k": state["selected_k"],
+                "selected_k_survey_stability": state["selected_k_survey_stability"],
+                "selected_k_survey_prediction_error": state["selected_k_survey_prediction_error"],
+                "components_before_filtering": state["components_before_filtering"],
+                "components_after_filtering": state["components_after_filtering"],
+                "components_filtered": state["components_filtered"],
+                "filtering_fraction": state["filtering_fraction"],
+                "local_density": state["local_density_summary"],
+                "cluster_component_counts": state["cluster_component_counts"],
+                "local_neighborhood_size": state["local_neighborhood_size"],
+                "density_neighbors": state["density_neighbors"],
+                "usage_by_program": usage_summaries,
+                "top_genes_by_program": {
+                    program: genes[: min(10, len(genes))] for program, genes in state["top_genes"].items()
+                },
+                "storage_keys": state["storage_keys"],
+                "overwrote_existing": state["overwrote_existing"],
+                "input_fingerprint": survey["input_fingerprint"],
+                "source_state": survey["source_state"],
+                "source_state_evidence": survey["source_state_evidence"],
+                "input_advisories": survey["input_advisories"],
+                "backend": survey["backend"],
+                "backend_version": survey["backend_version"],
+                "audited_pypi_wheel_sha256": survey["audited_pypi_wheel_sha256"],
+                "installed_distribution_attested": survey["installed_distribution_attested"],
+                "survey_fixed_policy": survey["fixed_policy"],
+                "survey_k_metrics": [metric.as_dict() for metric in run.metrics],
+                "survey_total_restarts": survey["total_restarts"],
+                "survey_completed_restarts": survey["completed_restarts"],
+                "survey_requested_resource": survey["requested_resource"],
+                "survey_realized_resource": survey["realized_resource"],
+                "immutable_manifest_before_consensus": survey["immutable_manifest_before_consensus"],
+                "immutable_manifest_after_consensus": survey["immutable_manifest_after_consensus"],
+                "known_upstream_warnings": state["known_upstream_warnings"],
+                "cleanup_ownership": {
+                    "owner": "OPENBIO_CNMF_RUN",
+                    "explicit_python": "run.close() or context-manager exit",
+                    "node_graph": "finalizer after engine cache/reference release",
+                    "cached_directory_may_persist": True,
+                },
+            },
+            parameters=parameters,
+            references=CNMF_REFERENCES,
+            software_packages=CNMF_SOFTWARE_PACKAGES,
+            warnings=warning_messages,
+            limitations=(
+                "K and the local-density threshold are analyst decisions supported, not proven, by diagnostics.",
+                "Gene-expression programs require biological annotation and external validation; usages are continuous mixtures, not cell clusters.",
+                "Pooled-cell programs may reflect Sample or Technical batch effects and are not replicate-aware Condition inference.",
+                "Non-negative factorization cannot directly represent repression, and low nonzero usages may reflect overfitting.",
+            ),
+            input_cells=run.metadata.input_cells,
+            input_genes=run.metadata.input_genes,
+            started_at=started_at,
+            code=code,
+            random_seed=run.metadata.random_seed,
+        )
+        return io.NodeOutput(output, report, code)
 
 
-__all__ = ["FACTORIZATION_NODE_CLASSES", "OpenBioSingleCellCNMF"]
+FACTORIZATION_NODE_CLASSES = [OpenBioSingleCellCNMFRankSurvey, OpenBioSingleCellCNMF]
+
+
+__all__ = [
+    "FACTORIZATION_NODE_CLASSES",
+    "OpenBioSingleCellCNMF",
+    "OpenBioSingleCellCNMFRankSurvey",
+]

@@ -65,13 +65,21 @@ def test_core_study_parameters_do_not_impose_consumer_semantics(overrides: dict[
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"condition_column": " group"}, "condition_column must be trimmed"),
         ({"reference": 3}, "reference must be a string"),
     ],
 )
 def test_core_study_parameters_reject_invalid_values(overrides: dict[str, object], message: str):
     with pytest.raises(ValueError, match=message):
         CoreStudyParameters.from_json(study_parameters_json(**overrides))
+
+
+def test_core_study_parameters_preserve_exact_whitespace_owned_by_user():
+    parameters = CoreStudyParameters.from_json(
+        study_parameters_json(condition_column=" group ", reference=" control ")
+    )
+
+    assert parameters.condition_column == " group "
+    assert parameters.reference == " control "
 
 
 @pytest.mark.parametrize(

@@ -66,6 +66,7 @@ test("live execution replaces the preview placeholder with a summary", async () 
     try {
         await import("../web/openbio_singlecell.js?live-execution-test");
 
+        assert.equal(Object.hasOwn(registeredExtension, "beforeConfigureGraph"), false);
         assert.deepEqual(Object.keys(registeredExtension.getCustomWidgets()), [
             "OPENBIO_CORE_STUDY_PARAMETERS_WIDGET",
             "OPENBIO_INPUT_FILE_UPLOAD_WIDGET",

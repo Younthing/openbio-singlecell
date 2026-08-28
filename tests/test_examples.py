@@ -32,9 +32,19 @@ WIRE_TYPES = {
     "OPENBIO_SINGLE_CELL_TABLE",
     "OPENBIO_SINGLE_CELL_PLOT",
     "OPENBIO_SINGLE_CELL_SUMMARY",
+    "OPENBIO_AUGUR_RESULT",
+    "OPENBIO_DGIDB_RESOURCE",
+    "OPENBIO_LIANA_RESULT",
+    "OPENBIO_TF_ACTIVITY",
+    "OPENBIO_SINGLE_CELL_PSEUDOBULK",
+    "OPENBIO_CNMF_RUN",
     "OPENBIO_SCVI_MODEL",
-    "OPENBIO_SCENIC_NETWORK",
+    "OPENBIO_SCENIC_RESULT",
+    "OPENBIO_SCENIC_BINARY",
+    "OPENBIO_CNV_STATE",
+    "OPENBIO_CASSIOPEIA_CHARACTERS",
     "OPENBIO_CASSIOPEIA_TREE",
+    "OPENBIO_VELOCITY_STATE",
 }
 
 
@@ -73,9 +83,7 @@ def _nodes(workflow: dict, node_type: str) -> list[dict]:
 
 def _node_with_widget(workflow: dict, node_type: str, widget: str, value: object) -> dict:
     matches = [
-        node
-        for node in _nodes(workflow, node_type)
-        if node.get("widgets_values_named", {}).get(widget) == value
+        node for node in _nodes(workflow, node_type) if node.get("widgets_values_named", {}).get(widget) == value
     ]
     assert len(matches) == 1, f"Expected one {node_type} with {widget}={value!r}, found {len(matches)}"
     return matches[0]
@@ -163,6 +171,21 @@ def test_workflow_generator_cli_resolves_comfyui_before_importing_schemas():
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "Verified 5 generated workflows." in completed.stdout
+
+
+def test_packaged_workflows_exclude_removed_node_ids():
+    removed_node_ids = {
+        "OpenBioSingleCellUseExpressionLayer",
+        "OpenBioSingleCellNormalizeGeneNames",
+        "OpenBioSingleCellMarkerORAAnnotation",
+        "OpenBioSingleCellDifferentialCompositionTest",
+        "OpenBioSingleCellDecouplerPseudobulkContrast",
+        "OpenBioSingleCellRunPySCENIC",
+        "OpenBioSingleCellLianaResults",
+        "OpenBioSingleCellCNVStructure",
+    }
+    for workflow in _load_examples().values():
+        assert removed_node_ids.isdisjoint(node["type"] for node in workflow["nodes"])
 
 
 def test_workflow_generator_rejects_inactive_or_unnamespaced_dynamic_overrides():
@@ -344,18 +367,25 @@ def test_quality_control_template_uses_reviewed_production_thresholds():
     workflow = examples["Quality Control and Clean Counts.json"]
 
     assert _widgets(workflow, "OpenBioSingleCellFilterCells") == {
+        "source": "X",
         "min_genes": 90,
         "max_genes": 0,
         "min_counts": 0,
         "max_counts": 0,
         "max_pct_mito": 20.0,
         "mito_column": "pct_counts_mt",
+        "enable_min_counts": False,
+        "enable_max_counts": False,
+        "enable_max_pct_mito": True,
     }
     assert _widgets(workflow, "OpenBioSingleCellFilterGenes") == {
+        "source": "X",
         "min_cells": 3,
         "max_cells": 0,
         "min_counts": 0,
         "max_counts": 0,
+        "enable_min_counts": False,
+        "enable_max_counts": False,
     }
     nodes = {node["id"]: node for node in workflow["nodes"]}
     filter_cells = _node(workflow, "OpenBioSingleCellFilterCells")
@@ -382,6 +412,7 @@ def test_clustering_template_preserves_counts_and_uses_a_layer_aware_pipeline():
         "target_sum": 10000.0,
         "transform": "log1p",
         "output_layer": "log1p_norm",
+        "overwrite_existing": False,
     }
     assert _widgets(workflow, "OpenBioSingleCellHighlyVariableGenes")["source"] == "layer"
     assert _widgets(workflow, "OpenBioSingleCellHighlyVariableGenes")["layer_name"] == "log1p_norm"
@@ -389,6 +420,17 @@ def test_clustering_template_preserves_counts_and_uses_a_layer_aware_pipeline():
     assert _widgets(workflow, "OpenBioSingleCellPCA")["source"] == "layer"
     assert _widgets(workflow, "OpenBioSingleCellMarkerGenes")["source"] == "layer"
     assert _widgets(workflow, "OpenBioSingleCellMarkerGenes")["layer_name"] == "log1p_norm"
+    assert _widgets(workflow, "OpenBioSingleCellUMAPPlot") == {
+        "embedding_key": "X_umap",
+        "color": "leiden",
+        "color_mode": "auto",
+        "point_size": 10.0,
+        "continuous_color_map": "viridis",
+        "categorical_palette": "tab20",
+        "sort_order": True,
+        "missing_color": "lightgray",
+        "legend_policy": "automatic",
+    }
     _assert_link(
         workflow,
         "OpenBioSingleCellLoadH5AD",
@@ -425,40 +467,32 @@ def test_composition_template_fans_out_the_demo_study_parameters_as_strings():
     }
     assert _widgets(workflow, "OpenBioSingleCellSampleCompositionSummary") == {
         "sample_key": "sample",
-        "group_key": "group",
+        "condition_key": "condition",
         "annotation_key": "cell_type",
+        "annotation_status": "unknown",
+        "max_output_rows": 2_000_000,
     }
-    assert _widgets(workflow, "OpenBioSingleCellDifferentialCompositionTest") == {
-        "sample_key": "sample",
-        "group_key": "group",
-        "annotation_key": "cell_type",
-        "control_group": "",
-        "comparison_groups": "",
-        "pseudocount": 0.001,
-    }
-
-    for target in ["OpenBioSingleCellSampleCompositionSummary", "OpenBioSingleCellDifferentialCompositionTest"]:
+    _assert_link(
+        workflow,
+        "OpenBioSingleCellLoadH5AD",
+        "adata",
+        "OpenBioSingleCellSampleCompositionSummary",
+        "adata",
+        "OPENBIO_ANNDATA",
+    )
+    for source_output, target_input in [
+        ("sample_column", "sample_key"),
+        ("condition_column", "condition_key"),
+        ("annotation_column", "annotation_key"),
+    ]:
         _assert_link(
             workflow,
-            "OpenBioSingleCellLoadH5AD",
-            "adata",
-            target,
-            "adata",
-            "OPENBIO_ANNDATA",
+            "OpenBioSingleCellCoreStudyParameters",
+            source_output,
+            "OpenBioSingleCellSampleCompositionSummary",
+            target_input,
+            "STRING",
         )
-        for source_output, target_input in [
-            ("sample_column", "sample_key"),
-            ("condition_column", "group_key"),
-            ("annotation_column", "annotation_key"),
-        ]:
-            _assert_link(
-                workflow,
-                "OpenBioSingleCellCoreStudyParameters",
-                source_output,
-                target,
-                target_input,
-                "STRING",
-            )
 
     _assert_link(
         workflow,
@@ -469,37 +503,31 @@ def test_composition_template_fans_out_the_demo_study_parameters_as_strings():
         "OPENBIO_ANNDATA",
     )
 
-    for source_output, target_input in [
-        ("reference", "control_group"),
-        ("comparison", "comparison_groups"),
-    ]:
-        _assert_link(
-            workflow,
-            "OpenBioSingleCellCoreStudyParameters",
-            source_output,
-            "OpenBioSingleCellDifferentialCompositionTest",
-            target_input,
-            "STRING",
-        )
-
     core_parameters = _node(workflow, "OpenBioSingleCellCoreStudyParameters")
     assert core_parameters["inputs"] == []
-    batch_output = next(item for item in core_parameters["outputs"] if item["name"] == "batch_column")
-    assert batch_output["links"] == []
+    for output_name in ("batch_column", "reference", "comparison"):
+        output = next(item for item in core_parameters["outputs"] if item["name"] == output_name)
+        assert output["links"] == []
 
-    for node_type, connected_names in {
-        "OpenBioSingleCellSampleCompositionSummary": {"sample_key", "group_key", "annotation_key"},
-        "OpenBioSingleCellDifferentialCompositionTest": {
-            "sample_key",
-            "group_key",
-            "annotation_key",
-            "control_group",
-            "comparison_groups",
-        },
-    }.items():
-        node = _node(workflow, node_type)
-        linked_widgets = {item["name"]: item["widget"] for item in node["inputs"] if item["name"] in connected_names}
-        assert linked_widgets == {name: {"name": name} for name in connected_names}
+    composition = _node(workflow, "OpenBioSingleCellSampleCompositionSummary")
+    connected_names = {"sample_key", "condition_key", "annotation_key"}
+    linked_widgets = {item["name"]: item["widget"] for item in composition["inputs"] if item["name"] in connected_names}
+    assert linked_widgets == {name: {"name": name} for name in connected_names}
+    summary_link = next(
+        link
+        for link in workflow["links"]
+        if link["origin_id"] == composition["id"] and composition["outputs"][link["origin_slot"]]["name"] == "summary"
+    )
+    summary_preview = next(node for node in workflow["nodes"] if node["id"] == summary_link["target_id"])
+    _assert_node_link(
+        workflow,
+        composition,
+        "summary",
+        summary_preview,
+        "result",
+        "OPENBIO_SINGLE_CELL_SUMMARY",
+    )
+    assert summary_preview["type"] == "OpenBioSingleCellPreviewResult"
 
 
 def test_scvi_template_uses_counts_auto_epochs_and_its_concrete_model_consumer():
@@ -510,9 +538,21 @@ def test_scvi_template_uses_counts_auto_epochs_and_its_concrete_model_consumer()
     integration = _widgets(workflow, "OpenBioSingleCellSCVIIntegration")
     assert integration["source"] == "X"
     assert "counts_layer" not in integration
-    assert integration["batch_key"] == "batch"
-    assert integration["max_epochs"] == 0
+    assert integration["technical_batch_key"] == "batch"
+    assert integration["epochs"] == "automatic"
     assert integration["output_key"] == "X_scVI"
+    assert _widgets(workflow, "OpenBioSingleCellSCVIDifferentialExpression") == {
+        "groupby": "cell_type",
+        "group1": "T cell",
+        "group2": "B cell",
+        "population_scope": "all",
+        "mode": "change",
+        "delta": 0.25,
+        "fdr_target": 0.05,
+        "batch_handling": "shared_technical_batches",
+        "n_samples_overall": 5000,
+        "random_seed": 0,
+    }
     assert _widgets(workflow, "OpenBioSingleCellNeighbors")["use_rep"] == "X_scVI"
     _assert_link(
         workflow,
@@ -552,9 +592,7 @@ def test_best_practice_template_uses_existing_nodes_for_the_reviewed_two_branch_
     workflow = _load_examples()["Single-Cell Best Practice.json"]
     node_types = {node["type"] for node in workflow["nodes"]}
 
-    assert _widgets(workflow, "OpenBioSingleCellLoadH5AD")["path"] == (
-        "openbio-singlecell/anndata_qc.h5ad"
-    )
+    assert _widgets(workflow, "OpenBioSingleCellLoadH5AD")["path"] == ("openbio-singlecell/anndata_qc.h5ad")
     study = json.loads(_widgets(workflow, "OpenBioSingleCellCoreStudyParameters")["study_parameters_json"])
     assert study == {
         "schema_version": 1,
@@ -569,7 +607,9 @@ def test_best_practice_template_uses_existing_nodes_for_the_reviewed_two_branch_
     hard_filter = _node_with_widget(workflow, "OpenBioSingleCellFilterCells", "min_genes", 200)
     mitochondrial_cap = _node_with_widget(workflow, "OpenBioSingleCellFilterCells", "max_pct_mito", 20.0)
     assert hard_filter["widgets_values_named"]["max_pct_mito"] == 0.0
+    assert hard_filter["widgets_values_named"]["enable_max_pct_mito"] is False
     assert mitochondrial_cap["widgets_values_named"]["min_genes"] == 0
+    assert mitochondrial_cap["widgets_values_named"]["enable_max_pct_mito"] is True
     assert _widgets(workflow, "OpenBioSingleCellFilterGenes")["min_cells"] == 3
 
     general_mad = _node_with_widget(
@@ -591,6 +631,7 @@ def test_best_practice_template_uses_existing_nodes_for_the_reviewed_two_branch_
         "direction": "both",
         "output_column": "qc_mad_general",
         "scale_mad": False,
+        "minimum_group_size": 3,
     }
     assert mitochondrial_mad["widgets_values_named"] == {
         "metrics": "pct_counts_mt",
@@ -599,14 +640,15 @@ def test_best_practice_template_uses_existing_nodes_for_the_reviewed_two_branch_
         "direction": "upper",
         "output_column": "qc_mad_mito",
         "scale_mad": False,
+        "minimum_group_size": 3,
     }
     assert len(_nodes(workflow, "OpenBioSingleCellScrublet")) == 1
     assert len(_nodes(workflow, "OpenBioSingleCellFilterDoublets")) == 1
 
     snapshot = _node(workflow, "OpenBioSingleCellSnapshotExpression")
     assert snapshot["widgets_values_named"] == {
-        "destination": "layer_and_raw",
-        "layer_name": "counts",
+        "source": "X",
+        "overwrite_existing": False,
     }
     assert _widgets(workflow, "OpenBioSingleCellNormalizeToLayer") == {
         "source": "layer",
@@ -614,6 +656,7 @@ def test_best_practice_template_uses_existing_nodes_for_the_reviewed_two_branch_
         "target_sum": 10000.0,
         "transform": "log1p",
         "output_layer": "log1p_norm",
+        "overwrite_existing": False,
     }
 
     hvg_nodes = _nodes(workflow, "OpenBioSingleCellHighlyVariableGenes")
@@ -635,6 +678,7 @@ def test_best_practice_template_uses_existing_nodes_for_the_reviewed_two_branch_
     hvg_only = next(node for node in hvg_nodes if node["widgets_values_named"]["subset"] is True)
     hvg_full = next(node for node in hvg_nodes if node["widgets_values_named"]["subset"] is False)
     merge = _node(workflow, "OpenBioSingleCellMergeObservationAnnotations")
+    assert merge["widgets_values_named"]["conflict_policy"] == "error"
     leiden = _node(workflow, "OpenBioSingleCellLeiden")
     _assert_node_link(workflow, hvg_only, "adata", scvi, "adata", "OPENBIO_ANNDATA")
     _assert_node_link(workflow, hvg_full, "adata", merge, "adata", "OPENBIO_ANNDATA")
@@ -645,31 +689,76 @@ def test_best_practice_template_uses_existing_nodes_for_the_reviewed_two_branch_
     assert all(node["widgets_values_named"]["groupby"] == "leiden_scvi" for node in marker_nodes)
     assert all(node["widgets_values_named"]["source.layer_name"] == "log1p_norm" for node in marker_nodes)
     marker_plot = _node(workflow, "OpenBioSingleCellMarkerExpressionPlot")
-    assert marker_plot["widgets_values_named"]["plot_type"] == "dotplot"
-    assert marker_plot["widgets_values_named"]["groupby"] == "leiden_scvi"
+    assert marker_plot["widgets_values_named"] == {
+        "genes": "PECAM1,VWF,KDR,COL1A1,DCN,RGS5,CSPG4,ACTA2,TAGLN,SOX10,S100B,CD68,LYZ,CD3D,CD3E,NKG7,MS4A1,CD79A",
+        "groupby": "leiden_scvi",
+        "plot": "dotplot",
+        "plot.standard_scale": "var",
+        "plot.expression_cutoff": 0.0,
+        "plot.mean_only_expressed": False,
+        "source": "layer",
+        "source.layer_name": "log1p_norm",
+        "group_order": "observed",
+        "random_seed": 0,
+    }
 
     celltypist = _node(workflow, "OpenBioSingleCellCellTypistAnnotation")
     assert celltypist["widgets_values_named"] == {
+        "source": "raw",
+        "expression_state": "verified_counts",
         "model": "Adult_Human_Vascular.pkl",
-        "use_raw": True,
-        "majority_voting": True,
+        "majority_voting": False,
+        "over_clustering_key": "",
+        "min_prop": 0.0,
         "label_column": "celltypist_cell_type",
         "confidence_column": "celltypist_confidence",
+        "probability_key": "celltypist_probabilities",
+        "store_decision_matrix": False,
+        "decision_key": "celltypist_decision_scores",
+        "metadata_key": "celltypist",
+        "overwrite_existing": False,
     }
     pseudobulk = _node(workflow, "OpenBioSingleCellPseudobulk")
-    selected_population = _node_with_widget(
-        workflow,
-        "OpenBioSingleCellSubsetObservations",
-        "values",
-        "smc_pc_intermediate",
-    )
     deseq2 = _node(workflow, "OpenBioSingleCellPseudobulkDESeq2")
-    assert pseudobulk["widgets_values_named"]["source.layer_name"] == "counts"
-    assert pseudobulk["widgets_values_named"]["mode"] == "sum"
-    assert selected_population["widgets_values_named"]["invert"] is False
-    assert deseq2["widgets_values_named"]["design"] == "~group"
-    _assert_node_link(workflow, pseudobulk, "adata", selected_population, "adata", "OPENBIO_ANNDATA")
-    _assert_node_link(workflow, selected_population, "adata", deseq2, "adata", "OPENBIO_ANNDATA")
+    assert pseudobulk["widgets_values_named"] == {
+        "sample_key": "sample",
+        "population_key": "celltypist_cell_type",
+        "condition_key": "group",
+        "technical_batch_key": "batch",
+        "categorical_covariate_keys": "",
+        "continuous_covariate_keys": "",
+        "source": "layer",
+        "source.layer_name": "counts",
+        "inference_mode": "exploratory",
+        "min_cells": 10,
+        "min_counts": 1000,
+    }
+    assert all(
+        node["widgets_values_named"]["missing_policy"] == "exclude"
+        for node in _nodes(workflow, "OpenBioSingleCellSubsetObservations")
+    )
+    assert deseq2["widgets_values_named"] == {
+        "population": "smc_pc_intermediate",
+        "reference_condition": "Normal",
+        "comparison_condition": "nonDM_ED",
+        "categorical_covariate_keys": "",
+        "continuous_covariate_keys": "",
+        "fdr_threshold": 0.05,
+        "min_abs_log2_fold_change": 0,
+        "min_count": 10,
+        "min_total_count": 15,
+        "large_n": 10,
+        "min_prop": 0.7,
+        "n_cpus": 1,
+    }
+    _assert_node_link(
+        workflow,
+        pseudobulk,
+        "pseudobulk",
+        deseq2,
+        "pseudobulk",
+        "OPENBIO_SINGLE_CELL_PSEUDOBULK",
+    )
 
     save_nodes = _nodes(workflow, "OpenBioSingleCellSaveH5AD")
     assert {node["widgets_values_named"]["filename_prefix"] for node in save_nodes} == {
@@ -694,35 +783,40 @@ def test_best_practice_template_only_links_the_two_condition_values_from_study_p
     }
 
     assert outgoing_links == {
-        ("reference", "OpenBioSingleCellPseudobulkDESeq2", "baseline"),
-        ("comparison", "OpenBioSingleCellPseudobulkDESeq2", "comparison"),
+        ("reference", "OpenBioSingleCellPseudobulkDESeq2", "reference_condition"),
+        ("comparison", "OpenBioSingleCellPseudobulkDESeq2", "comparison_condition"),
     }
 
     assert _widgets(workflow, "OpenBioSingleCellScrublet")["batch_key"] == "sample"
-    assert {node["widgets_values_named"]["batch_key"] for node in _nodes(workflow, "OpenBioSingleCellMarkMADOutliers")} == {
-        "sample"
-    }
+    assert {
+        node["widgets_values_named"]["batch_key"] for node in _nodes(workflow, "OpenBioSingleCellMarkMADOutliers")
+    } == {"sample"}
     assert {
         node["widgets_values_named"]["batch_key"] for node in _nodes(workflow, "OpenBioSingleCellHighlyVariableGenes")
     } == {"sample"}
-    assert _widgets(workflow, "OpenBioSingleCellSCVIIntegration")["batch_key"] == "batch"
+    assert _widgets(workflow, "OpenBioSingleCellSCVIIntegration")["technical_batch_key"] == "batch"
     assert _widgets(workflow, "OpenBioSingleCellSampleCompositionSummary") == {
         "sample_key": "sample",
-        "group_key": "group",
+        "condition_key": "group",
         "annotation_key": "celltypist_cell_type",
+        "annotation_status": "provisional",
+        "max_output_rows": 2_000_000,
     }
-    assert _widgets(workflow, "OpenBioSingleCellPseudobulk")["sample_key"] == "sample"
-    assert _widgets(workflow, "OpenBioSingleCellPseudobulk")["groupby"] == "celltypist_cell_type"
-    assert _node_with_widget(
-        workflow,
-        "OpenBioSingleCellSubsetObservations",
-        "values",
-        "Normal,nonDM_ED",
-    )["widgets_values_named"]["column"] == "group"
-    assert _node_with_widget(
-        workflow,
-        "OpenBioSingleCellSubsetObservations",
-        "values",
-        "smc_pc_intermediate",
-    )["widgets_values_named"]["column"] == "celltypist_cell_type"
-    assert _widgets(workflow, "OpenBioSingleCellPseudobulkDESeq2")["contrast_column"] == "group"
+    pseudobulk = _widgets(workflow, "OpenBioSingleCellPseudobulk")
+    assert pseudobulk["sample_key"] == "sample"
+    assert pseudobulk["population_key"] == "celltypist_cell_type"
+    assert pseudobulk["condition_key"] == "group"
+    assert pseudobulk["technical_batch_key"] == "batch"
+    assert (
+        _node_with_widget(
+            workflow,
+            "OpenBioSingleCellSubsetObservations",
+            "values",
+            "Normal,nonDM_ED",
+        )["widgets_values_named"]["column"]
+        == "group"
+    )
+    deseq2 = _widgets(workflow, "OpenBioSingleCellPseudobulkDESeq2")
+    assert deseq2["population"] == "smc_pc_intermediate"
+    assert deseq2["reference_condition"] == "Normal"
+    assert deseq2["comparison_condition"] == "nonDM_ED"

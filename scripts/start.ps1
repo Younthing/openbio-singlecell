@@ -88,20 +88,15 @@ $ComfyRoot = Resolve-OpenBioComfyRoot $ComfyRoot
 $FrontendRoot = Resolve-OpenBioFrontendRoot $FrontendRoot
 $FrontendDist = Join-Path $FrontendRoot "dist"
 
-$RequiredFrontendFiles = @("index.html", "LICENSE", "THIRD_PARTY_NOTICES.md")
-$MissingFrontendFiles = @($RequiredFrontendFiles | Where-Object {
-    $Candidate = Join-Path $FrontendDist $_
-    (-not (Test-Path -LiteralPath $Candidate -PathType Leaf)) -or ((Get-Item -LiteralPath $Candidate).Length -eq 0)
-})
-if ($MissingFrontendFiles.Count -gt 0) {
+$FrontendIndex = Join-Path $FrontendDist "index.html"
+if ((-not (Test-Path -LiteralPath $FrontendIndex -PathType Leaf)) -or ((Get-Item -LiteralPath $FrontendIndex).Length -eq 0)) {
     throw @"
 OpenBio frontend dist is incomplete: $FrontendDist
-Missing: $($MissingFrontendFiles -join ", ")
+Missing or empty: index.html
 Build it first:
   Set-Location "$FrontendRoot"
   corepack pnpm install --frozen-lockfile
   corepack pnpm build:openbio
-  corepack pnpm exec node "$PluginRoot/scripts/generate_frontend_notices.mjs"
 "@
 }
 

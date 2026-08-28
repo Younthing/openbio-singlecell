@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from comfy_api.latest import io
 
-from . import dependencies
-from .analysis_utils import figure_to_png, finish_adata, make_plot_result, make_table_result
+from .analysis_utils import make_plot_result, make_summary_result, make_table_result
+from .augur import (
+    AUGUR_CLASSIFIERS,
+    AUGUR_VIEWS,
+    AugurResult,
+    augur_code,
+    augur_results_code,
+    run_augur_analysis,
+    select_augur_view,
+)
 from .expression_source import DynamicExpressionSource, ExpressionSourceSpec
-from .node_types import AnnDataType, PlotResultType, TableResultType
+from .node_types import AnnDataType, AugurResultType, PlotResultType, SummaryResultType, TableResultType
+from .population_correlation import analyze_population_centroid_correlation, population_correlation_code
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -16,22 +25,14 @@ if TYPE_CHECKING:
 
 PRIORITY_CATEGORY = "openbio/single-cell/cell-prioritization"
 VISUALIZATION_CATEGORY = "openbio/single-cell/visualization"
-AUGUR_RESULT_TABLES = ["summary_metrics", "full_results", "feature_importances"]
-
-
-def _require_pertpy() -> Any:
-    try:
-        import pertpy
-    except (ImportError, OSError) as error:
-        raise RuntimeError("Augur analysis requires the pertpy package.") from error
-    return pertpy
 
 
 class OpenBioSingleCellAugur(io.ComfyNode):
     EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="Augur source",
+        description="Augur count source",
+        default="X",
         include_raw=True,
-        layer_default="log1p_norm",
+        layer_default="counts",
     )
 
     @classmethod
@@ -40,116 +41,115 @@ class OpenBioSingleCellAugur(io.ComfyNode):
             node_id="OpenBioSingleCellAugur",
             display_name="Augur Cell Prioritization",
             category=PRIORITY_CATEGORY,
+            description=(
+                "Prioritize populations with audited two-Condition Pertpy Augur classifier cross-validation."
+            ),
             inputs=[
                 AnnDataType.Input("adata"),
-                io.String.Input("cell_type_key", default="cell_type"),
-                io.String.Input("condition_key", default="group"),
+                io.String.Input("sample_key", default="sample"),
+                io.String.Input("population_key", default="cell_type"),
+                io.String.Input("condition_key", default="condition"),
                 io.String.Input("control", default=""),
                 io.String.Input("treatment", default=""),
                 io.Combo.Input(
-                    "model",
-                    options=[
-                        "random_forest_classifier",
-                        "logistic_regression_classifier",
-                        "random_forest_regressor",
-                    ],
+                    "classifier",
+                    options=list(AUGUR_CLASSIFIERS),
                     default="random_forest_classifier",
                 ),
                 cls.EXPRESSION_SOURCE.input(),
-                io.Int.Input("subsample_size", default=50, min=2, max=2**31 - 1),
-                io.Boolean.Input("select_variance_features", default=False),
-                io.Float.Input("span", default=0.75, min=0.0, max=1.0, step=0.05, advanced=True),
+                io.Combo.Input(
+                    "annotation_status",
+                    options=["unknown", "provisional", "curated"],
+                    default="unknown",
+                ),
+                io.String.Input("technical_batch_key", default="", advanced=True),
+                io.Int.Input("n_subsamples", default=50, min=1, max=2**31 - 1, advanced=True),
+                io.Int.Input("subsample_size", default=20, min=2, max=2**31 - 1, advanced=True),
+                io.Int.Input("folds", default=3, min=2, max=2**31 - 1, advanced=True),
                 io.Int.Input("n_threads", default=1, min=1, max=1024, advanced=True),
-                io.Int.Input("random_seed", default=123, min=0, max=2**31 - 1, advanced=True),
-                io.String.Input("result_key", default="augurpy_results", advanced=True),
+                io.Int.Input("random_seed", default=123, min=1, max=2**31 - 1, advanced=True),
+                io.Int.Input(
+                    "max_result_rows",
+                    default=10_000_000,
+                    min=1,
+                    max=2**31 - 1,
+                    advanced=True,
+                ),
+                io.Float.Input(
+                    "max_result_mib",
+                    default=1024.0,
+                    min=1.0,
+                    max=1_048_576.0,
+                    step=1.0,
+                    advanced=True,
+                ),
             ],
-            outputs=[AnnDataType.Output(display_name="adata")],
+            outputs=[
+                AugurResultType.Output(display_name="result"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
     def execute(
         cls,
         adata: AnnData,
-        cell_type_key: str = "cell_type",
-        condition_key: str = "group",
+        sample_key: str = "sample",
+        population_key: str = "cell_type",
+        condition_key: str = "condition",
         control: str = "",
         treatment: str = "",
-        model: str = "random_forest_classifier",
+        classifier: str = "random_forest_classifier",
         source: DynamicExpressionSource | None = None,
-        subsample_size: int = 50,
-        select_variance_features: bool = False,
-        span: float = 0.75,
+        annotation_status: str = "unknown",
+        technical_batch_key: str = "",
+        n_subsamples: int = 50,
+        subsample_size: int = 20,
+        folds: int = 3,
         n_threads: int = 1,
         random_seed: int = 123,
-        result_key: str = "augurpy_results",
+        max_result_rows: int = 10_000_000,
+        max_result_mib: float = 1024.0,
     ) -> io.NodeOutput:
-        if cell_type_key not in adata.obs:
-            raise ValueError(f"Augur cell type column not found in obs: {cell_type_key!r}")
-        if condition_key not in adata.obs:
-            raise ValueError(f"Augur condition column not found in obs: {condition_key!r}")
-        control = control.strip()
-        treatment = treatment.strip()
-        if not control or not treatment:
-            raise ValueError("Augur requires both control and treatment labels.")
-        if control == treatment:
-            raise ValueError("Augur control and treatment labels must be different.")
-        result_key = result_key.strip()
-        if not result_key:
-            raise ValueError("Augur result key cannot be empty.")
-
-        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
-        if expression.kind == "raw":
-            analysis_adata = adata.raw.to_adata()
-            analysis_adata.obs = adata.obs.copy()
-        elif expression.kind == "layer":
-            analysis_adata = adata.copy()
-            analysis_adata.X = analysis_adata.layers[expression.layer_name].copy()
-        else:
-            analysis_adata = adata
-
-        pertpy = _require_pertpy()
         started_at = time.perf_counter()
-        augur = pertpy.tl.Augur(model)
-        loaded = augur.load(
-            analysis_adata,
-            label_col=condition_key,
-            cell_type_col=cell_type_key,
-            condition_label=control,
-            treatment_label=treatment,
-        )
-        output, _ = augur.predict(
-            loaded,
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
+        result = run_augur_analysis(
+            adata,
+            sample_key=sample_key,
+            population_key=population_key,
+            condition_key=condition_key,
+            control=control,
+            treatment=treatment,
+            classifier=classifier,
+            source_kind=expression.kind,
+            layer_name=expression.layer_name,
+            annotation_status=annotation_status,
+            technical_batch_key=technical_batch_key,
+            n_subsamples=n_subsamples,
             subsample_size=subsample_size,
+            folds=folds,
             n_threads=n_threads,
-            select_variance_features=select_variance_features,
-            span=span,
-            key_added=result_key,
-            random_state=random_seed,
+            random_seed=random_seed,
+            max_result_rows=max_result_rows,
+            max_result_mib=max_result_mib,
         )
-        parameters = {
-            "cell_type_key": cell_type_key,
-            "condition_key": condition_key,
-            "control": control,
-            "treatment": treatment,
-            "model": model,
-            **expression.parameters(),
-            "subsample_size": subsample_size,
-            "select_variance_features": select_variance_features,
-            "span": span,
-            "n_threads": n_threads,
-            "random_seed": random_seed,
-            "result_key": result_key,
-        }
-        finish_adata(
-            output,
-            "augur",
-            parameters,
-            int(adata.n_obs),
-            int(adata.n_vars),
-            started_at,
+        summary = result.summary
+        parameters = dict(summary["parameters"])
+        report = make_summary_result(
+            summary=summary,
+            title="Augur exploratory population priorities",
+            operation="augur",
+            parameters=parameters,
+            description=str(summary["results"]),
+            warnings=[str(warning) for warning in summary["warnings"]],
+            input_cells=int(adata.n_obs),
+            input_genes=int(summary["key_results"]["selected_source_features"]),
+            started_at=started_at,
             random_seed=random_seed,
         )
-        return io.NodeOutput(output)
+        code = augur_code(**parameters)
+        return io.NodeOutput(result, report, code)
 
 
 class OpenBioSingleCellAugurResults(io.ComfyNode):
@@ -160,41 +160,54 @@ class OpenBioSingleCellAugurResults(io.ComfyNode):
             display_name="Augur Results",
             category=PRIORITY_CATEGORY,
             inputs=[
-                AnnDataType.Input("adata"),
-                io.Combo.Input("result_table", options=AUGUR_RESULT_TABLES, default="summary_metrics"),
-                io.String.Input("result_key", default="augurpy_results", advanced=True),
+                AugurResultType.Input("result"),
+                io.Combo.Input("view", options=list(AUGUR_VIEWS), default="priorities"),
             ],
-            outputs=[TableResultType.Output(display_name="table")],
+            outputs=[
+                TableResultType.Output(display_name="table"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
     def execute(
         cls,
-        adata: AnnData,
-        result_table: str = "summary_metrics",
-        result_key: str = "augurpy_results",
+        result: AugurResult,
+        view: str = "priorities",
     ) -> io.NodeOutput:
-        science = dependencies.require_scientific_dependencies()
-        result_key = result_key.strip()
-        stored = adata.uns.get(result_key)
-        if not isinstance(stored, dict):
-            raise ValueError(f"Augur results not found in uns[{result_key!r}].")
-        if result_table not in stored:
-            raise ValueError(f"Augur result table {result_table!r} not found in uns[{result_key!r}].")
         started_at = time.perf_counter()
-        table = science.pd.DataFrame(stored[result_table]).reset_index()
-        result = make_table_result(
-            title=f"Augur {result_table.replace('_', ' ')}",
+        table, summary = select_augur_view(result, view=view)
+        selected = summary["selected_view"]
+        key_results = summary["key_results"]
+        parameters = {
+            "view": view,
+            "artifact_fingerprint_sha256": selected["artifact_fingerprint_sha256"],
+            "table_fingerprint_sha256": selected["table_fingerprint_sha256"],
+        }
+        table_result = make_table_result(
+            title=f"Augur {view.replace('_', ' ')}",
             operation="augur_results",
-            parameters={"result_table": result_table, "result_key": result_key},
-            description="Stored cell-type prioritization results from Augur.",
-            warnings=[],
-            input_cells=int(adata.n_obs),
-            input_genes=int(adata.n_vars),
+            parameters=parameters,
+            description=f"Selected the canonical {view!r} view from a validated Augur result artifact.",
+            warnings=[str(warning) for warning in summary["warnings"]],
+            input_cells=int(key_results["input_cells"]),
+            input_genes=int(key_results["selected_source_features"]),
             started_at=started_at,
             table=table,
         )
-        return io.NodeOutput(result)
+        report = make_summary_result(
+            summary=summary,
+            title=f"Augur {view.replace('_', ' ')} summary",
+            operation="augur_results",
+            parameters=parameters,
+            description=f"Selected the canonical {view!r} view without rerunning or reinterpreting Augur.",
+            warnings=[str(warning) for warning in summary["warnings"]],
+            input_cells=int(key_results["input_cells"]),
+            input_genes=int(key_results["selected_source_features"]),
+            started_at=started_at,
+        )
+        return io.NodeOutput(table_result, report, augur_results_code(view=view))
 
 
 class OpenBioSingleCellCellTypeCorrelation(io.ComfyNode):
@@ -202,75 +215,121 @@ class OpenBioSingleCellCellTypeCorrelation(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="OpenBioSingleCellCellTypeCorrelation",
-            display_name="Cell Type Correlation",
+            display_name="Population Centroid Correlation",
             category=VISUALIZATION_CATEGORY,
+            description=(
+                "Compute descriptive correlations between population centroids in one explicit representation, "
+                "with a canonical pair table and dendrogram-ordered matrix plot."
+            ),
             inputs=[
                 AnnDataType.Input("adata"),
-                io.String.Input("groupby", default="cell_type"),
-                io.String.Input("use_rep", default="X_pca"),
-                io.Combo.Input("cor_method", options=["pearson", "spearman", "kendall"], default="pearson"),
+                io.String.Input("population_key", default="cell_type"),
+                io.String.Input("representation_key", default="X_pca"),
+                io.Combo.Input(
+                    "correlation_method", options=["pearson", "spearman", "kendall"], default="pearson"
+                ),
+                io.Combo.Input(
+                    "linkage_method",
+                    options=["complete", "average", "single", "weighted"],
+                    default="complete",
+                    advanced=True,
+                ),
+                io.Int.Input("n_dimensions", default=0, min=0, max=2**31 - 1, advanced=True),
+                io.Combo.Input(
+                    "annotation_status", options=["unknown", "provisional", "curated"], default="unknown"
+                ),
                 io.String.Input("color_map", default="RdYlBu", advanced=True),
                 io.Boolean.Input("show_numbers", default=False, advanced=True),
+                io.Int.Input("max_groups", default=200, min=2, max=1000, advanced=True),
+                io.Int.Input("max_output_rows", default=100000, min=1, max=2**31 - 1, advanced=True),
             ],
-            outputs=[PlotResultType.Output(display_name="plot")],
+            outputs=[
+                TableResultType.Output(display_name="table"),
+                PlotResultType.Output(display_name="plot"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
     def execute(
         cls,
         adata: AnnData,
-        groupby: str = "cell_type",
-        use_rep: str = "X_pca",
-        cor_method: str = "pearson",
+        population_key: str = "cell_type",
+        representation_key: str = "X_pca",
+        correlation_method: str = "pearson",
+        linkage_method: str = "complete",
+        n_dimensions: int = 0,
+        annotation_status: str = "unknown",
         color_map: str = "RdYlBu",
         show_numbers: bool = False,
+        max_groups: int = 200,
+        max_output_rows: int = 100000,
     ) -> io.NodeOutput:
-        science = dependencies.require_scientific_dependencies()
-        if groupby not in adata.obs:
-            raise ValueError(f"Correlation group column not found in obs: {groupby!r}")
-        if use_rep and use_rep not in adata.obsm:
-            raise ValueError(f"Correlation representation not found in obsm: {use_rep!r}")
-
         started_at = time.perf_counter()
-        work = adata.copy()
-        science.sc.tl.dendrogram(
-            work,
-            groupby=groupby,
-            use_rep=use_rep or None,
-            use_raw=False,
-            cor_method=cor_method,
+        table, png, summary = analyze_population_centroid_correlation(
+            adata,
+            population_key=population_key,
+            representation_key=representation_key,
+            correlation_method=correlation_method,
+            linkage_method=linkage_method,
+            n_dimensions=n_dimensions,
+            annotation_status=annotation_status,
+            color_map=color_map,
+            show_numbers=show_numbers,
+            max_groups=max_groups,
+            max_output_rows=max_output_rows,
         )
-        figure = science.Figure(figsize=(7, 6), constrained_layout=True)
-        axis = figure.subplots()
-        science.sc.pl.correlation_matrix(
-            work,
-            groupby,
-            dendrogram=False,
-            show_correlation_numbers=show_numbers,
-            cmap=color_map,
-            show=False,
-            ax=axis,
-        )
-        png = figure_to_png(figure)
-        parameters = {
-            "groupby": groupby,
-            "use_rep": use_rep,
-            "cor_method": cor_method,
-            "color_map": color_map,
-            "show_numbers": show_numbers,
-        }
-        result = make_plot_result(
-            title=f"Cell type correlation by {groupby}",
-            operation="cell_type_correlation",
+        parameters = dict(summary["parameters"])
+        description = str(summary["results"])
+        warnings = [str(warning) for warning in summary["warnings"]]
+        input_cells, input_genes = int(adata.n_obs), int(adata.n_vars)
+        table_result = make_table_result(
+            title=f"Population centroid correlations by {population_key}",
+            operation="population_centroid_correlation",
             parameters=parameters,
-            description="Correlation matrix between cell groups.",
-            warnings=[],
-            input_cells=int(adata.n_obs),
-            input_genes=int(adata.n_vars),
+            description=description,
+            warnings=warnings,
+            input_cells=input_cells,
+            input_genes=input_genes,
+            started_at=started_at,
+            table=table,
+        )
+        plot_result = make_plot_result(
+            title=f"Population centroid correlation by {population_key}",
+            operation="population_centroid_correlation",
+            parameters=parameters,
+            description=description,
+            warnings=warnings,
+            input_cells=input_cells,
+            input_genes=input_genes,
             started_at=started_at,
             png=png,
         )
-        return io.NodeOutput(result)
+        code = population_correlation_code(
+            population_key=population_key,
+            representation_key=representation_key,
+            correlation_method=correlation_method,
+            linkage_method=linkage_method,
+            n_dimensions=n_dimensions,
+            annotation_status=annotation_status,
+            color_map=color_map,
+            show_numbers=show_numbers,
+            max_groups=max_groups,
+            max_output_rows=max_output_rows,
+        )
+        report = make_summary_result(
+            summary=summary,
+            title="Population centroid correlation summary",
+            operation="population_centroid_correlation",
+            parameters=parameters,
+            description=description,
+            warnings=warnings,
+            input_cells=input_cells,
+            input_genes=input_genes,
+            started_at=started_at,
+        )
+        return io.NodeOutput(table_result, plot_result, report, code)
 
 
 POPULATION_NODE_CLASSES = [

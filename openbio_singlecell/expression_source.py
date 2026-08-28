@@ -99,11 +99,12 @@ class ExpressionSourceSpec:
         if self.default not in self._choices():
             raise ValueError(f"Unsupported default expression source: {self.default!r}")
 
-    def input(self) -> io.DynamicCombo.Input:
+    def input(self, *, optional: bool = False) -> io.DynamicCombo.Input:
         choices = self._choices()
         ordered_choices = (self.default, *(choice for choice in choices if choice != self.default))
         return io.DynamicCombo.Input(
             "source",
+            optional=optional,
             options=[
                 io.DynamicCombo.Option(
                     choice,

@@ -1,21 +1,40 @@
 from __future__ import annotations
 
-import importlib
-import os
+import hashlib
 import time
 from typing import TYPE_CHECKING, Any
 
 from comfy_api.latest import io
 
-from . import dependencies
-from .analysis_utils import finish_adata, make_table_result
+from . import PLUGIN_VERSION, dependencies
+from .analysis_utils import finish_adata, make_summary_result, make_table_result
+from .dgidb_resource import (
+    DGIDB_RESOURCE_EXTENSIONS,
+    DGIdbResource,
+    dgidb_resource_cache_fingerprint,
+    dgidb_resource_code,
+    load_dgidb_resource,
+    validate_dgidb_resource,
+)
+from .drug_enrichment import drug_gsea_code, drug_ora_code, run_drug_gsea, run_drug_ora
+from .drug_score import drug_score_code, run_drug_score
+from .enrichment_artifacts import validate_enrichment_artifact_pair
 from .expression_source import (
     DynamicExpressionSource,
-    ExpressionSource,
     ExpressionSourceSpec,
 )
 from .files import input_file_fingerprint, resolve_input_path
-from .node_types import AnnDataType, TableResultType
+from .gene_set_scoring import (
+    gene_set_resource_cache_fingerprint,
+    gene_set_scoring_code,
+    run_aucell_scores,
+    run_gene_panel_score,
+    run_gsva_scores,
+)
+from .generic_ora import build_generic_ora_summary, generic_ora_code, run_generic_ora_evidence
+from .node_types import AnnDataType, DGIdbResourceType, SummaryResultType, TableResultType
+from .pathway_score_contrast import pathway_score_contrast_code, run_pathway_score_contrast
+from .ranked_enrichment import build_ranked_gsea_summary, ranked_gsea_code, run_ranked_gsea_evidence
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -25,103 +44,6 @@ if TYPE_CHECKING:
 
 CATEGORY = "openbio/single-cell/enrichment"
 GENE_SET_EXTENSIONS = (".csv", ".tsv", ".gmt")
-
-
-def _require_optional_dependency(name: str) -> Any:
-    try:
-        return importlib.import_module(name)
-    except (ImportError, OSError) as exc:
-        raise RuntimeError(f"The {name!r} package is required for this enrichment node ({exc}).") from exc
-
-
-def _required_name(value: str, description: str) -> str:
-    name = value.strip()
-    if not name:
-        raise ValueError(f"{description} cannot be empty.")
-    return name
-
-
-def _read_gene_sets(
-    relative_path: str,
-    source_column: str,
-    target_column: str,
-    science: dependencies.ScientificDependencies,
-) -> Any:
-    path = resolve_input_path(relative_path, extensions=GENE_SET_EXTENSIONS)
-    if os.path.splitext(path)[1].lower() == ".gmt":
-        records: list[dict[str, str]] = []
-        with open(path, encoding="utf-8") as stream:
-            for line in stream:
-                fields = line.rstrip("\n\r").split("\t")
-                if len(fields) < 3:
-                    continue
-                records.extend({source_column: fields[0], target_column: gene} for gene in fields[2:] if gene)
-        network = science.pd.DataFrame.from_records(records, columns=[source_column, target_column])
-    else:
-        separator = "\t" if path.lower().endswith(".tsv") else ","
-        network = science.pd.read_csv(path, sep=separator)
-
-    missing = [column for column in (source_column, target_column) if column not in network]
-    if missing:
-        raise ValueError(f"Gene-set file is missing columns: {missing}")
-    network = network[[source_column, target_column]].dropna().drop_duplicates().copy()
-    network[source_column] = network[source_column].astype(str)
-    network[target_column] = network[target_column].astype(str)
-    if network.empty:
-        raise ValueError("Gene-set file contains no source-target pairs.")
-    return network
-
-
-def _expression_adata(adata: AnnData, source: ExpressionSource, *, dense: bool = False) -> AnnData:
-    science = dependencies.require_scientific_dependencies()
-    if source.kind == "raw":
-        work = adata.raw.to_adata()
-    else:
-        work = adata.copy()
-        if source.kind == "layer":
-            work.X = adata.layers[source.layer_name].copy()
-
-    if science.sparse.issparse(work.X):
-        work.X = work.X.toarray() if dense else work.X.tocsr()
-    return work
-
-
-def _copy_decoupler_scores(output: AnnData, work: AnnData, generated_key: str, output_key: str) -> None:
-    if generated_key not in work.obsm:
-        raise RuntimeError(f"decoupler did not create obsm[{generated_key!r}].")
-    output.obsm[_required_name(output_key, "Score output key")] = work.obsm[generated_key].copy()
-
-
-def _rank_for_enrichment(adata: AnnData, groupby: str, source: ExpressionSource) -> AnnData:
-    science = dependencies.require_scientific_dependencies()
-    groupby = _required_name(groupby, "Enrichment groupby column")
-    if groupby not in adata.obs:
-        raise ValueError(f"Enrichment groupby column not found in obs: {groupby!r}")
-
-    work = adata.copy()
-    science.sc.tl.rank_genes_groups(
-        work,
-        groupby=groupby,
-        method="wilcoxon",
-        use_raw=source.use_raw,
-        layer=source.scanpy_layer,
-    )
-    return work
-
-
-def _pertpy_table(values: Any, science: dependencies.ScientificDependencies) -> Any:
-    if not isinstance(values, dict) or not values:
-        raise RuntimeError("Pertpy enrichment did not return grouped result tables.")
-
-    tables = []
-    for group, frame in values.items():
-        if not isinstance(frame, science.pd.DataFrame):
-            raise RuntimeError(f"Pertpy returned an unsupported result for group {group!r}.")
-        table = frame.reset_index()
-        table = table.rename(columns={table.columns[0]: "term"})
-        table.insert(0, "group", str(group))
-        tables.append(table)
-    return science.pd.concat(tables, ignore_index=True)
 
 
 class OpenBioSingleCellAUCellScores(io.ComfyNode):
@@ -139,15 +61,24 @@ class OpenBioSingleCellAUCellScores(io.ComfyNode):
             category=CATEGORY,
             inputs=[
                 AnnDataType.Input("adata"),
-                io.String.Input("gene_sets_file", default="openbio-singlecell/gene_sets.csv"),
+                io.String.Input("gene_sets_file", default=""),
+                io.String.Input("resource_metadata_json", default="{}"),
                 cls.EXPRESSION_SOURCE.input(),
                 io.String.Input("source_column", default="geneset", advanced=True),
                 io.String.Input("target_column", default="genesymbol", advanced=True),
-                io.Int.Input("min_n", default=5, min=1, max=2**31 - 1, advanced=True),
-                io.String.Input("output_key", default="aucell_estimate", advanced=True),
-                io.Int.Input("random_seed", default=123, min=0, max=2**31 - 1, advanced=True),
+                io.Int.Input("min_targets", default=5, min=1, max=2**31 - 1, advanced=True),
+                io.Int.Input("n_top_features", default=0, min=0, max=2**31 - 1, advanced=True),
+                io.Int.Input("batch_size", default=250_000, min=1, max=2**31 - 1, advanced=True),
+                io.Int.Input("max_output_rows", default=2_000_000, min=1, max=2**31 - 1, advanced=True),
+                io.Float.Input("max_working_memory_gib", default=4.0, min=0.001, max=1024.0, advanced=True),
+                io.String.Input("output_key", default="aucell_scores", advanced=True),
+                io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[AnnDataType.Output(display_name="adata")],
+            outputs=[
+                AnnDataType.Output(display_name="adata"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
@@ -160,50 +91,82 @@ class OpenBioSingleCellAUCellScores(io.ComfyNode):
 
     @classmethod
     def fingerprint_inputs(cls, gene_sets_file: str, **kwargs: Any) -> Any:
-        return input_file_fingerprint(gene_sets_file, GENE_SET_EXTENSIONS)
+        path = resolve_input_path(gene_sets_file, extensions=GENE_SET_EXTENSIONS)
+        identity = input_file_fingerprint(gene_sets_file, GENE_SET_EXTENSIONS)
+        return gene_set_resource_cache_fingerprint(path, identity)
 
     @classmethod
     def execute(
         cls,
         adata: AnnData,
-        gene_sets_file: str = "openbio-singlecell/gene_sets.csv",
+        gene_sets_file: str = "",
+        resource_metadata_json: str = "{}",
         source: DynamicExpressionSource | None = None,
         source_column: str = "geneset",
         target_column: str = "genesymbol",
-        min_n: int = 5,
-        output_key: str = "aucell_estimate",
-        random_seed: int = 123,
+        min_targets: int = 5,
+        n_top_features: int = 0,
+        batch_size: int = 250_000,
+        max_output_rows: int = 2_000_000,
+        max_working_memory_gib: float = 4.0,
+        output_key: str = "aucell_scores",
+        overwrite_existing: bool = False,
     ) -> io.NodeOutput:
-        science = dependencies.require_scientific_dependencies()
-        network = _read_gene_sets(gene_sets_file, source_column, target_column, science)
-        decoupler = _require_optional_dependency("decoupler")
         started_at = time.perf_counter()
-        cells, genes = int(adata.n_obs), int(adata.n_vars)
-        output = adata.copy()
-        expression = cls.EXPRESSION_SOURCE.resolve(output, source)
-        work = _expression_adata(output, expression)
-        decoupler.run_aucell(
-            mat=work,
-            net=network,
-            source=source_column,
-            target=target_column,
-            use_raw=False,
-            min_n=min_n,
-            seed=random_seed,
-            verbose=False,
+        resolved_path = resolve_input_path(gene_sets_file, extensions=GENE_SET_EXTENSIONS)
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
+        output, summary = run_aucell_scores(
+            adata,
+            gene_sets_path=resolved_path,
+            requested_resource_path=gene_sets_file,
+            resource_metadata_json=resource_metadata_json,
+            source_kind=expression.kind,
+            layer_name=expression.layer_name,
+            source_column=source_column,
+            target_column=target_column,
+            min_targets=min_targets,
+            n_top_features=n_top_features,
+            batch_size=batch_size,
+            max_output_rows=max_output_rows,
+            max_working_memory_gib=max_working_memory_gib,
+            output_key=output_key,
+            overwrite_existing=overwrite_existing,
+            openbio_version=PLUGIN_VERSION,
         )
-        _copy_decoupler_scores(output, work, "aucell_estimate", output_key)
-        parameters = {
-            "gene_sets_file": gene_sets_file,
-            **expression.parameters(),
-            "source_column": source_column,
-            "target_column": target_column,
-            "min_n": min_n,
-            "output_key": output_key,
-            "random_seed": random_seed,
-        }
-        finish_adata(output, "aucell_scores", parameters, cells, genes, started_at, random_seed=random_seed)
-        return io.NodeOutput(output)
+        report = make_summary_result(
+            summary=summary,
+            title="AUCell observation scores",
+            operation="aucell_scores",
+            parameters=summary["parameters"],
+            description=summary["results"],
+            warnings=summary["warnings"],
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+            started_at=started_at,
+        )
+        code = gene_set_scoring_code(
+            function_name="score_aucell",
+            parameters={
+                "method": "aucell",
+                "gene_sets_path": resolved_path,
+                "requested_resource_path": gene_sets_file,
+                "resource_metadata_json": resource_metadata_json,
+                "source_kind": expression.kind,
+                "layer_name": expression.layer_name,
+                "source_column": source_column,
+                "target_column": target_column,
+                "min_targets": min_targets,
+                "output_key": output_key,
+                "overwrite_existing": overwrite_existing,
+                "expected_resource_sha256": summary["key_results"]["resource"]["sha256"],
+                "n_top_features": n_top_features,
+                "batch_size": batch_size,
+                "max_output_rows": max_output_rows,
+                "max_working_memory_gib": max_working_memory_gib,
+                "openbio_version": PLUGIN_VERSION,
+            },
+        )
+        return io.NodeOutput(output, report, code)
 
 
 class OpenBioSingleCellGSVAScores(io.ComfyNode):
@@ -221,17 +184,31 @@ class OpenBioSingleCellGSVAScores(io.ComfyNode):
             category=CATEGORY,
             inputs=[
                 AnnDataType.Input("adata"),
-                io.String.Input("gene_sets_file", default="openbio-singlecell/gene_sets.csv"),
+                io.String.Input("gene_sets_file", default=""),
+                io.String.Input("resource_metadata_json", default="{}"),
                 cls.EXPRESSION_SOURCE.input(),
                 io.String.Input("source_column", default="geneset", advanced=True),
                 io.String.Input("target_column", default="genesymbol", advanced=True),
-                io.Int.Input("min_n", default=10, min=1, max=2**31 - 1, advanced=True),
-                io.Boolean.Input("mx_diff", default=True, advanced=True),
-                io.Boolean.Input("abs_rnk", default=True, advanced=True),
-                io.String.Input("output_key", default="gsva_estimate", advanced=True),
-                io.Int.Input("random_seed", default=123, min=0, max=2**31 - 1, advanced=True),
+                io.Int.Input("min_targets", default=10, min=1, max=2**31 - 1, advanced=True),
+                io.Combo.Input(
+                    "kernel",
+                    options=["gaussian_normalized", "poisson_counts", "empirical"],
+                    default="gaussian_normalized",
+                ),
+                io.Boolean.Input("maxdiff", default=True, advanced=True),
+                io.Boolean.Input("absrnk", default=False, advanced=True),
+                io.Float.Input("tau", default=1.0, min=0.001, max=1000.0, advanced=True),
+                io.Float.Input("max_working_memory_gib", default=4.0, min=0.001, max=1024.0, advanced=True),
+                io.Int.Input("batch_size", default=250_000, min=1, max=2**31 - 1, advanced=True),
+                io.Int.Input("max_output_rows", default=2_000_000, min=1, max=2**31 - 1, advanced=True),
+                io.String.Input("output_key", default="gsva_scores", advanced=True),
+                io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[AnnDataType.Output(display_name="adata")],
+            outputs=[
+                AnnDataType.Output(display_name="adata"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
@@ -244,56 +221,91 @@ class OpenBioSingleCellGSVAScores(io.ComfyNode):
 
     @classmethod
     def fingerprint_inputs(cls, gene_sets_file: str, **kwargs: Any) -> Any:
-        return input_file_fingerprint(gene_sets_file, GENE_SET_EXTENSIONS)
+        path = resolve_input_path(gene_sets_file, extensions=GENE_SET_EXTENSIONS)
+        identity = input_file_fingerprint(gene_sets_file, GENE_SET_EXTENSIONS)
+        return gene_set_resource_cache_fingerprint(path, identity)
 
     @classmethod
     def execute(
         cls,
         adata: AnnData,
-        gene_sets_file: str = "openbio-singlecell/gene_sets.csv",
+        gene_sets_file: str = "",
+        resource_metadata_json: str = "{}",
         source: DynamicExpressionSource | None = None,
         source_column: str = "geneset",
         target_column: str = "genesymbol",
-        min_n: int = 10,
-        mx_diff: bool = True,
-        abs_rnk: bool = True,
-        output_key: str = "gsva_estimate",
-        random_seed: int = 123,
+        min_targets: int = 10,
+        kernel: str = "gaussian_normalized",
+        maxdiff: bool = True,
+        absrnk: bool = False,
+        tau: float = 1.0,
+        max_working_memory_gib: float = 4.0,
+        batch_size: int = 250_000,
+        max_output_rows: int = 2_000_000,
+        output_key: str = "gsva_scores",
+        overwrite_existing: bool = False,
     ) -> io.NodeOutput:
-        science = dependencies.require_scientific_dependencies()
-        network = _read_gene_sets(gene_sets_file, source_column, target_column, science)
-        decoupler = _require_optional_dependency("decoupler")
         started_at = time.perf_counter()
-        cells, genes = int(adata.n_obs), int(adata.n_vars)
-        output = adata.copy()
-        expression = cls.EXPRESSION_SOURCE.resolve(output, source)
-        work = _expression_adata(output, expression, dense=True)
-        decoupler.run_gsva(
-            mat=work,
-            net=network,
-            source=source_column,
-            target=target_column,
-            use_raw=False,
-            min_n=min_n,
-            mx_diff=mx_diff,
-            abs_rnk=abs_rnk,
-            seed=random_seed,
-            verbose=False,
+        resolved_path = resolve_input_path(gene_sets_file, extensions=GENE_SET_EXTENSIONS)
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
+        output, summary = run_gsva_scores(
+            adata,
+            gene_sets_path=resolved_path,
+            requested_resource_path=gene_sets_file,
+            resource_metadata_json=resource_metadata_json,
+            source_kind=expression.kind,
+            layer_name=expression.layer_name,
+            source_column=source_column,
+            target_column=target_column,
+            min_targets=min_targets,
+            kernel=kernel,
+            maxdiff=maxdiff,
+            absrnk=absrnk,
+            tau=tau,
+            batch_size=batch_size,
+            max_output_rows=max_output_rows,
+            max_working_memory_gib=max_working_memory_gib,
+            output_key=output_key,
+            overwrite_existing=overwrite_existing,
+            openbio_version=PLUGIN_VERSION,
         )
-        _copy_decoupler_scores(output, work, "gsva_estimate", output_key)
-        parameters = {
-            "gene_sets_file": gene_sets_file,
-            **expression.parameters(),
-            "source_column": source_column,
-            "target_column": target_column,
-            "min_n": min_n,
-            "mx_diff": mx_diff,
-            "abs_rnk": abs_rnk,
-            "output_key": output_key,
-            "random_seed": random_seed,
-        }
-        finish_adata(output, "gsva_scores", parameters, cells, genes, started_at, random_seed=random_seed)
-        return io.NodeOutput(output)
+        report = make_summary_result(
+            summary=summary,
+            title="GSVA observation scores",
+            operation="gsva_scores",
+            parameters=summary["parameters"],
+            description=summary["results"],
+            warnings=summary["warnings"],
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+            started_at=started_at,
+        )
+        code = gene_set_scoring_code(
+            function_name="score_gsva",
+            parameters={
+                "method": "gsva",
+                "gene_sets_path": resolved_path,
+                "requested_resource_path": gene_sets_file,
+                "resource_metadata_json": resource_metadata_json,
+                "source_kind": expression.kind,
+                "layer_name": expression.layer_name,
+                "source_column": source_column,
+                "target_column": target_column,
+                "min_targets": min_targets,
+                "output_key": output_key,
+                "overwrite_existing": overwrite_existing,
+                "expected_resource_sha256": summary["key_results"]["resource"]["sha256"],
+                "kernel": kernel,
+                "maxdiff": maxdiff,
+                "absrnk": absrnk,
+                "tau": tau,
+                "batch_size": batch_size,
+                "max_output_rows": max_output_rows,
+                "max_working_memory_gib": max_working_memory_gib,
+                "openbio_version": PLUGIN_VERSION,
+            },
+        )
+        return io.NodeOutput(output, report, code)
 
 
 class OpenBioSingleCellGenePanelScores(io.ComfyNode):
@@ -307,20 +319,27 @@ class OpenBioSingleCellGenePanelScores(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="OpenBioSingleCellGenePanelScores",
-            display_name="Gene Panel Scores",
+            display_name="Gene Panel Score",
             category=CATEGORY,
             inputs=[
                 AnnDataType.Input("adata"),
-                io.String.Input("gene_sets_file", default="openbio-singlecell/gene_sets.csv"),
+                io.String.Input("gene_sets_file", default=""),
+                io.String.Input("resource_metadata_json", default="{}"),
+                io.String.Input("panel", default=""),
                 cls.EXPRESSION_SOURCE.input(),
                 io.String.Input("source_column", default="geneset", advanced=True),
                 io.String.Input("target_column", default="genesymbol", advanced=True),
-                io.String.Input("output_prefix", default="score_", advanced=True),
-                io.Int.Input("ctrl_size", default=50, min=1, max=2**31 - 1, advanced=True),
+                io.String.Input("output_key", default="panel_score", advanced=True),
+                io.Int.Input("ctrl_size", default=0, min=0, max=2**31 - 1, advanced=True),
                 io.Int.Input("n_bins", default=25, min=2, max=2**31 - 1, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
+                io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[AnnDataType.Output(display_name="adata")],
+            outputs=[
+                AnnDataType.Output(display_name="adata"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
@@ -333,73 +352,81 @@ class OpenBioSingleCellGenePanelScores(io.ComfyNode):
 
     @classmethod
     def fingerprint_inputs(cls, gene_sets_file: str, **kwargs: Any) -> Any:
-        return input_file_fingerprint(gene_sets_file, GENE_SET_EXTENSIONS)
+        path = resolve_input_path(gene_sets_file, extensions=GENE_SET_EXTENSIONS)
+        identity = input_file_fingerprint(gene_sets_file, GENE_SET_EXTENSIONS)
+        return gene_set_resource_cache_fingerprint(path, identity)
 
     @classmethod
     def execute(
         cls,
         adata: AnnData,
-        gene_sets_file: str = "openbio-singlecell/gene_sets.csv",
+        gene_sets_file: str = "",
+        resource_metadata_json: str = "{}",
+        panel: str = "",
         source: DynamicExpressionSource | None = None,
         source_column: str = "geneset",
         target_column: str = "genesymbol",
-        output_prefix: str = "score_",
-        ctrl_size: int = 50,
+        output_key: str = "panel_score",
+        ctrl_size: int = 0,
         n_bins: int = 25,
         random_seed: int = 0,
+        overwrite_existing: bool = False,
     ) -> io.NodeOutput:
-        science = dependencies.require_scientific_dependencies()
-        network = _read_gene_sets(gene_sets_file, source_column, target_column, science)
         started_at = time.perf_counter()
-        cells, genes = int(adata.n_obs), int(adata.n_vars)
-        output = adata.copy()
-        expression = cls.EXPRESSION_SOURCE.resolve(output, source)
-        work = _expression_adata(output, expression)
-        warnings: list[str] = []
-        score_columns: list[str] = []
-
-        for panel, rows in network.groupby(source_column, sort=False):
-            panel_genes = [gene for gene in rows[target_column].astype(str) if gene in work.var_names]
-            if not panel_genes:
-                warnings.append(f"Gene panel {panel!r} has no genes in the selected expression source.")
-                continue
-            score_name = f"{output_prefix}{panel}"
-            science.sc.tl.score_genes(
-                work,
-                gene_list=panel_genes,
-                score_name=score_name,
-                ctrl_size=ctrl_size,
-                n_bins=n_bins,
-                random_state=random_seed,
-                use_raw=False,
-            )
-            output.obs[score_name] = work.obs[score_name].reindex(output.obs_names)
-            score_columns.append(score_name)
-
-        if not score_columns:
-            raise ValueError("No gene panel could be scored against the selected expression source.")
-        parameters = {
-            "gene_sets_file": gene_sets_file,
-            **expression.parameters(),
-            "source_column": source_column,
-            "target_column": target_column,
-            "output_prefix": output_prefix,
-            "ctrl_size": ctrl_size,
-            "n_bins": n_bins,
-            "score_columns": score_columns,
-            "random_seed": random_seed,
-        }
-        finish_adata(
-            output,
-            "gene_panel_scores",
-            parameters,
-            cells,
-            genes,
-            started_at,
+        resolved_path = resolve_input_path(gene_sets_file, extensions=GENE_SET_EXTENSIONS)
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
+        output, summary = run_gene_panel_score(
+            adata,
+            gene_sets_path=resolved_path,
+            requested_resource_path=gene_sets_file,
+            resource_metadata_json=resource_metadata_json,
+            panel=panel,
+            source_kind=expression.kind,
+            layer_name=expression.layer_name,
+            source_column=source_column,
+            target_column=target_column,
+            output_key=output_key,
+            ctrl_size=ctrl_size,
+            n_bins=n_bins,
             random_seed=random_seed,
-            warnings=warnings,
+            overwrite_existing=overwrite_existing,
+            openbio_version=PLUGIN_VERSION,
         )
-        return io.NodeOutput(output)
+        report = make_summary_result(
+            summary=summary,
+            title=f"Gene panel score: {panel}",
+            operation="gene_panel_score",
+            parameters=summary["parameters"],
+            description=summary["results"],
+            warnings=summary["warnings"],
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+            started_at=started_at,
+            random_seed=random_seed,
+        )
+        code = gene_set_scoring_code(
+            function_name="score_gene_panel",
+            parameters={
+                "method": "panel",
+                "gene_sets_path": resolved_path,
+                "requested_resource_path": gene_sets_file,
+                "resource_metadata_json": resource_metadata_json,
+                "source_kind": expression.kind,
+                "layer_name": expression.layer_name,
+                "source_column": source_column,
+                "target_column": target_column,
+                "min_targets": 1,
+                "output_key": output_key,
+                "overwrite_existing": overwrite_existing,
+                "expected_resource_sha256": summary["key_results"]["resource"]["sha256"],
+                "panel": panel,
+                "ctrl_size": ctrl_size,
+                "n_bins": n_bins,
+                "random_seed": random_seed,
+                "openbio_version": PLUGIN_VERSION,
+            },
+        )
+        return io.NodeOutput(output, report, code)
 
 
 class OpenBioSingleCellPathwayScoreTTest(io.ComfyNode):
@@ -411,95 +438,103 @@ class OpenBioSingleCellPathwayScoreTTest(io.ComfyNode):
             category=CATEGORY,
             inputs=[
                 AnnDataType.Input("adata"),
-                io.String.Input("cell_type_column", default="cell_type"),
-                io.String.Input("group_column", default="group"),
-                io.String.Input("group_a", default=""),
-                io.String.Input("group_b", default=""),
-                io.String.Input("score_key", default="aucell_estimate", advanced=True),
+                io.String.Input("sample_key", default="sample"),
+                io.String.Input("condition_key", default="condition"),
+                io.String.Input("annotation_key", default="cell_type"),
+                io.String.Input("population", default=""),
+                io.String.Input("condition_a", default=""),
+                io.String.Input("condition_b", default=""),
+                io.String.Input("score_key", default="aucell_scores"),
+                io.Int.Input("min_cells_per_sample_population", default=10, min=1, max=2**31 - 1),
+                io.Int.Input("min_samples_per_condition", default=3, min=2, max=2**31 - 1),
+                io.String.Input("technical_batch_key", default="", advanced=True),
+                io.Float.Input("confidence_level", default=0.95, min=0.5, max=0.999, advanced=True),
+                io.Combo.Input(
+                    "annotation_status",
+                    options=["unknown", "provisional", "curated"],
+                    default="unknown",
+                    advanced=True,
+                ),
             ],
-            outputs=[TableResultType.Output(display_name="table")],
+            outputs=[
+                TableResultType.Output(display_name="table"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
     def execute(
         cls,
         adata: AnnData,
-        cell_type_column: str = "cell_type",
-        group_column: str = "group",
-        group_a: str = "",
-        group_b: str = "",
-        score_key: str = "aucell_estimate",
+        sample_key: str = "sample",
+        condition_key: str = "condition",
+        annotation_key: str = "cell_type",
+        population: str = "",
+        condition_a: str = "",
+        condition_b: str = "",
+        score_key: str = "aucell_scores",
+        min_cells_per_sample_population: int = 10,
+        min_samples_per_condition: int = 3,
+        technical_batch_key: str = "",
+        confidence_level: float = 0.95,
+        annotation_status: str = "unknown",
     ) -> io.NodeOutput:
-        science = dependencies.require_scientific_dependencies()
-        from scipy.stats import ttest_ind
-        from statsmodels.stats.multitest import multipletests
-
-        cell_type_column = _required_name(cell_type_column, "Cell-type column")
-        group_column = _required_name(group_column, "Group column")
-        group_a = _required_name(group_a, "First group")
-        group_b = _required_name(group_b, "Second group")
-        if group_a == group_b:
-            raise ValueError("Pathway score groups must be different.")
-        score_key = _required_name(score_key, "Pathway score key")
-        missing_obs = [column for column in (cell_type_column, group_column) if column not in adata.obs]
-        if missing_obs:
-            raise ValueError(f"Pathway score test observation columns not found: {missing_obs}")
-        if score_key not in adata.obsm:
-            raise ValueError(f"Pathway scores not found in obsm: {score_key!r}")
-        scores = adata.obsm[score_key]
-        if not isinstance(scores, science.pd.DataFrame):
-            raise ValueError(f"obsm[{score_key!r}] must be a named pathway score DataFrame.")
-
         started_at = time.perf_counter()
-        frame = adata.obs[[cell_type_column, group_column]].join(scores)
-        rows = []
-        for cell_type in frame[cell_type_column].dropna().unique():
-            cell_frame = frame[frame[cell_type_column] == cell_type]
-            for pathway in scores.columns:
-                values_a = science.pd.to_numeric(
-                    cell_frame.loc[cell_frame[group_column].astype(str) == group_a, pathway], errors="coerce"
-                )
-                values_b = science.pd.to_numeric(
-                    cell_frame.loc[cell_frame[group_column].astype(str) == group_b, pathway], errors="coerce"
-                )
-                statistic, p_value = ttest_ind(values_a, values_b, nan_policy="omit")
-                rows.append(
-                    {
-                        "cell_type": str(cell_type),
-                        "pathway": str(pathway),
-                        "group_a": group_a,
-                        "group_b": group_b,
-                        "t_stat": statistic,
-                        "p": p_value,
-                    }
-                )
-        table = science.pd.DataFrame.from_records(rows)
-        if table.empty:
-            raise ValueError("Pathway score test produced no cell-type/pathway comparisons.")
-        finite = science.np.isfinite(table["p"].to_numpy(dtype=float))
-        table["p_adj"] = science.np.nan
-        if finite.any():
-            table.loc[finite, "p_adj"] = multipletests(table.loc[finite, "p"], method="fdr_bh")[1]
-
-        parameters = {
-            "cell_type_column": cell_type_column,
-            "group_column": group_column,
-            "group_a": group_a,
-            "group_b": group_b,
-            "score_key": score_key,
-        }
+        table, summary = run_pathway_score_contrast(
+            adata,
+            sample_key=sample_key,
+            condition_key=condition_key,
+            annotation_key=annotation_key,
+            population=population,
+            condition_a=condition_a,
+            condition_b=condition_b,
+            score_key=score_key,
+            min_cells_per_sample_population=min_cells_per_sample_population,
+            min_samples_per_condition=min_samples_per_condition,
+            technical_batch_key=technical_batch_key,
+            confidence_level=confidence_level,
+            annotation_status=annotation_status,
+            openbio_version=PLUGIN_VERSION,
+        )
         result = make_table_result(
-            title=f"{group_a} vs {group_b} pathway scores",
-            operation="pathway_score_ttest",
-            parameters=parameters,
-            description="Per-cell-type independent t-tests with Benjamini-Hochberg correction.",
-            warnings=[] if finite.all() else ["Some comparisons produced non-finite p-values."],
+            title=f"{condition_a} vs {condition_b} pathway scores in {population}",
+            operation="pathway_score_sample_welch",
+            parameters=summary["parameters"],
+            description=summary["results"],
+            warnings=summary["warnings"],
             input_cells=int(adata.n_obs),
             input_genes=int(adata.n_vars),
             started_at=started_at,
             table=table,
         )
-        return io.NodeOutput(result)
+        report = make_summary_result(
+            summary=summary,
+            title=f"Pathway score contrast: {condition_a} vs {condition_b}",
+            operation="pathway_score_sample_welch",
+            parameters=summary["parameters"],
+            description=summary["results"],
+            warnings=summary["warnings"],
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+            started_at=started_at,
+        )
+        code = pathway_score_contrast_code(
+            sample_key=sample_key,
+            condition_key=condition_key,
+            annotation_key=annotation_key,
+            population=population,
+            condition_a=condition_a,
+            condition_b=condition_b,
+            score_key=score_key,
+            min_cells_per_sample_population=min_cells_per_sample_population,
+            min_samples_per_condition=min_samples_per_condition,
+            technical_batch_key=technical_batch_key,
+            confidence_level=confidence_level,
+            annotation_status=annotation_status,
+            openbio_version=PLUGIN_VERSION,
+        )
+        return io.NodeOutput(result, report, code)
 
 
 class OpenBioSingleCellRankedGSEA(io.ComfyNode):
@@ -510,17 +545,32 @@ class OpenBioSingleCellRankedGSEA(io.ComfyNode):
             display_name="Ranked GSEA",
             category=CATEGORY,
             inputs=[
-                TableResultType.Input("marker_table"),
+                TableResultType.Input("table"),
+                TableResultType.Input("universe"),
                 io.String.Input("gene_sets_file", default="openbio-singlecell/gene_sets.csv"),
-                io.String.Input("group", default=""),
-                io.String.Input("source_column", default="geneset", advanced=True),
-                io.String.Input("target_column", default="genesymbol", advanced=True),
+                io.String.Input("resource_metadata_json", default="{}"),
+                io.String.Input("comparison", default=""),
+                io.String.Input("gene_column", default="gene", advanced=True),
                 io.String.Input("score_column", default="score", advanced=True),
-                io.Int.Input("min_genes", default=16, min=1, max=2**31 - 1, advanced=True),
-                io.Int.Input("max_genes", default=499, min=1, max=2**31 - 1, advanced=True),
+                io.String.Input("source_column", default="source", advanced=True),
+                io.String.Input("target_column", default="target", advanced=True),
+                io.Int.Input("min_targets", default=15, min=1, max=2**31 - 1, advanced=True),
+                io.Int.Input("max_targets", default=500, min=1, max=2**31 - 1, advanced=True),
+                io.Int.Input("n_permutations", default=1000, min=2, max=2**31 - 1, advanced=True),
                 io.Int.Input("random_seed", default=123, min=0, max=2**31 - 1, advanced=True),
+                io.Int.Input(
+                    "max_output_rows",
+                    default=100_000,
+                    min=1,
+                    max=2**31 - 1,
+                    advanced=True,
+                ),
             ],
-            outputs=[TableResultType.Output(display_name="table")],
+            outputs=[
+                TableResultType.Output(display_name="table"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
@@ -533,87 +583,114 @@ class OpenBioSingleCellRankedGSEA(io.ComfyNode):
 
     @classmethod
     def fingerprint_inputs(cls, gene_sets_file: str, **kwargs: Any) -> Any:
-        return input_file_fingerprint(gene_sets_file, GENE_SET_EXTENSIONS)
+        path = resolve_input_path(gene_sets_file, extensions=GENE_SET_EXTENSIONS)
+        identity = input_file_fingerprint(gene_sets_file, GENE_SET_EXTENSIONS)
+        digest = hashlib.sha256()
+        with open(path, "rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return ("openbio-ranked-gsea-resource-v1", *identity, digest.hexdigest())
 
     @classmethod
     def execute(
         cls,
-        marker_table: TableResult,
+        table: TableResult,
+        universe: TableResult,
         gene_sets_file: str = "openbio-singlecell/gene_sets.csv",
-        group: str = "",
-        source_column: str = "geneset",
-        target_column: str = "genesymbol",
+        resource_metadata_json: str = "{}",
+        comparison: str = "",
+        gene_column: str = "gene",
         score_column: str = "score",
-        min_genes: int = 16,
-        max_genes: int = 499,
+        source_column: str = "source",
+        target_column: str = "target",
+        min_targets: int = 15,
+        max_targets: int = 500,
+        n_permutations: int = 1000,
         random_seed: int = 123,
+        max_output_rows: int = 100_000,
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
-        group = _required_name(group, "Marker group")
-        if min_genes > max_genes:
-            raise ValueError("GSEA min_genes cannot exceed max_genes.")
-        table = marker_table.table
-        if not isinstance(table, science.pd.DataFrame):
-            raise ValueError("Ranked GSEA requires a Marker Genes table result.")
-        required_columns = ["group", "gene", score_column]
-        missing = [column for column in required_columns if column not in table]
-        if missing:
-            raise ValueError(f"Marker result is missing columns required by GSEA: {missing}")
-        ranked = table.loc[table["group"].astype(str) == group, ["gene", score_column]].dropna().copy()
-        if ranked.empty:
-            raise ValueError(f"Marker result contains no rows for group {group!r}.")
-        ranked["gene"] = ranked["gene"].astype(str)
-        ranked = ranked.drop_duplicates("gene").set_index("gene")[[score_column]].T
-        ranked.index = [group]
-
-        network = _read_gene_sets(gene_sets_file, source_column, target_column, science)
-        sizes = network.groupby(source_column, observed=True).size()
-        selected_sets = sizes.index[(sizes >= min_genes) & (sizes <= max_genes)]
-        network = network[network[source_column].isin(selected_sets)]
-        if network.empty:
-            raise ValueError("No gene sets remain after applying the requested size limits.")
-
-        decoupler = _require_optional_dependency("decoupler")
         started_at = time.perf_counter()
-        scores, normalized, p_values = decoupler.run_gsea(
-            ranked,
-            network,
-            source=source_column,
-            target=target_column,
-            seed=random_seed,
+        provenance = validate_enrichment_artifact_pair(
+            table,
+            universe,
+            purpose="ranked",
+            selector=comparison,
+            gene_column=gene_column,
+            score_column=score_column,
+            np=science.np,
+            pd=science.pd,
         )
-        result_table = science.pd.concat(
-            [
-                scores.iloc[0].rename("score"),
-                normalized.iloc[0].rename("normalized_score"),
-                p_values.iloc[0].rename("p"),
-            ],
-            axis=1,
-        )
-        result_table = result_table.rename_axis("gene_set").reset_index().sort_values("score", ascending=False)
-        parameters = {
-            "group": group,
-            "gene_sets_file": gene_sets_file,
+        resolved_resource = resolve_input_path(gene_sets_file, extensions=GENE_SET_EXTENSIONS)
+        runtime_parameters = {
+            "artifact_family": provenance["artifact_family"],
+            "comparison": provenance["comparison"],
+            "comparison_column": provenance["comparison_column"],
+            "gene_column": provenance["gene_column"],
+            "score_column": provenance["score_column"],
+            "evidence_scope": provenance["evidence_scope"],
+            "inference_unit": provenance["inference_unit"],
+            "direction": provenance["direction"],
+            "replicate_aware": provenance["replicate_aware"],
+            "technical_batch_handling": provenance["technical_batch_handling"],
+            "upstream_parameters": provenance["upstream_parameters"],
+            "provenance_warnings": provenance["provenance_warnings"],
+            "provenance_declarations": provenance["provenance_declarations"],
+            "expected_analysis_fingerprint": provenance["analysis_fingerprint"],
+            "expected_ranking_fingerprint": provenance["ranking_fingerprint"],
+            "expected_universe_fingerprint": provenance["universe_fingerprint"],
+            "expected_table_content_fingerprint": provenance["table_content_fingerprint"],
+            "expected_universe_content_fingerprint": provenance["universe_content_fingerprint"],
+            "resource_path": resolved_resource,
+            "requested_resource_path": gene_sets_file,
+            "resource_metadata_json": resource_metadata_json,
             "source_column": source_column,
             "target_column": target_column,
-            "score_column": score_column,
-            "min_genes": min_genes,
-            "max_genes": max_genes,
+            "min_targets": min_targets,
+            "max_targets": max_targets,
+            "n_permutations": n_permutations,
             "random_seed": random_seed,
+            "max_output_rows": max_output_rows,
+            "openbio_version": PLUGIN_VERSION,
         }
+        evidence, diagnostics = run_ranked_gsea_evidence(
+            table,
+            universe,
+            **runtime_parameters,
+            decoupler_module=None,
+        )
+        summary = build_ranked_gsea_summary(diagnostics)
+        parameters = dict(summary["parameters"])
+        warnings = list(summary["warnings"])
         result = make_table_result(
-            title=f"GSEA for {group}",
+            title=f"Ranked GSEA: {provenance['comparison']}",
             operation="ranked_gsea",
             parameters=parameters,
-            description="GSEA applied to a selected group from a Marker Genes result.",
-            warnings=[],
-            input_cells=marker_table.input_cells,
-            input_genes=marker_table.input_genes,
+            description=summary["results"],
+            warnings=warnings,
+            input_cells=table.input_cells,
+            input_genes=table.input_genes,
             started_at=started_at,
             random_seed=random_seed,
-            table=result_table,
+            table=evidence,
         )
-        return io.NodeOutput(result)
+        report = make_summary_result(
+            summary=summary,
+            title=f"Ranked GSEA summary: {provenance['comparison']}",
+            operation="ranked_gsea",
+            parameters=parameters,
+            description=summary["results"],
+            warnings=warnings,
+            input_cells=table.input_cells,
+            input_genes=table.input_genes,
+            started_at=started_at,
+            random_seed=random_seed,
+        )
+        code = ranked_gsea_code(
+            **runtime_parameters,
+            expected_resource_sha256=diagnostics["resource"]["sha256"],
+        )
+        return io.NodeOutput(result, report, code)
 
 
 class OpenBioSingleCellGeneSetOverrepresentation(io.ComfyNode):
@@ -624,20 +701,36 @@ class OpenBioSingleCellGeneSetOverrepresentation(io.ComfyNode):
             display_name="Gene Set Overrepresentation",
             category=CATEGORY,
             inputs=[
-                AnnDataType.Input("adata"),
                 TableResultType.Input("table"),
+                TableResultType.Input("universe"),
                 io.String.Input("gene_sets_file", default="openbio-singlecell/gene_sets.csv"),
-                io.String.Input("group", default=""),
-                io.String.Input("selection_column", default="p_adj"),
-                io.Combo.Input("selection_operator", options=["<=", ">=", "abs>="], default="<="),
-                io.Float.Input("threshold", default=0.05, step=0.01),
-                io.Combo.Input("universe_source", options=["X", "raw"], default="X"),
+                io.String.Input("resource_metadata_json", default="{}"),
+                io.String.Input("comparison", default=""),
                 io.String.Input("gene_column", default="gene", advanced=True),
-                io.String.Input("group_column", default="group", advanced=True),
-                io.String.Input("source_column", default="geneset", advanced=True),
-                io.String.Input("target_column", default="genesymbol", advanced=True),
+                io.String.Input("source_column", default="source", advanced=True),
+                io.String.Input("target_column", default="target", advanced=True),
+                io.Int.Input("min_targets", default=3, min=1, max=2**31 - 1, advanced=True),
+                io.Int.Input("min_overlap", default=2, min=1, max=2**31 - 1),
+                io.Float.Input(
+                    "max_p_adjusted",
+                    default=0.05,
+                    min=0.0,
+                    max=1.0,
+                    step=0.01,
+                ),
+                io.Int.Input(
+                    "max_output_rows",
+                    default=100_000,
+                    min=1,
+                    max=2**31 - 1,
+                    advanced=True,
+                ),
             ],
-            outputs=[TableResultType.Output(display_name="table")],
+            outputs=[
+                TableResultType.Output(display_name="table"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
@@ -650,122 +743,108 @@ class OpenBioSingleCellGeneSetOverrepresentation(io.ComfyNode):
 
     @classmethod
     def fingerprint_inputs(cls, gene_sets_file: str, **kwargs: Any) -> Any:
-        return input_file_fingerprint(gene_sets_file, GENE_SET_EXTENSIONS)
+        path = resolve_input_path(gene_sets_file, extensions=GENE_SET_EXTENSIONS)
+        identity = input_file_fingerprint(gene_sets_file, GENE_SET_EXTENSIONS)
+        digest = hashlib.sha256()
+        with open(path, "rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return ("openbio-generic-ora-resource-v1", *identity, digest.hexdigest())
 
     @classmethod
     def execute(
         cls,
-        adata: AnnData,
         table: TableResult,
+        universe: TableResult,
         gene_sets_file: str = "openbio-singlecell/gene_sets.csv",
-        group: str = "",
-        selection_column: str = "p_adj",
-        selection_operator: str = "<=",
-        threshold: float = 0.05,
-        universe_source: str = "X",
+        resource_metadata_json: str = "{}",
+        comparison: str = "",
         gene_column: str = "gene",
-        group_column: str = "group",
-        source_column: str = "geneset",
-        target_column: str = "genesymbol",
+        source_column: str = "source",
+        target_column: str = "target",
+        min_targets: int = 3,
+        min_overlap: int = 2,
+        max_p_adjusted: float = 0.05,
+        max_output_rows: int = 100_000,
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
-        if not isinstance(table.table, science.pd.DataFrame):
-            raise ValueError("Gene Set Overrepresentation requires a differential table result.")
-        gene_column = _required_name(gene_column, "Differential-result gene column")
-        if gene_column not in table.table:
-            raise ValueError(f"Differential-result gene column not found: {gene_column!r}")
-        differential = table.table.copy()
-        group = group.strip()
-        if group:
-            group_column = _required_name(group_column, "Differential-result group column")
-            if group_column not in differential:
-                raise ValueError(f"Differential-result group column not found: {group_column!r}")
-            differential = differential[differential[group_column].astype(str) == group]
-
-        selection_column = selection_column.strip()
-        if selection_column:
-            if selection_column not in differential:
-                raise ValueError(f"Differential-result selection column not found: {selection_column!r}")
-            values = science.pd.to_numeric(differential[selection_column], errors="coerce")
-            if selection_operator == "<=":
-                differential = differential[values <= threshold]
-            elif selection_operator == ">=":
-                differential = differential[values >= threshold]
-            else:
-                differential = differential[values.abs() >= threshold]
-        selected_genes = set(differential[gene_column].dropna().astype(str))
-        if not selected_genes:
-            raise ValueError("No genes passed the requested differential-result selection.")
-
-        if universe_source == "raw":
-            if adata.raw is None:
-                raise ValueError("Gene-set universe source 'raw' was selected, but adata.raw is unavailable.")
-            universe = set(adata.raw.var_names.astype(str))
-        else:
-            universe = set(adata.var_names.astype(str))
-        selected_genes.intersection_update(universe)
-        if not selected_genes:
-            raise ValueError("Selected differential genes do not overlap the AnnData gene universe.")
-
-        network = _read_gene_sets(gene_sets_file, source_column, target_column, science)
-        from scipy.stats import hypergeom
-        from statsmodels.stats.multitest import multipletests
-
         started_at = time.perf_counter()
-        rows = []
-        for gene_set, frame in network.groupby(source_column, sort=False):
-            gene_set_genes = set(frame[target_column].astype(str)).intersection(universe)
-            if not gene_set_genes:
-                continue
-            overlap = sorted(gene_set_genes.intersection(selected_genes))
-            p_value = hypergeom.sf(
-                len(overlap) - 1,
-                len(universe),
-                len(gene_set_genes),
-                len(selected_genes),
-            )
-            rows.append(
-                {
-                    "gene_set": str(gene_set),
-                    "intersection_size": len(overlap),
-                    "gene_set_size": len(gene_set_genes),
-                    "selected_gene_count": len(selected_genes),
-                    "universe_size": len(universe),
-                    "overlap_genes": ",".join(overlap),
-                    "p": p_value,
-                }
-            )
-        enrichment = science.pd.DataFrame.from_records(rows)
-        if enrichment.empty:
-            raise ValueError("No gene sets overlap the AnnData gene universe.")
-        enrichment["p_adj"] = multipletests(enrichment["p"], method="fdr_bh")[1]
-        enrichment = enrichment.sort_values(["p_adj", "p", "gene_set"]).reset_index(drop=True)
-        parameters = {
-            "gene_sets_file": gene_sets_file,
-            "group": group,
-            "selection_column": selection_column,
-            "selection_operator": selection_operator,
-            "threshold": threshold,
-            "universe_source": universe_source,
-            "gene_column": gene_column,
-            "group_column": group_column,
+        provenance = validate_enrichment_artifact_pair(
+            table,
+            universe,
+            purpose="selected",
+            selector=comparison,
+            gene_column=gene_column,
+            score_column=None,
+            np=science.np,
+            pd=science.pd,
+        )
+        resolved_resource = resolve_input_path(gene_sets_file, extensions=GENE_SET_EXTENSIONS)
+        runtime_parameters = {
+            "artifact_family": provenance["artifact_family"],
+            "comparison": provenance["comparison"],
+            "comparison_column": provenance["comparison_column"],
+            "gene_column": provenance["gene_column"],
+            "evidence_scope": provenance["evidence_scope"],
+            "inference_unit": provenance["inference_unit"],
+            "direction": provenance["direction"],
+            "replicate_aware": provenance["replicate_aware"],
+            "technical_batch_handling": provenance["technical_batch_handling"],
+            "upstream_parameters": provenance["upstream_parameters"],
+            "provenance_warnings": provenance["provenance_warnings"],
+            "provenance_declarations": provenance["provenance_declarations"],
+            "expected_analysis_fingerprint": provenance["analysis_fingerprint"],
+            "expected_ranking_fingerprint": provenance["ranking_fingerprint"],
+            "expected_universe_fingerprint": provenance["universe_fingerprint"],
+            "expected_table_content_fingerprint": provenance["table_content_fingerprint"],
+            "expected_universe_content_fingerprint": provenance["universe_content_fingerprint"],
+            "resource_path": resolved_resource,
+            "requested_resource_path": gene_sets_file,
+            "resource_metadata_json": resource_metadata_json,
             "source_column": source_column,
             "target_column": target_column,
+            "min_targets": min_targets,
+            "min_overlap": min_overlap,
+            "max_p_adjusted": max_p_adjusted,
+            "max_output_rows": max_output_rows,
+            "openbio_version": PLUGIN_VERSION,
         }
-        enriched = make_table_result(
-            title=f"Gene-set overrepresentation{f' for {group}' if group else ''}",
+        evidence, diagnostics = run_generic_ora_evidence(
+            table,
+            universe,
+            **runtime_parameters,
+            decoupler_module=None,
+        )
+        summary = build_generic_ora_summary(diagnostics)
+        parameters = dict(summary["parameters"])
+        warnings = list(summary["warnings"])
+        result = make_table_result(
+            title=f"Gene-set overrepresentation: {provenance['comparison']}",
             operation="gene_set_overrepresentation",
             parameters=parameters,
-            description="Hypergeometric enrichment using AnnData genes as the tested universe.",
-            warnings=[]
-            if bool((enrichment["intersection_size"] > 0).any())
-            else ["No gene set contains a selected gene."],
-            input_cells=int(adata.n_obs),
-            input_genes=int(adata.n_vars),
+            description=summary["results"],
+            warnings=warnings,
+            input_cells=table.input_cells,
+            input_genes=table.input_genes,
             started_at=started_at,
-            table=enrichment,
+            table=evidence,
         )
-        return io.NodeOutput(enriched)
+        report = make_summary_result(
+            summary=summary,
+            title=f"Gene-set overrepresentation summary: {provenance['comparison']}",
+            operation="gene_set_overrepresentation",
+            parameters=parameters,
+            description=summary["results"],
+            warnings=warnings,
+            input_cells=table.input_cells,
+            input_genes=table.input_genes,
+            started_at=started_at,
+        )
+        code = generic_ora_code(
+            **runtime_parameters,
+            expected_resource_sha256=diagnostics["resource"]["sha256"],
+        )
+        return io.NodeOutput(result, report, code)
 
 
 class OpenBioSingleCellDGIdbAnnotation(io.ComfyNode):
@@ -773,26 +852,109 @@ class OpenBioSingleCellDGIdbAnnotation(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="OpenBioSingleCellDGIdbAnnotation",
-            display_name="DGIdb Drug Annotation",
+            display_name="Load DGIdb Resource",
             category=CATEGORY,
-            inputs=[AnnDataType.Input("adata")],
-            outputs=[AnnDataType.Output(display_name="adata")],
+            description="Load and validate one reviewed, pinned local DGIdb snapshot without network access.",
+            inputs=[
+                io.String.Input("resource_file", default="openbio-singlecell/dgidb.tsv"),
+                io.String.Input("resource_metadata_json", default="{}"),
+                io.String.Input("drug_column", default="drug_claim_name", advanced=True),
+                io.String.Input("gene_column", default="gene_claim_name", advanced=True),
+                io.String.Input("source_column", default="interaction_claim_source", advanced=True),
+                io.String.Input("evidence_column", default="interaction_types", advanced=True),
+                io.Int.Input(
+                    "max_file_bytes",
+                    default=536_870_912,
+                    min=1,
+                    max=2**63 - 1,
+                    advanced=True,
+                ),
+                io.Int.Input("max_rows", default=2_000_000, min=1, max=2**31 - 1, advanced=True),
+            ],
+            outputs=[
+                DGIdbResourceType.Output(display_name="resource"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
-    def execute(cls, adata: AnnData) -> io.NodeOutput:
-        pertpy = _require_optional_dependency("pertpy")
+    def validate_inputs(cls, resource_file: str, **kwargs: Any) -> bool | str:
+        try:
+            resolve_input_path(resource_file, extensions=DGIDB_RESOURCE_EXTENSIONS)
+        except (ValueError, FileNotFoundError, OSError) as exc:
+            return str(exc)
+        return True
+
+    @classmethod
+    def fingerprint_inputs(cls, resource_file: str, **kwargs: Any) -> Any:
+        path = resolve_input_path(resource_file, extensions=DGIDB_RESOURCE_EXTENSIONS)
+        identity = input_file_fingerprint(resource_file, DGIDB_RESOURCE_EXTENSIONS)
+        return dgidb_resource_cache_fingerprint(
+            path,
+            identity,
+            max_file_bytes=kwargs.get("max_file_bytes", 536_870_912),
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        resource_file: str = "openbio-singlecell/dgidb.tsv",
+        resource_metadata_json: str = "{}",
+        drug_column: str = "drug_claim_name",
+        gene_column: str = "gene_claim_name",
+        source_column: str = "interaction_claim_source",
+        evidence_column: str = "interaction_types",
+        max_file_bytes: int = 536_870_912,
+        max_rows: int = 2_000_000,
+    ) -> io.NodeOutput:
         started_at = time.perf_counter()
-        cells, genes = int(adata.n_obs), int(adata.n_vars)
-        output = adata.copy()
-        pertpy.md.Drug().annotate(output, source="dgidb")
-        finish_adata(output, "dgidb_drug_annotation", {"source": "dgidb"}, cells, genes, started_at)
-        return io.NodeOutput(output)
+        resolved = resolve_input_path(resource_file, extensions=DGIDB_RESOURCE_EXTENSIONS)
+        resource, summary = load_dgidb_resource(
+            resolved,
+            requested_path=resource_file,
+            resource_metadata_json=resource_metadata_json,
+            drug_column=drug_column,
+            gene_column=gene_column,
+            source_column=source_column,
+            evidence_column=evidence_column,
+            max_file_bytes=max_file_bytes,
+            max_rows=max_rows,
+            openbio_version=PLUGIN_VERSION,
+        )
+        _, _, accounting, artifact = validate_dgidb_resource(resource)
+        parameters = dict(summary["parameters"])
+        warnings = list(summary["warnings"])
+        report = make_summary_result(
+            summary=summary,
+            title=f"DGIdb resource {summary['key_results']['resource']['metadata']['version']}",
+            operation="load_dgidb_resource",
+            parameters=parameters,
+            description=summary["results"],
+            warnings=warnings,
+            input_cells=0,
+            input_genes=int(accounting["gene_count"]),
+            started_at=started_at,
+        )
+        code = dgidb_resource_code(
+            requested_path=resource_file,
+            resource_metadata_json=resource_metadata_json,
+            drug_column=drug_column,
+            gene_column=gene_column,
+            source_column=source_column,
+            evidence_column=evidence_column,
+            max_file_bytes=max_file_bytes,
+            max_rows=max_rows,
+            expected_sha256=artifact["raw_file_sha256"],
+            openbio_version=PLUGIN_VERSION,
+        )
+        return io.NodeOutput(resource, report, code)
 
 
 class OpenBioSingleCellDrugScores(io.ComfyNode):
     EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="Drug-score expression source",
+        description="Explicit drug-score expression source",
+        include_raw=True,
         layer_default="log1p_norm",
     )
 
@@ -800,151 +962,332 @@ class OpenBioSingleCellDrugScores(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="OpenBioSingleCellDrugScores",
-            display_name="DGIdb Drug Scores",
+            display_name="DGIdb Single-Drug Target Score",
             category=CATEGORY,
+            description="Compute one descriptive per-cell mean-expression score for one pinned DGIdb target set.",
             inputs=[
                 AnnDataType.Input("adata"),
+                DGIdbResourceType.Input("resource"),
+                io.String.Input("drug", default=""),
                 cls.EXPRESSION_SOURCE.input(),
+                io.String.Input("output_key", default="drug_target_score"),
+                io.Int.Input("min_matched_targets", default=1, min=1, max=2**31 - 1, advanced=True),
+                io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[AnnDataType.Output(display_name="adata")],
+            outputs=[
+                AnnDataType.Output(display_name="adata"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
-    def execute(cls, adata: AnnData, source: DynamicExpressionSource | None = None) -> io.NodeOutput:
-        pertpy = _require_optional_dependency("pertpy")
-        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
-
+    def execute(
+        cls,
+        adata: AnnData,
+        resource: DGIdbResource,
+        drug: str = "",
+        source: DynamicExpressionSource | None = None,
+        output_key: str = "drug_target_score",
+        min_matched_targets: int = 1,
+        overwrite_existing: bool = False,
+    ) -> io.NodeOutput:
         started_at = time.perf_counter()
-        cells, genes = int(adata.n_obs), int(adata.n_vars)
-        output = adata.copy()
-        drug = pertpy.md.Drug()
-        pertpy.tl.Enrichment().score(
-            output,
-            targets=drug.dgidb.dictionary,
-            layer=expression.scanpy_layer,
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
+        runtime_parameters = {
+            "drug": drug,
+            "source_kind": expression.kind,
+            "layer_name": expression.layer_name,
+            "output_key": output_key,
+            "min_matched_targets": min_matched_targets,
+            "overwrite_existing": overwrite_existing,
+            "openbio_version": PLUGIN_VERSION,
+        }
+        output, summary = run_drug_score(
+            adata,
+            resource,
+            **runtime_parameters,
+            pertpy_module=None,
         )
-        parameters = {"targets": "dgidb", **expression.parameters()}
-        finish_adata(output, "dgidb_drug_scores", parameters, cells, genes, started_at)
-        return io.NodeOutput(output)
+        parameters = dict(summary["parameters"])
+        warnings = list(summary["warnings"])
+        finish_adata(
+            output,
+            "dgidb_drug_score",
+            parameters,
+            int(adata.n_obs),
+            int(adata.n_vars),
+            started_at,
+            warnings=warnings,
+        )
+        report = make_summary_result(
+            summary=summary,
+            title=f"DGIdb target-expression score: {drug}",
+            operation="dgidb_drug_score",
+            parameters=parameters,
+            description=summary["results"],
+            warnings=warnings,
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+            started_at=started_at,
+        )
+        resource_table, resource_metadata, resource_accounting, resource_artifact = (
+            validate_dgidb_resource(resource)
+        )
+        del resource_table
+        code = drug_score_code(
+            resource_metadata=resource_metadata,
+            resource_accounting=resource_accounting,
+            resource_artifact_metadata=resource_artifact,
+            **runtime_parameters,
+        )
+        return io.NodeOutput(output, report, code)
 
 
 class OpenBioSingleCellDrugHypergeometric(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="Drug enrichment expression source",
-        include_raw=True,
-        layer_default="log1p_norm",
-    )
-
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="OpenBioSingleCellDrugHypergeometric",
             display_name="Drug Hypergeometric Enrichment",
             category=CATEGORY,
+            description="Test one explicit selected-gene set against every eligible pinned DGIdb drug target set.",
             inputs=[
-                AnnDataType.Input("adata"),
-                io.String.Input("groupby", default="cell_type"),
-                cls.EXPRESSION_SOURCE.input(),
-                io.Float.Input("marker_padj_threshold", default=0.05, min=0.0, max=1.0, step=0.01),
+                TableResultType.Input("table"),
+                TableResultType.Input("universe"),
+                DGIdbResourceType.Input("resource"),
+                io.String.Input("comparison", default=""),
+                io.String.Input("gene_column", default="gene", advanced=True),
+                io.Int.Input("min_targets", default=3, min=1, max=2**31 - 1, advanced=True),
+                io.Int.Input("min_overlap", default=2, min=1, max=2**31 - 1),
+                io.Float.Input("max_p_adjusted", default=0.05, min=0.0, max=1.0, step=0.01),
+                io.Int.Input(
+                    "max_output_rows",
+                    default=100_000,
+                    min=1,
+                    max=2**31 - 1,
+                    advanced=True,
+                ),
             ],
-            outputs=[TableResultType.Output(display_name="table")],
+            outputs=[
+                TableResultType.Output(display_name="table"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
     def execute(
         cls,
-        adata: AnnData,
-        groupby: str = "cell_type",
-        source: DynamicExpressionSource | None = None,
-        marker_padj_threshold: float = 0.05,
+        table: TableResult,
+        universe: TableResult,
+        resource: DGIdbResource,
+        comparison: str = "",
+        gene_column: str = "gene",
+        min_targets: int = 3,
+        min_overlap: int = 2,
+        max_p_adjusted: float = 0.05,
+        max_output_rows: int = 100_000,
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
-        pertpy = _require_optional_dependency("pertpy")
         started_at = time.perf_counter()
-        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
-        work = _rank_for_enrichment(adata, groupby, expression)
-        drug = pertpy.md.Drug()
-        values = pertpy.tl.Enrichment().hypergeometric(
-            work,
-            targets=drug.dgidb.dictionary,
-            padj_threshold=marker_padj_threshold,
+        provenance = validate_enrichment_artifact_pair(
+            table,
+            universe,
+            purpose="selected",
+            selector=comparison,
+            gene_column=gene_column,
+            score_column=None,
+            np=science.np,
+            pd=science.pd,
         )
-        table = _pertpy_table(values, science)
-        parameters = {
-            "groupby": groupby,
-            **expression.parameters(),
-            "marker_padj_threshold": marker_padj_threshold,
-            "targets": "dgidb",
-            "rank_method": "wilcoxon",
+        runtime_parameters = {
+            "artifact_family": provenance["artifact_family"],
+            "comparison": provenance["comparison"],
+            "comparison_column": provenance["comparison_column"],
+            "gene_column": provenance["gene_column"],
+            "evidence_scope": provenance["evidence_scope"],
+            "inference_unit": provenance["inference_unit"],
+            "direction": provenance["direction"],
+            "replicate_aware": provenance["replicate_aware"],
+            "technical_batch_handling": provenance["technical_batch_handling"],
+            "upstream_parameters": provenance["upstream_parameters"],
+            "provenance_warnings": provenance["provenance_warnings"],
+            "provenance_declarations": provenance["provenance_declarations"],
+            "expected_analysis_fingerprint": provenance["analysis_fingerprint"],
+            "expected_ranking_fingerprint": provenance["ranking_fingerprint"],
+            "expected_universe_fingerprint": provenance["universe_fingerprint"],
+            "expected_table_content_fingerprint": provenance["table_content_fingerprint"],
+            "expected_universe_content_fingerprint": provenance["universe_content_fingerprint"],
+            "min_targets": min_targets,
+            "min_overlap": min_overlap,
+            "max_p_adjusted": max_p_adjusted,
+            "max_output_rows": max_output_rows,
+            "openbio_version": PLUGIN_VERSION,
         }
+        evidence, summary = run_drug_ora(table, universe, resource, **runtime_parameters)
+        parameters = dict(summary["parameters"])
+        warnings = list(summary["warnings"])
         result = make_table_result(
-            title=f"Drug overrepresentation by {groupby}",
+            title=f"Drug target overrepresentation: {provenance['comparison']}",
             operation="drug_hypergeometric",
             parameters=parameters,
-            description="DGIdb target overrepresentation from Wilcoxon marker genes.",
-            warnings=[],
-            input_cells=int(adata.n_obs),
-            input_genes=int(adata.n_vars),
+            description=summary["results"],
+            warnings=warnings,
+            input_cells=table.input_cells,
+            input_genes=table.input_genes,
             started_at=started_at,
-            table=table,
+            table=evidence,
         )
-        return io.NodeOutput(result)
+        report = make_summary_result(
+            summary=summary,
+            title=f"Drug target overrepresentation summary: {provenance['comparison']}",
+            operation="drug_hypergeometric",
+            parameters=parameters,
+            description=summary["results"],
+            warnings=warnings,
+            input_cells=table.input_cells,
+            input_genes=table.input_genes,
+            started_at=started_at,
+        )
+        resource_table, resource_metadata, resource_accounting, resource_artifact = (
+            validate_dgidb_resource(resource)
+        )
+        del resource_table
+        code = drug_ora_code(
+            resource_metadata=resource_metadata,
+            resource_accounting=resource_accounting,
+            resource_artifact_metadata=resource_artifact,
+            **runtime_parameters,
+        )
+        return io.NodeOutput(result, report, code)
 
 
 class OpenBioSingleCellDrugGSEA(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="Drug GSEA expression source",
-        include_raw=True,
-        layer_default="log1p_norm",
-    )
-
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="OpenBioSingleCellDrugGSEA",
             display_name="Drug GSEA",
             category=CATEGORY,
+            description="Test one complete pinned ranking against every eligible pinned DGIdb drug target set.",
             inputs=[
-                AnnDataType.Input("adata"),
-                io.String.Input("groupby", default="cell_type"),
-                cls.EXPRESSION_SOURCE.input(),
+                TableResultType.Input("table"),
+                TableResultType.Input("universe"),
+                DGIdbResourceType.Input("resource"),
+                io.String.Input("comparison", default=""),
+                io.String.Input("gene_column", default="gene", advanced=True),
+                io.String.Input("score_column", default="score", advanced=True),
+                io.Int.Input("min_targets", default=15, min=1, max=2**31 - 1, advanced=True),
+                io.Int.Input("max_targets", default=500, min=1, max=2**31 - 1, advanced=True),
+                io.Int.Input("n_permutations", default=1000, min=2, max=2**31 - 1, advanced=True),
+                io.Int.Input("random_seed", default=123, min=0, max=2**31 - 1, advanced=True),
+                io.Int.Input(
+                    "max_output_rows",
+                    default=100_000,
+                    min=1,
+                    max=2**31 - 1,
+                    advanced=True,
+                ),
             ],
-            outputs=[TableResultType.Output(display_name="table")],
+            outputs=[
+                TableResultType.Output(display_name="table"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
     def execute(
         cls,
-        adata: AnnData,
-        groupby: str = "cell_type",
-        source: DynamicExpressionSource | None = None,
+        table: TableResult,
+        universe: TableResult,
+        resource: DGIdbResource,
+        comparison: str = "",
+        gene_column: str = "gene",
+        score_column: str = "score",
+        min_targets: int = 15,
+        max_targets: int = 500,
+        n_permutations: int = 1000,
+        random_seed: int = 123,
+        max_output_rows: int = 100_000,
     ) -> io.NodeOutput:
         science = dependencies.require_scientific_dependencies()
-        pertpy = _require_optional_dependency("pertpy")
         started_at = time.perf_counter()
-        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
-        work = _rank_for_enrichment(adata, groupby, expression)
-        drug = pertpy.md.Drug()
-        values = pertpy.tl.Enrichment().gsea(work, targets=drug.dgidb.dictionary)
-        table = _pertpy_table(values, science)
-        parameters = {
-            "groupby": groupby,
-            **expression.parameters(),
-            "targets": "dgidb",
-            "rank_method": "wilcoxon",
+        provenance = validate_enrichment_artifact_pair(
+            table,
+            universe,
+            purpose="ranked",
+            selector=comparison,
+            gene_column=gene_column,
+            score_column=score_column,
+            np=science.np,
+            pd=science.pd,
+        )
+        runtime_parameters = {
+            "artifact_family": provenance["artifact_family"],
+            "comparison": provenance["comparison"],
+            "comparison_column": provenance["comparison_column"],
+            "gene_column": provenance["gene_column"],
+            "score_column": provenance["score_column"],
+            "evidence_scope": provenance["evidence_scope"],
+            "inference_unit": provenance["inference_unit"],
+            "direction": provenance["direction"],
+            "replicate_aware": provenance["replicate_aware"],
+            "technical_batch_handling": provenance["technical_batch_handling"],
+            "upstream_parameters": provenance["upstream_parameters"],
+            "provenance_warnings": provenance["provenance_warnings"],
+            "provenance_declarations": provenance["provenance_declarations"],
+            "expected_analysis_fingerprint": provenance["analysis_fingerprint"],
+            "expected_ranking_fingerprint": provenance["ranking_fingerprint"],
+            "expected_universe_fingerprint": provenance["universe_fingerprint"],
+            "expected_table_content_fingerprint": provenance["table_content_fingerprint"],
+            "expected_universe_content_fingerprint": provenance["universe_content_fingerprint"],
+            "min_targets": min_targets,
+            "max_targets": max_targets,
+            "n_permutations": n_permutations,
+            "random_seed": random_seed,
+            "max_output_rows": max_output_rows,
+            "openbio_version": PLUGIN_VERSION,
         }
+        evidence, summary = run_drug_gsea(table, universe, resource, **runtime_parameters)
+        parameters = dict(summary["parameters"])
+        warnings = list(summary["warnings"])
         result = make_table_result(
-            title=f"Drug GSEA by {groupby}",
+            title=f"Drug GSEA: {provenance['comparison']}",
             operation="drug_gsea",
             parameters=parameters,
-            description="DGIdb target GSEA from Wilcoxon marker scores.",
-            warnings=[],
-            input_cells=int(adata.n_obs),
-            input_genes=int(adata.n_vars),
+            description=summary["results"],
+            warnings=warnings,
+            input_cells=table.input_cells,
+            input_genes=table.input_genes,
             started_at=started_at,
-            table=table,
+            random_seed=random_seed,
+            table=evidence,
         )
-        return io.NodeOutput(result)
+        report = make_summary_result(
+            summary=summary,
+            title=f"Drug GSEA summary: {provenance['comparison']}",
+            operation="drug_gsea",
+            parameters=parameters,
+            description=summary["results"],
+            warnings=warnings,
+            input_cells=table.input_cells,
+            input_genes=table.input_genes,
+            started_at=started_at,
+            random_seed=random_seed,
+        )
+        resource_table, resource_metadata, resource_accounting, resource_artifact = (
+            validate_dgidb_resource(resource)
+        )
+        del resource_table
+        code = drug_gsea_code(
+            resource_metadata=resource_metadata,
+            resource_accounting=resource_accounting,
+            resource_artifact_metadata=resource_artifact,
+            **runtime_parameters,
+        )
+        return io.NodeOutput(result, report, code)
 
 
 ENRICHMENT_NODE_CLASSES = [

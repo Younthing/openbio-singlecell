@@ -10,8 +10,12 @@ def test_preview_uses_extension_lifecycle_without_prototype_patching():
     assert "coreStudyParameterWidgets" in source
     assert "nodeCreated(node)" in source
     assert "onNodeOutputsUpdated(nodeOutputs)" in source
+    assert "workflow_migrations" not in source
+    assert "migrateExpressionStateWorkflow" not in source
+    assert "beforeConfigureGraph" not in source
     assert "beforeRegisterNodeDef" not in source
     assert ".prototype" not in source
+    assert not (WEB_ROOT / "workflow_migrations.mjs").exists()
 
 
 def test_preview_renderer_and_styles_are_plugin_owned_assets():

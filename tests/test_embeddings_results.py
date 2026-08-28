@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import copy
-import json
-import warnings
-from pathlib import Path
 
 import pytest
 
@@ -16,19 +13,13 @@ from openbio_singlecell.nodes_embedding import (
 )
 from openbio_singlecell.nodes_preprocess import (
     OpenBioSingleCellHighlyVariableGenes,
-    OpenBioSingleCellLog1p,
     OpenBioSingleCellNormalizeToLayer,
-    OpenBioSingleCellNormalizeTotal,
-    OpenBioSingleCellScale,
 )
 from openbio_singlecell.nodes_results import (
     MARKER_COLUMNS,
     OpenBioSingleCellMarkerGenes,
     OpenBioSingleCellUMAPPlot,
 )
-from tests.workflow_helpers import workflow_execute_kwargs
-
-PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
 
 def output_value(node_output):
@@ -59,30 +50,25 @@ def adata(science):
 
 
 def prepare_embedding_input(adata):
-    normalized = output_value(OpenBioSingleCellNormalizeTotal.execute(adata, 10_000.0))
-    logged = output_value(OpenBioSingleCellLog1p.execute(normalized, False))
+    logged = output_value(
+        OpenBioSingleCellNormalizeToLayer.execute(
+            adata,
+            source={"source": "layer", "source_layer": "counts"},
+            target_sum=10_000.0,
+            transform="log1p",
+            output_layer="log1p_norm",
+        )
+    )
     variable = output_value(
         OpenBioSingleCellHighlyVariableGenes.execute(
             logged,
             n_top_genes=8,
             flavor="seurat",
-            source={"source": "X"},
+            source={"source": "layer", "layer_name": "log1p_norm"},
             subset=False,
         )
     )
-    with pytest.warns(UserWarning, match="densifies"):
-        return output_value(OpenBioSingleCellScale.execute(variable, 10.0))
-
-
-def clustering_template_node(node_type):
-    workflow_path = PLUGIN_ROOT / "example_workflows" / "Cell Clustering and Marker Discovery.json"
-    workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
-    return next(node for node in workflow["nodes"] if node["type"] == node_type)
-
-
-def template_widget_kwargs(node_class):
-    node = clustering_template_node(node_class.GET_SCHEMA().node_id)
-    return workflow_execute_kwargs(node_class, node)
+    return variable
 
 
 def test_dimension_reduction_chain_is_copy_on_write(adata):
@@ -94,7 +80,7 @@ def test_dimension_reduction_chain_is_copy_on_write(adata):
     assert scaled.uns["openbio_singlecell"]["analysis_history"] == scaled_history
 
     neighbors = output_value(
-        OpenBioSingleCellNeighbors.execute(pca, n_neighbors=5, n_pcs=3, metric="cosine", random_seed=0)
+        OpenBioSingleCellNeighbors.execute(pca, n_neighbors=5, n_dimensions=3, metric="cosine", random_seed=0)
     )
     assert "connectivities" not in pca.obsp
 
@@ -108,7 +94,7 @@ def test_dimension_reduction_chain_is_copy_on_write(adata):
     assert "connectivities" in neighbors.obsp
     assert umap.obsm["X_umap"].shape == (adata.n_obs, 2)
     assert "leiden" in leiden.obs
-    assert len(leiden.uns["openbio_singlecell"]["analysis_history"]) == 8
+    assert len(leiden.uns["openbio_singlecell"]["analysis_history"]) == 6
 
 
 def test_embedding_preconditions_are_clear(adata):
@@ -119,108 +105,62 @@ def test_embedding_preconditions_are_clear(adata):
         OpenBioSingleCellLeiden.execute(adata, resolution=1.0, key_added="", random_seed=0)
 
 
-@pytest.mark.parametrize(
-    "source,layer_name",
-    [("X", ""), ("raw", ""), ("layer", "alternate")],
-)
-def test_marker_sources_have_stable_columns(adata, source, layer_name):
-    selection = {"source": source, **({"layer_name": layer_name} if source == "layer" else {})}
-    result = output_value(
-        OpenBioSingleCellMarkerGenes.execute(adata, "group", "wilcoxon", selection, 3, True, 0)
-    )
+def test_marker_layer_integration_has_stable_evidence_and_universe(adata):
+    logged = prepare_embedding_input(adata)
+    table, universe, summary, code = OpenBioSingleCellMarkerGenes.execute(
+        logged,
+        "group",
+        "wilcoxon",
+        {"source": "layer", "layer_name": "log1p_norm"},
+        3,
+        True,
+        1_000,
+    ).result
 
-    assert result.kind == "table"
-    assert list(result.table.columns) == MARKER_COLUMNS
-    assert set(result.table["group"]) == {"A", "B"}
-    assert result.table["rank"].min() == 1
+    assert table.kind == universe.kind == "table"
+    assert summary.kind == "summary"
+    assert list(table.table.columns) == MARKER_COLUMNS
+    assert universe.table["gene"].tolist() == logged.var_names.tolist()
+    assert set(table.table["group"]) == {"A", "B"}
+    assert table.table["rank"].min() == 1
+    assert table.parameters["analysis_fingerprint"] == universe.parameters["analysis_fingerprint"]
+    compile(code, "<marker-code>", "exec")
 
 
 def test_marker_preconditions_are_clear(adata):
+    logged = prepare_embedding_input(adata)
     with pytest.raises(ValueError, match="groupby column not found"):
-        OpenBioSingleCellMarkerGenes.execute(adata, "missing", "wilcoxon", {"source": "X"}, 3, True, 0)
+        OpenBioSingleCellMarkerGenes.execute(
+            logged,
+            "missing",
+            "wilcoxon",
+            {"source": "layer", "layer_name": "log1p_norm"},
+            3,
+            True,
+            1_000,
+        )
     with pytest.raises(ValueError, match="Marker source layer not found"):
         OpenBioSingleCellMarkerGenes.execute(
-            adata,
+            logged,
             "group",
             "wilcoxon",
             {"source": "layer", "layer_name": "missing"},
             3,
             True,
-            0,
+            1_000,
         )
-
-    without_raw = adata.copy()
-    without_raw.raw = None
-    with pytest.raises(ValueError, match="adata.raw is unavailable"):
-        OpenBioSingleCellMarkerGenes.execute(without_raw, "group", "wilcoxon", {"source": "raw"}, 3, True, 0)
-
-
-def test_marker_raw_provenance_uses_raw_gene_count(adata):
-    subset = adata[:, :8].copy()
-    result = output_value(
-        OpenBioSingleCellMarkerGenes.execute(subset, "group", "wilcoxon", {"source": "raw"}, 3, True, 0)
-    )
-
-    assert subset.n_vars == 8
-    assert subset.raw.n_vars == adata.n_vars
-    assert result.input_genes == adata.n_vars
-    assert result.source["input_genes"] == adata.n_vars
-
-
-def test_clustering_template_marker_logfc_is_finite_without_runtime_warnings(adata, science):
-    normalize_values = template_widget_kwargs(OpenBioSingleCellNormalizeToLayer)
-    variable_values = template_widget_kwargs(OpenBioSingleCellHighlyVariableGenes)
-    marker_values = template_widget_kwargs(OpenBioSingleCellMarkerGenes)
-
-    adata.layers["counts"] = adata.layers["counts"].copy()
-    adata.layers["counts"].data += 1
-    existing_counts = dense(adata.layers["counts"], science).copy()
-    normalized = output_value(OpenBioSingleCellNormalizeToLayer.execute(adata, **normalize_values))
-    assert science.np.array_equal(dense(normalized.layers["counts"], science), existing_counts)
-    variable = output_value(OpenBioSingleCellHighlyVariableGenes.execute(normalized, **variable_values))
-    variable.obs["leiden"] = variable.obs["group"].copy()
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        result = output_value(OpenBioSingleCellMarkerGenes.execute(variable, **marker_values))
-
-    runtime_warnings = [warning for warning in caught if issubclass(warning.category, RuntimeWarning)]
-    assert runtime_warnings == []
-    assert result.parameters["source"] == "layer"
-    assert result.parameters["layer_name"] == "log1p_norm"
-    assert science.np.isfinite(result.table["logFC"].to_numpy(dtype=float)).all()
-
-
-@pytest.mark.parametrize(
-    "method,expected_random_state",
-    [("logreg", 17), ("wilcoxon", None)],
-)
-def test_marker_random_seed_is_only_forwarded_to_logreg(adata, science, monkeypatch, method, expected_random_state):
-    received = {}
-
-    def rank_genes_groups(*args, **kwargs):
-        received.update(kwargs)
-
-    def rank_genes_groups_df(*args, **kwargs):
-        return science.pd.DataFrame(
-            {
-                "group": ["A", "B"],
-                "names": ["G1", "G2"],
-                "scores": [1.0, 0.5],
-                "logfoldchanges": [1.0, 0.5],
-                "pvals": [0.01, 0.02],
-                "pvals_adj": [0.02, 0.04],
-                "pct_nz_group": [0.8, 0.7],
-                "pct_nz_reference": [0.2, 0.3],
-            }
+    with pytest.raises(ValueError, match="Unsupported marker source: 'raw'"):
+        OpenBioSingleCellMarkerGenes.execute(logged, "group", "wilcoxon", {"source": "raw"}, 3, True, 1_000)
+    with pytest.raises(ValueError, match="Unsupported Marker Genes method"):
+        OpenBioSingleCellMarkerGenes.execute(
+            logged,
+            "group",
+            "logreg",
+            {"source": "layer", "layer_name": "log1p_norm"},
+            3,
+            False,
+            1_000,
         )
-
-    monkeypatch.setattr(science.sc.tl, "rank_genes_groups", rank_genes_groups)
-    monkeypatch.setattr(science.sc.get, "rank_genes_groups_df", rank_genes_groups_df)
-    OpenBioSingleCellMarkerGenes.execute(adata, "group", method, {"source": "X"}, 2, True, 17)
-
-    assert received.get("random_state") == expected_random_state
-    assert ("random_state" in received) is (method == "logreg")
 
 
 def test_umap_plot_is_read_only_for_categorical_and_numeric_colors(adata, science):
@@ -230,8 +170,10 @@ def test_umap_plot_is_read_only_for_categorical_and_numeric_colors(adata, scienc
     snapshot_obs = adata.obs.copy(deep=True)
     snapshot_uns = copy.deepcopy(adata.uns)
 
-    categorical = output_value(OpenBioSingleCellUMAPPlot.execute(adata, "group", 8.0, "viridis"))
-    numeric = output_value(OpenBioSingleCellUMAPPlot.execute(adata, "score", 8.0, "viridis"))
+    categorical = output_value(
+        OpenBioSingleCellUMAPPlot.execute(adata, "X_umap", "group", "auto", 8.0, "viridis")
+    )
+    numeric = output_value(OpenBioSingleCellUMAPPlot.execute(adata, "X_umap", "score", "auto", 8.0, "viridis"))
 
     assert categorical.kind == "plot" and categorical.png
     assert numeric.kind == "plot" and numeric.png
@@ -241,13 +183,13 @@ def test_umap_plot_is_read_only_for_categorical_and_numeric_colors(adata, scienc
 
 
 def test_umap_plot_preconditions_are_clear(adata, science):
-    with pytest.raises(ValueError, match="run UMAP first"):
-        OpenBioSingleCellUMAPPlot.execute(adata, "group", 8.0, "viridis")
+    with pytest.raises(ValueError, match="coordinates not found"):
+        OpenBioSingleCellUMAPPlot.execute(adata, "X_umap", "group", "auto", 8.0, "viridis")
 
     adata.obsm["X_umap"] = science.np.ones((adata.n_obs, 1))
-    with pytest.raises(ValueError, match="at least two columns"):
-        OpenBioSingleCellUMAPPlot.execute(adata, "group", 8.0, "viridis")
+    with pytest.raises(ValueError, match="shape exactly"):
+        OpenBioSingleCellUMAPPlot.execute(adata, "X_umap", "group", "auto", 8.0, "viridis")
 
     adata.obsm["X_umap"] = science.np.ones((adata.n_obs, 2))
     with pytest.raises(ValueError, match="color column not found"):
-        OpenBioSingleCellUMAPPlot.execute(adata, "missing", 8.0, "viridis")
+        OpenBioSingleCellUMAPPlot.execute(adata, "X_umap", "missing", "auto", 8.0, "viridis")

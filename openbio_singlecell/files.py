@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -22,6 +24,107 @@ class OutputTarget:
     filename: str
     subfolder: str
     folder_type: Literal["output", "temp"]
+
+
+def _validated_output_path(target: OutputTarget) -> tuple[str, str]:
+    if not isinstance(target, OutputTarget):
+        raise TypeError("Expected an OpenBio OutputTarget value.")
+    root = folder_paths.get_directory_by_type(target.folder_type)
+    if root is None:
+        raise ValueError(f"Unknown output folder type: {target.folder_type}")
+    root = os.path.realpath(root)
+    plugin_root = os.path.realpath(os.path.join(root, PLUGIN_DIRECTORY))
+    if not folder_paths.is_within_directory(root, plugin_root):
+        raise ValueError("openbio-singlecell output directory escapes the ComfyUI output root.")
+    output_path = os.path.abspath(target.path)
+    if os.path.basename(output_path) != target.filename:
+        raise ValueError("Output target filename does not match its path.")
+    if not folder_paths.is_within_directory(plugin_root, output_path):
+        raise ValueError("Output target escapes the openbio-singlecell output directory.")
+    output_folder = os.path.dirname(output_path)
+    os.makedirs(output_folder, exist_ok=True)
+    if not folder_paths.is_within_directory(plugin_root, output_folder):
+        raise ValueError("Output target directory escapes the openbio-singlecell output directory.")
+    return output_path, output_folder
+
+
+def _fsync_file(path: str) -> None:
+    with open(path, "rb+") as handle:
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _best_effort_fsync_directory(path: str) -> None:
+    if os.name == "nt":
+        return
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def _commit_staged_output(staged_path: str, output_path: str, *, overwrite: bool) -> None:
+    if overwrite:
+        os.replace(staged_path, output_path)
+    elif os.name == "nt":
+        # Windows rename is an atomic no-replace operation for regular files.
+        os.rename(staged_path, output_path)
+    else:
+        # POSIX rename replaces an existing file, so publish through an atomic
+        # no-replace hard link. Both names are in the same destination directory.
+        os.link(staged_path, output_path, follow_symlinks=False)
+        os.unlink(staged_path)
+    _best_effort_fsync_directory(os.path.dirname(output_path))
+
+
+def atomic_write_output(
+    target: OutputTarget,
+    writer: Callable[[str], None],
+    *,
+    overwrite: bool = False,
+    validator: Callable[[str], None] | None = None,
+) -> None:
+    """Stage, validate, and atomically publish one contained output file.
+
+    Non-overwrite commits fail closed if another execution publishes the selected
+    name after target preparation. The writer and validator receive only the secure
+    same-directory staging path; the destination is untouched until commit.
+    """
+
+    if not callable(writer):
+        raise TypeError("Output writer must be callable.")
+    if validator is not None and not callable(validator):
+        raise TypeError("Output validator must be callable.")
+    output_path, output_folder = _validated_output_path(target)
+    if not overwrite and os.path.lexists(output_path):
+        raise FileExistsError(f"Output file already exists and overwrite is disabled: {target.filename}")
+
+    extension = os.path.splitext(target.filename)[1] or ".tmp"
+    descriptor, staged_path = tempfile.mkstemp(
+        prefix=f".{target.filename}.",
+        suffix=extension,
+        dir=output_folder,
+    )
+    os.close(descriptor)
+    try:
+        writer(staged_path)
+        if os.path.islink(staged_path) or not os.path.isfile(staged_path):
+            raise RuntimeError("Output writer did not produce a regular staging file.")
+        _fsync_file(staged_path)
+        if validator is not None:
+            validator(staged_path)
+        _commit_staged_output(staged_path, output_path, overwrite=bool(overwrite))
+    finally:
+        try:
+            os.unlink(staged_path)
+        except FileNotFoundError:
+            pass
 
 
 def _same_path(left: str, right: str) -> bool:
@@ -94,14 +197,19 @@ def resolve_10x_mtx_files(relative_directory: str) -> dict[str, str]:
     directory = resolve_input_path(relative_directory, kind="directory")
     selected = {}
     for role, candidates in TENX_FILE_CANDIDATES.items():
-        for filename in candidates:
-            candidate = os.path.join(directory, filename)
-            if os.path.isfile(candidate) and folder_paths.is_within_directory(directory, candidate):
-                selected[role] = os.path.realpath(candidate)
-                break
-        else:
+        matches = [
+            os.path.realpath(os.path.join(directory, filename))
+            for filename in candidates
+            if os.path.isfile(os.path.join(directory, filename))
+            and folder_paths.is_within_directory(directory, os.path.join(directory, filename))
+        ]
+        if not matches:
             expected = ", ".join(candidates)
             raise FileNotFoundError(f"10x directory is missing {role}; expected one of: {expected}")
+        if len(matches) > 1:
+            names = ", ".join(os.path.basename(path) for path in matches)
+            raise ValueError(f"10x directory contains ambiguous {role} files: {names}")
+        selected[role] = matches[0]
     return selected
 
 

@@ -11,22 +11,19 @@ from tests.workflow_helpers import workflow_execute_kwargs
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
 
-def output_value(node_output):
-    if len(node_output.result) == 1:
-        return node_output.result[0]
-    return node_output.result
-
-
 def template_runner(template_name):
     workflow_path = PLUGIN_ROOT / "example_workflows" / f"{template_name}.json"
     workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
     workflow_nodes = {node["type"]: node for node in workflow["nodes"]}
     node_classes = {node.GET_SCHEMA().node_id: node for node in NODE_CLASSES}
 
-    def run(node_type, *input_values):
+    def run(node_type, *input_values, _all_outputs=False):
         node_class = node_classes[node_type]
         kwargs = workflow_execute_kwargs(node_class, workflow_nodes[node_type])
-        return output_value(node_class.execute(*input_values, **kwargs))
+        result = node_class.execute(*input_values, **kwargs).result
+        if node_type == "OpenBioSingleCellCoreStudyParameters" or _all_outputs:
+            return result
+        return result[0]
 
     return run
 
@@ -138,16 +135,17 @@ def test_clustering_template_completes_demo_analysis(comfy_directories, science)
     neighbors = run("OpenBioSingleCellNeighbors", pca)
     umap = run("OpenBioSingleCellUMAP", neighbors)
     clustered = run("OpenBioSingleCellLeiden", umap)
-    markers = run("OpenBioSingleCellMarkerGenes", clustered)
-    filtered_markers = run("OpenBioSingleCellFilterMarkerGenes", markers)
+    markers, universe, _, _ = run("OpenBioSingleCellMarkerGenes", clustered, _all_outputs=True)
+    filtered_markers = run("OpenBioSingleCellFilterMarkerGenes", markers, universe)
     plot = run("OpenBioSingleCellUMAPPlot", clustered)
     summary = run("OpenBioSingleCellAnnDataSummary", clustered)
 
     assert markers.kind == "table" and not markers.table.empty
-    assert science.np.isfinite(markers.table["logFC"].to_numpy(dtype=float)).all()
+    assert science.np.isfinite(markers.table["log2_fold_change_approx"].to_numpy(dtype=float)).all()
     assert filtered_markers.kind == "table" and not filtered_markers.table.empty
     assert plot.kind == "plot" and plot.png
-    assert summary.kind == "summary" and summary.summary["shape"] == [clustered.n_obs, clustered.n_vars]
+    assert summary.kind == "summary"
+    assert summary.summary["key_results"]["shape"] == [clustered.n_obs, clustered.n_vars]
 
 
 def test_quality_control_template_filters_demo_and_produces_consistent_plots(comfy_directories, science):
@@ -166,7 +164,7 @@ def test_quality_control_template_filters_demo_and_produces_consistent_plots(com
     assert (filtered.n_obs, filtered.n_vars) == (577, 500)
     assert before_plot.kind == "plot" and before_plot.png
     assert retained_plot.kind == "plot" and retained_plot.png
-    assert summary.summary["shape"] == [577, 500]
+    assert summary.summary["key_results"]["shape"] == [577, 500]
 
 
 def test_composition_template_produces_sample_level_tables(comfy_directories, science):
@@ -178,21 +176,13 @@ def test_composition_template_produces_sample_level_tables(comfy_directories, sc
         "OpenBioSingleCellCoreStudyParameters"
     )
     loaded = run("OpenBioSingleCellLoadH5AD")
-    composition = run(
+    composition, composition_summary, composition_code = run(
         "OpenBioSingleCellSampleCompositionSummary",
         loaded,
         sample_column,
         condition_column,
         annotation_column,
-    )
-    contrast = run(
-        "OpenBioSingleCellDifferentialCompositionTest",
-        loaded,
-        sample_column,
-        condition_column,
-        annotation_column,
-        reference,
-        comparison,
+        _all_outputs=True,
     )
 
     assert set(loaded.obs["condition"].astype(str)) == {"control", "treated"}
@@ -201,5 +191,15 @@ def test_composition_template_produces_sample_level_tables(comfy_directories, sc
     assert reference == "control"
     assert comparison == "treated"
     assert composition.kind == "table" and len(composition.table) == 12
-    assert contrast.kind == "table" and len(contrast.table) == 6
-    assert set(contrast.table["scope"]) == {"global", "pairwise"}
+    assert list(composition.table.columns) == [
+        "sample",
+        "condition",
+        "annotation",
+        "cell_count",
+        "sample_total_cells",
+        "proportion",
+    ]
+    assert composition_summary.kind == "summary"
+    assert composition_summary.summary["key_results"]["complete_grid_rows"] == 12
+    assert "no Condition contrast was performed" in composition_summary.summary["results"]
+    compile(composition_code, "<sample-composition-code>", "exec")

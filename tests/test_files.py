@@ -5,6 +5,7 @@ import os
 import pytest
 
 from openbio_singlecell.files import (
+    atomic_write_output,
     file_fingerprint,
     input_file_provenance,
     prepare_output_target,
@@ -60,7 +61,7 @@ def test_file_fingerprint_changes_with_stat(comfy_directories):
     assert first != second
 
 
-def test_10x_selection_and_fingerprint_use_the_same_actual_files(comfy_directories):
+def test_10x_selection_rejects_ambiguous_roles_and_fingerprints_selected_files(comfy_directories):
     input_dir, _, _ = comfy_directories
     directory = input_dir / "tenx"
     directory.mkdir()
@@ -69,6 +70,10 @@ def test_10x_selection_and_fingerprint_use_the_same_actual_files(comfy_directori
     (directory / "barcodes.tsv").write_text("cell\n", encoding="utf-8")
     (directory / "features.tsv").write_text("id\tgene\n", encoding="utf-8")
 
+    with pytest.raises(ValueError, match="ambiguous matrix files"):
+        resolve_10x_mtx_files("tenx")
+
+    (directory / "matrix.mtx.gz").unlink()
     selected = resolve_10x_mtx_files("tenx")
     fingerprint = tenx_mtx_fingerprint("tenx")
     provenance = tenx_mtx_provenance("tenx")
@@ -98,3 +103,43 @@ def test_output_increment_overwrite_and_containment(comfy_directories):
     assert first.subfolder == "openbio-singlecell/nested"
     with pytest.raises(ValueError):
         prepare_output_target("../../escape", "csv")
+
+
+def test_atomic_nonoverwrite_commit_loses_race_without_replacing_winner(comfy_directories):
+    _, _, _ = comfy_directories
+    target = prepare_output_target("race", "csv")
+
+    def writer(staged_path):
+        with open(staged_path, "wb") as handle:
+            handle.write(b"candidate")
+        with open(target.path, "wb") as handle:
+            handle.write(b"winner")
+
+    with pytest.raises(FileExistsError):
+        atomic_write_output(target, writer, overwrite=False)
+
+    with open(target.path, "rb") as handle:
+        assert handle.read() == b"winner"
+    assert not [name for name in os.listdir(os.path.dirname(target.path)) if name.startswith(".race")]
+
+
+def test_atomic_validator_failure_preserves_overwrite_destination_and_cleans_stage(comfy_directories):
+    _, _, _ = comfy_directories
+    target = prepare_output_target("validated", "csv", overwrite=True)
+    os.makedirs(os.path.dirname(target.path), exist_ok=True)
+    with open(target.path, "wb") as handle:
+        handle.write(b"previous-valid-file")
+
+    def writer(staged_path):
+        with open(staged_path, "wb") as handle:
+            handle.write(b"candidate")
+
+    def reject(_staged_path):
+        raise ValueError("injected validation failure")
+
+    with pytest.raises(ValueError, match="injected validation"):
+        atomic_write_output(target, writer, overwrite=True, validator=reject)
+
+    with open(target.path, "rb") as handle:
+        assert handle.read() == b"previous-valid-file"
+    assert not [name for name in os.listdir(os.path.dirname(target.path)) if name.startswith(".validated")]

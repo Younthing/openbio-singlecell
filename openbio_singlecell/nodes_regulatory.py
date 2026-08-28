@@ -1,139 +1,110 @@
 from __future__ import annotations
 
-import importlib
-import subprocess
-import sys
-import tempfile
 import time
-from pathlib import Path
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from comfy_api.latest import io
 
-from . import dependencies
-from .analysis_utils import finish_adata, make_table_result, matrix_totals_and_nonzero
+from . import PLUGIN_VERSION
+from .analysis_utils import make_summary_result, make_table_result
+from .collectri_ulm import (
+    collectri_resource_cache_fingerprint,
+    collectri_ulm_code,
+    run_collectri_ulm,
+)
 from .expression_source import (
     DynamicExpressionSource,
-    ExpressionSource,
     ExpressionSourceSpec,
 )
-from .files import input_file_fingerprint, input_file_provenance, resolve_input_path
-from .node_types import AnnDataType, ScenicNetworkType, TableResultType
-from .scenic_network import ScenicNetwork
+from .files import input_file_fingerprint, resolve_input_path
+from .node_types import (
+    AnnDataType,
+    SCENICBinaryArtifactType,
+    SCENICResultArtifactType,
+    SummaryResultType,
+    TableResultType,
+    TFActivityArtifactType,
+)
+from .pyscenic_import import (
+    import_pyscenic_bundle,
+    pyscenic_bundle_cache_fingerprint,
+    pyscenic_import_code,
+)
+from .scenic_artifact import SCENICResultArtifact
+from .scenic_binarization import binarize_scenic_activity, scenic_binarization_code
+from .scenic_membership import scenic_membership_code, scenic_regulon_membership
+from .scenic_rss import compute_scenic_rss, scenic_rss_code
+from .tf_activity_artifact import TFActivityArtifact
+from .tf_activity_ranking import TF_RANKING_METHODS, rank_tf_activities, rank_tf_activities_code
 
 if TYPE_CHECKING:
     from anndata import AnnData
 
 
 CATEGORY = "openbio/single-cell/regulatory"
-RANKING_METHODS = ["wilcoxon", "t-test_overestim_var"]
-PYSCENIC_GRN_METHODS = ["grnboost2", "genie3"]
-
-
-def _require_optional_dependency(name: str) -> Any:
-    try:
-        return importlib.import_module(name)
-    except (ImportError, OSError) as exc:
-        raise RuntimeError(f"The {name!r} package is required for this regulatory node ({exc}).") from exc
-
-
-def _required_name(value: str, description: str) -> str:
-    name = value.strip()
-    if not name:
-        raise ValueError(f"{description} cannot be empty.")
-    return name
-
-
-def _expression_adata(adata: AnnData, source: ExpressionSource) -> AnnData:
-    if source.kind == "raw":
-        work = adata.raw.to_adata()
-        work.obs = adata.obs.copy()
-        return work
-
-    work = adata.copy()
-    if source.kind == "layer":
-        work.X = adata.layers[source.layer_name].copy()
-    return work
-
-
-def _resource_names(value: str, description: str) -> tuple[str, ...]:
-    names = tuple(name.strip() for line in value.splitlines() for name in line.split(",") if name.strip())
-    if not names:
-        raise ValueError(f"{description} cannot be empty.")
-    return names
-
-
-def _resolve_pyscenic_resources(
-    tf_list_file: str,
-    ranking_database_files: str,
-    motif_annotations_file: str,
-) -> tuple[str, tuple[str, ...], str]:
-    tf_path = resolve_input_path(tf_list_file, extensions=(".txt",))
-    ranking_paths = tuple(
-        resolve_input_path(name, extensions=(".feather",))
-        for name in _resource_names(ranking_database_files, "Ranking database files")
-    )
-    motif_path = resolve_input_path(motif_annotations_file, extensions=(".tbl",))
-    return tf_path, ranking_paths, motif_path
-
-
-def _run_pyscenic_cli(arguments: list[str], working_directory: str) -> None:
-    command = [sys.executable, "-m", "pyscenic.cli.pyscenic", *arguments]
-    completed = subprocess.run(
-        command,
-        cwd=working_directory,
-        check=False,
-        capture_output=True,
-        text=True,
-        errors="replace",
-    )
-    if completed.returncode == 0:
-        return
-
-    details = completed.stderr.strip() or completed.stdout.strip() or "pySCENIC produced no diagnostic output."
-    raise RuntimeError(f"pySCENIC {arguments[0]} failed (exit {completed.returncode}):\n{details[-4000:]}")
-
-
-def _attach_pyscenic_results(
-    adata: AnnData,
-    loom_path: str,
-    regulons_path: str,
-    activity_key: str,
-    science: dependencies.ScientificDependencies,
-) -> None:
-    loompy = _require_optional_dependency("loompy")
-    scenic_utils = _require_optional_dependency("pyscenic.utils")
-    scenic_transform = _require_optional_dependency("pyscenic.transform")
-    scenic_export = _require_optional_dependency("pyscenic.export")
-
-    connection = loompy.connect(loom_path, mode="r", validate=False)
-    try:
-        auc_matrix = science.pd.DataFrame(
-            connection.ca.RegulonsAUC,
-            index=science.pd.Index(connection.ca.CellID.astype(str)),
-        )
-    finally:
-        connection.close()
-
-    observation_ids = science.pd.Index(adata.obs_names.astype(str))
-    if not observation_ids.isin(auc_matrix.index).all():
-        missing_count = int((~observation_ids.isin(auc_matrix.index)).sum())
-        raise ValueError(f"pySCENIC output is missing {missing_count} AnnData observations.")
-    auc_matrix = auc_matrix.reindex(observation_ids)
-    auc_matrix.index = adata.obs_names
-
-    motifs = scenic_utils.load_motifs(regulons_path)
-    regulons = scenic_transform.df2regulons(motifs)
-    scenic_export.add_scenic_metadata(adata, auc_matrix, regulons)
-    adata.obsm[activity_key] = auc_matrix.copy()
 
 
 class OpenBioSingleCellCollecTRIULM(io.ComfyNode):
     EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="TF activity source",
-        include_raw=True,
+        description="CollecTRI normalized expression source",
+        default="layer",
+        include_raw=False,
         layer_default="log1p_norm",
     )
+
+    @staticmethod
+    def _resolve_resource(resource: Mapping[str, object] | None) -> dict[str, object]:
+        if resource is None:
+            resource = {
+                "resource": "local_network",
+                "network_csv": "",
+                "resource_metadata_json": "{}",
+            }
+        if not isinstance(resource, Mapping):
+            raise TypeError("CollecTRI resource must be a DynamicCombo value.")
+        mode = resource.get("resource")
+        if mode == "local_network":
+            expected = {"resource", "network_csv", "resource_metadata_json"}
+            if set(resource) != expected:
+                raise ValueError(
+                    "CollecTRI local resource fields are invalid; "
+                    f"missing={sorted(expected - set(resource))}, unknown={sorted(set(resource) - expected)}."
+                )
+            network_csv = resource.get("network_csv")
+            metadata_json = resource.get("resource_metadata_json")
+            if not isinstance(network_csv, str):
+                raise TypeError("CollecTRI network_csv must be a string.")
+            if not isinstance(metadata_json, str):
+                raise TypeError("CollecTRI resource_metadata_json must be a string.")
+            return {
+                "resource_mode": "local_network",
+                "network_csv": network_csv,
+                "resource_metadata_json": metadata_json,
+                "affiliation_license": "academic",
+                "allow_network_access": False,
+            }
+        if mode == "official_collectri":
+            expected = {"resource", "affiliation_license", "allow_network_access"}
+            if set(resource) != expected:
+                raise ValueError(
+                    "CollecTRI official resource fields are invalid; "
+                    f"missing={sorted(expected - set(resource))}, unknown={sorted(set(resource) - expected)}."
+                )
+            affiliation_license = resource.get("affiliation_license")
+            allow_network_access = resource.get("allow_network_access")
+            if not isinstance(affiliation_license, str):
+                raise TypeError("CollecTRI affiliation_license must be a string.")
+            if not isinstance(allow_network_access, bool):
+                raise TypeError("CollecTRI allow_network_access must be boolean.")
+            return {
+                "resource_mode": "official_collectri",
+                "network_csv": None,
+                "resource_metadata_json": "{}",
+                "affiliation_license": affiliation_license,
+                "allow_network_access": allow_network_access,
+            }
+        raise ValueError(f"Unsupported CollecTRI resource mode: {mode!r}.")
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -141,59 +112,151 @@ class OpenBioSingleCellCollecTRIULM(io.ComfyNode):
             node_id="OpenBioSingleCellCollecTRIULM",
             display_name="CollecTRI ULM Activities",
             category=CATEGORY,
+            description=(
+                "Infer exploratory observation-level TF activities from normalized expression and one explicitly "
+                "licensed, fingerprinted signed CollecTRI network."
+            ),
             inputs=[
                 AnnDataType.Input("adata"),
-                io.Combo.Input("organism", options=["human", "mouse"], default="human"),
-                io.Boolean.Input("split_complexes", default=False),
+                io.DynamicCombo.Input(
+                    "resource",
+                    options=[
+                        io.DynamicCombo.Option(
+                            "local_network",
+                            [
+                                io.String.Input("network_csv", default=""),
+                                io.String.Input("resource_metadata_json", default="{}", multiline=True),
+                            ],
+                        ),
+                        io.DynamicCombo.Option(
+                            "official_collectri",
+                            [
+                                io.Combo.Input(
+                                    "affiliation_license",
+                                    options=["academic", "commercial", "nonprofit"],
+                                    default="academic",
+                                ),
+                                io.Boolean.Input("allow_network_access", default=False),
+                            ],
+                        ),
+                    ],
+                ),
                 cls.EXPRESSION_SOURCE.input(),
-                io.String.Input("activity_key", default="collectri_ulm_estimate", advanced=True),
-                io.String.Input("pvalue_key", default="collectri_ulm_pvals", advanced=True),
+                io.Combo.Input("complex_policy", options=["retain", "remove"], default="retain"),
+                io.Int.Input("min_targets", default=5, min=1, max=2**31 - 1),
+                io.Int.Input("batch_size", default=250_000, min=1, max=2**31 - 1, advanced=True),
+                io.Int.Input("max_output_rows", default=2_000_000, min=1, max=2**31 - 1, advanced=True),
+                io.Float.Input(
+                    "max_working_memory_gib", default=4.0, min=0.001, max=1024.0, advanced=True
+                ),
+                io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[AnnDataType.Output(display_name="adata")],
+            outputs=[
+                AnnDataType.Output(display_name="adata"),
+                TFActivityArtifactType.Output(display_name="activities"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
+
+    @classmethod
+    def validate_inputs(cls, resource: Mapping[str, object] | None = None, **kwargs: Any) -> bool | str:
+        try:
+            resolved = cls._resolve_resource(resource)
+            if resolved["resource_mode"] == "local_network":
+                resolve_input_path(str(resolved["network_csv"]), extensions=(".csv",))
+        except (TypeError, ValueError, FileNotFoundError, OSError) as exc:
+            return str(exc)
+        return True
+
+    @classmethod
+    def fingerprint_inputs(cls, resource: Mapping[str, object] | None = None, **kwargs: Any) -> Any:
+        resolved = cls._resolve_resource(resource)
+        if resolved["resource_mode"] == "official_collectri":
+            return (
+                "openbio-official-collectri-v2",
+                resolved["affiliation_license"],
+                resolved["allow_network_access"],
+            )
+        requested_path = str(resolved["network_csv"])
+        path = resolve_input_path(requested_path, extensions=(".csv",))
+        identity = input_file_fingerprint(requested_path, (".csv",))
+        return collectri_resource_cache_fingerprint(path, identity)
 
     @classmethod
     def execute(
         cls,
         adata: AnnData,
-        organism: str = "human",
-        split_complexes: bool = False,
+        resource: Mapping[str, object] | None = None,
         source: DynamicExpressionSource | None = None,
-        activity_key: str = "collectri_ulm_estimate",
-        pvalue_key: str = "collectri_ulm_pvals",
+        complex_policy: str = "retain",
+        min_targets: int = 5,
+        batch_size: int = 250_000,
+        max_output_rows: int = 2_000_000,
+        max_working_memory_gib: float = 4.0,
+        overwrite_existing: bool = False,
     ) -> io.NodeOutput:
-        activity_key = _required_name(activity_key, "TF activity output key")
-        pvalue_key = _required_name(pvalue_key, "TF activity p-value output key")
-        if activity_key == pvalue_key:
-            raise ValueError("TF activity and p-value output keys must be different.")
-
-        decoupler = _require_optional_dependency("decoupler")
         started_at = time.perf_counter()
-        cells, genes = int(adata.n_obs), int(adata.n_vars)
-        output = adata.copy()
-        expression = cls.EXPRESSION_SOURCE.resolve(output, source)
-        work = _expression_adata(output, expression)
-        network = decoupler.get_collectri(organism=organism, split_complexes=split_complexes)
-        decoupler.run_ulm(
-            mat=work,
-            net=network,
-            source="source",
-            target="target",
-            weight="weight",
-            verbose=False,
+        resolved_resource = cls._resolve_resource(resource)
+        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
+        requested_path = resolved_resource["network_csv"]
+        network_path = (
+            resolve_input_path(str(requested_path), extensions=(".csv",))
+            if resolved_resource["resource_mode"] == "local_network"
+            else None
         )
-        output.obsm[activity_key] = work.obsm["ulm_estimate"].copy()
-        output.obsm[pvalue_key] = work.obsm["ulm_pvals"].copy()
-
-        parameters = {
-            "organism": organism,
-            "split_complexes": split_complexes,
-            **expression.parameters(),
-            "activity_key": activity_key,
-            "pvalue_key": pvalue_key,
-        }
-        finish_adata(output, "collectri_ulm", parameters, cells, genes, started_at)
-        return io.NodeOutput(output)
+        output, activities, summary = run_collectri_ulm(
+            adata,
+            resource_mode=str(resolved_resource["resource_mode"]),
+            network_path=network_path,
+            resource_metadata_json=str(resolved_resource["resource_metadata_json"]),
+            source_kind=expression.kind,
+            layer_name=expression.layer_name,
+            affiliation_license=str(resolved_resource["affiliation_license"]),
+            allow_network_access=bool(resolved_resource["allow_network_access"]),
+            complex_policy=complex_policy,
+            min_targets=min_targets,
+            batch_size=batch_size,
+            max_output_rows=max_output_rows,
+            max_working_memory_gib=max_working_memory_gib,
+            overwrite_existing=overwrite_existing,
+            openbio_version=PLUGIN_VERSION,
+        )
+        report = make_summary_result(
+            summary=summary,
+            title="CollecTRI ULM activity summary",
+            operation="collectri_ulm",
+            parameters=summary["parameters"],
+            description=summary["results"],
+            warnings=summary["warnings"],
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+            started_at=started_at,
+        )
+        code = collectri_ulm_code(
+            parameters={
+                "resource_mode": str(resolved_resource["resource_mode"]),
+                "network_path": network_path,
+                "resource_metadata_json": str(resolved_resource["resource_metadata_json"]),
+                "source_kind": expression.kind,
+                "layer_name": expression.layer_name,
+                "affiliation_license": str(resolved_resource["affiliation_license"]),
+                "allow_network_access": bool(resolved_resource["allow_network_access"]),
+                "complex_policy": complex_policy,
+                "min_targets": min_targets,
+                "batch_size": batch_size,
+                "max_output_rows": max_output_rows,
+                "max_working_memory_gib": max_working_memory_gib,
+                "overwrite_existing": overwrite_existing,
+                "expected_resource_sha256": summary["key_results"]["resource"]["file_sha256"],
+                "expected_canonical_network_sha256": summary["key_results"]["resource"][
+                    "canonical_network_sha256"
+                ],
+                "openbio_version": PLUGIN_VERSION,
+            },
+            resolved_resource_provenance=summary["key_results"]["resource"],
+        )
+        return io.NodeOutput(output, activities, report, code)
 
 
 class OpenBioSingleCellRankTFActivities(io.ComfyNode):
@@ -203,344 +266,93 @@ class OpenBioSingleCellRankTFActivities(io.ComfyNode):
             node_id="OpenBioSingleCellRankTFActivities",
             display_name="Rank TF Activities",
             category=CATEGORY,
+            description=(
+                "Characterize a validated cell-level TF activity artifact across annotations without rerunning "
+                "activity inference. This is exploratory annotation evidence, not Condition inference."
+            ),
             inputs=[
                 AnnDataType.Input("adata"),
-                io.String.Input("groupby", default="cell_type"),
+                TFActivityArtifactType.Input("activities"),
+                io.String.Input("annotation_key", default="cell_type"),
+                io.Combo.Input(
+                    "annotation_status",
+                    options=["unknown", "provisional", "curated"],
+                    default="unknown",
+                ),
                 io.String.Input("reference", default="rest"),
-                io.Combo.Input("method", options=RANKING_METHODS, default="wilcoxon"),
-                io.Int.Input("top_n", default=3, min=1, max=2**31 - 1),
-                io.Float.Input("max_pvalue", default=0.05, min=0.0, max=1.0, step=0.01),
-                io.String.Input("activity_key", default="collectri_ulm_estimate", advanced=True),
+                io.Combo.Input(
+                    "method", options=list(TF_RANKING_METHODS), default="t-test_overestim_var"
+                ),
+                io.Float.Input(
+                    "report_p_adjusted", default=0.05, min=0.0, max=1.0, step=0.01, advanced=True
+                ),
+                io.Int.Input("max_output_rows", default=100_000, min=1, max=2**31 - 1, advanced=True),
             ],
-            outputs=[TableResultType.Output(display_name="table")],
+            outputs=[
+                TableResultType.Output(display_name="table"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
     def execute(
         cls,
         adata: AnnData,
-        groupby: str = "cell_type",
+        activities: TFActivityArtifact,
+        annotation_key: str = "cell_type",
+        annotation_status: str = "unknown",
         reference: str = "rest",
-        method: str = "wilcoxon",
-        top_n: int = 3,
-        max_pvalue: float = 0.05,
-        activity_key: str = "collectri_ulm_estimate",
+        method: str = "t-test_overestim_var",
+        report_p_adjusted: float = 0.05,
+        max_output_rows: int = 100_000,
     ) -> io.NodeOutput:
-        groupby = _required_name(groupby, "TF activity groupby column")
-        reference = _required_name(reference, "TF activity reference group")
-        activity_key = _required_name(activity_key, "TF activity key")
-        if groupby not in adata.obs:
-            raise ValueError(f"TF activity groupby column not found in obs: {groupby!r}")
-        if activity_key not in adata.obsm:
-            raise ValueError(f"TF activities not found in obsm: {activity_key!r}")
-
-        decoupler = _require_optional_dependency("decoupler")
         started_at = time.perf_counter()
-        activities = decoupler.get_acts(adata, obsm_key=activity_key)
-        ranked = decoupler.rank_sources_groups(
+        table, summary = rank_tf_activities(
+            adata,
             activities,
-            groupby=groupby,
+            annotation_key=annotation_key,
+            annotation_status=annotation_status,
             reference=reference,
             method=method,
+            report_p_adjusted=report_p_adjusted,
+            max_output_rows=max_output_rows,
+            openbio_version=PLUGIN_VERSION,
         )
-        ranked = ranked.dropna(subset=["group", "names", "pvals"]).copy()
-        ranked = ranked[ranked["pvals"] < max_pvalue]
-        ranked = (
-            ranked.sort_values(["group", "pvals"])
-            .groupby("group", sort=False, observed=True)
-            .head(top_n)
-            .reset_index(drop=True)
-        )
-
-        parameters = {
-            "groupby": groupby,
-            "reference": reference,
-            "method": method,
-            "top_n": top_n,
-            "max_pvalue": max_pvalue,
-            "activity_key": activity_key,
-        }
         result = make_table_result(
-            title=f"TF activities by {groupby}",
+            title=f"TF activities by {annotation_key}",
             operation="rank_tf_activities",
-            parameters=parameters,
-            description="Top transcription-factor activities for each observation group.",
-            warnings=[] if not ranked.empty else ["No TF activities passed the requested p-value threshold."],
+            parameters=summary["parameters"],
+            description=summary["results"],
+            warnings=summary["warnings"],
             input_cells=int(adata.n_obs),
             input_genes=int(adata.n_vars),
             started_at=started_at,
-            table=ranked,
+            table=table,
         )
-        return io.NodeOutput(result)
-
-
-class OpenBioSingleCellRunPySCENIC(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="pySCENIC expression source",
-        include_raw=True,
-        layer_default="log1p_norm",
-    )
-
-    @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
-            node_id="OpenBioSingleCellRunPySCENIC",
-            display_name="Run pySCENIC",
-            category=CATEGORY,
-            inputs=[
-                AnnDataType.Input("adata"),
-                cls.EXPRESSION_SOURCE.input(),
-                io.Boolean.Input("use_highly_variable", default=False),
-                io.String.Input("highly_variable_key", default="highly_variable", advanced=True),
-                io.String.Input(
-                    "tf_list_file",
-                    display_name="TF list",
-                    default="",
-                    placeholder="openbio-singlecell/allTFs_hg38.txt",
-                    tooltip="TF list under the ComfyUI input directory.",
-                ),
-                io.String.Input(
-                    "ranking_database_files",
-                    display_name="Ranking databases",
-                    default="",
-                    multiline=True,
-                    placeholder="One .feather file per line",
-                    tooltip="One or more cisTarget ranking databases under the ComfyUI input directory.",
-                ),
-                io.String.Input(
-                    "motif_annotations_file",
-                    display_name="Motif annotations",
-                    default="",
-                    placeholder="openbio-singlecell/motifs-v9-nr.hgnc-m0.001-o0.0.tbl",
-                    tooltip="Motif-to-TF annotations under the ComfyUI input directory.",
-                ),
-                io.Combo.Input(
-                    "grn_method",
-                    options=PYSCENIC_GRN_METHODS,
-                    default="grnboost2",
-                    advanced=True,
-                ),
-                io.Boolean.Input("mask_dropouts", default=True, advanced=True),
-                io.Float.Input("auc_threshold", default=0.05, min=0.0, max=1.0, step=0.01),
-                io.Int.Input("num_workers", default=4, min=1, max=1024, advanced=True),
-                io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
-                io.String.Input("activity_key", default="scenic_auc", advanced=True),
-            ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                ScenicNetworkType.Output(display_name="network"),
-            ],
+        report = make_summary_result(
+            summary=summary,
+            title=f"TF activity ranking by {annotation_key}",
+            operation="rank_tf_activities",
+            parameters=summary["parameters"],
+            description=summary["results"],
+            warnings=summary["warnings"],
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+            started_at=started_at,
         )
-
-    @classmethod
-    def validate_inputs(
-        cls,
-        tf_list_file: str,
-        ranking_database_files: str,
-        motif_annotations_file: str,
-        **kwargs: Any,
-    ) -> bool | str:
-        try:
-            _resolve_pyscenic_resources(tf_list_file, ranking_database_files, motif_annotations_file)
-        except (ValueError, FileNotFoundError, OSError) as exc:
-            return str(exc)
-        return True
-
-    @classmethod
-    def fingerprint_inputs(
-        cls,
-        tf_list_file: str,
-        ranking_database_files: str,
-        motif_annotations_file: str,
-        **kwargs: Any,
-    ) -> Any:
-        ranking_files = _resource_names(ranking_database_files, "Ranking database files")
-        return (
-            input_file_fingerprint(tf_list_file, (".txt",)),
-            tuple(input_file_fingerprint(name, (".feather",)) for name in ranking_files),
-            input_file_fingerprint(motif_annotations_file, (".tbl",)),
+        code = rank_tf_activities_code(
+            parameters={
+                "annotation_key": annotation_key,
+                "annotation_status": annotation_status,
+                "reference": reference,
+                "method": method,
+                "report_p_adjusted": report_p_adjusted,
+                "max_output_rows": max_output_rows,
+                "openbio_version": PLUGIN_VERSION,
+            }
         )
-
-    @classmethod
-    def execute(
-        cls,
-        adata: AnnData,
-        source: DynamicExpressionSource | None = None,
-        use_highly_variable: bool = False,
-        highly_variable_key: str = "highly_variable",
-        tf_list_file: str = "",
-        ranking_database_files: str = "",
-        motif_annotations_file: str = "",
-        grn_method: str = "grnboost2",
-        mask_dropouts: bool = True,
-        auc_threshold: float = 0.05,
-        num_workers: int = 4,
-        random_seed: int = 0,
-        activity_key: str = "scenic_auc",
-    ) -> io.NodeOutput:
-        science = dependencies.require_scientific_dependencies()
-        activity_key = _required_name(activity_key, "pySCENIC activity key")
-        tf_path, ranking_paths, motif_path = _resolve_pyscenic_resources(
-            tf_list_file,
-            ranking_database_files,
-            motif_annotations_file,
-        )
-
-        if adata.n_obs == 0 or adata.n_vars == 0:
-            raise ValueError("pySCENIC requires a non-empty AnnData object.")
-        if not adata.obs_names.is_unique or not adata.var_names.is_unique:
-            raise ValueError("pySCENIC requires unique observation and variable names.")
-
-        started_at = time.perf_counter()
-        cells, genes = int(adata.n_obs), int(adata.n_vars)
-        output = adata.copy()
-        expression = cls.EXPRESSION_SOURCE.resolve(output, source)
-        work = _expression_adata(output, expression)
-        if work.X is None:
-            raise ValueError("The selected pySCENIC expression source has no matrix.")
-
-        tf_names = {
-            line.strip()
-            for line in Path(tf_path).read_text(encoding="utf-8-sig").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        }
-        if not tf_names:
-            raise ValueError("The pySCENIC TF list is empty.")
-        if use_highly_variable:
-            highly_variable_key = _required_name(highly_variable_key, "Highly-variable gene key")
-            if highly_variable_key not in work.var:
-                raise ValueError(f"Highly-variable gene key not found in var: {highly_variable_key!r}")
-            highly_variable = work.var[highly_variable_key]
-            if not science.pd.api.types.is_bool_dtype(highly_variable.dtype):
-                raise ValueError(f"var[{highly_variable_key!r}] must contain boolean highly-variable flags.")
-            selected_genes = highly_variable.fillna(False).to_numpy(dtype=bool) | science.np.asarray(
-                work.var_names.isin(tf_names), dtype=bool
-            )
-            if not selected_genes.any():
-                raise ValueError("No highly-variable or TF-list genes are available for pySCENIC inference.")
-            work = work[:, selected_genes].copy()
-
-        if not work.var_names.is_unique:
-            raise ValueError("pySCENIC inference gene names must be unique.")
-        if not work.var_names.isin(tf_names).any():
-            raise ValueError("No genes in the selected expression source occur in the pySCENIC TF list.")
-
-        _require_optional_dependency("pyscenic.cli.pyscenic")
-        loompy = _require_optional_dependency("loompy")
-        total_counts, detected_genes = matrix_totals_and_nonzero(work.X, axis=1)
-        row_attributes = {"Gene": science.np.asarray(work.var_names.astype(str))}
-        column_attributes = {
-            "CellID": science.np.asarray(work.obs_names.astype(str)),
-            "nGene": science.np.asarray(detected_genes).ravel(),
-            "nUMI": science.np.asarray(total_counts).ravel(),
-        }
-
-        with tempfile.TemporaryDirectory(prefix="openbio_pyscenic_") as temporary_directory:
-            temporary_path = Path(temporary_directory)
-            input_loom = temporary_path / "expression.loom"
-            adjacency_csv = temporary_path / "adjacencies.csv"
-            regulons_csv = temporary_path / "regulons.csv"
-            final_loom = temporary_path / "aucell.loom"
-            loompy.create(str(input_loom), work.X.transpose(), row_attributes, column_attributes)
-
-            _run_pyscenic_cli(
-                [
-                    "grn",
-                    str(input_loom),
-                    tf_path,
-                    "-o",
-                    str(adjacency_csv),
-                    "--method",
-                    grn_method,
-                    "--num_workers",
-                    str(num_workers),
-                    "--seed",
-                    str(random_seed),
-                ],
-                temporary_directory,
-            )
-
-            network = ScenicNetwork(
-                adjacency=science.pd.read_csv(adjacency_csv),
-                gene_names=tuple(work.var_names.astype(str)),
-                grn_method=grn_method,
-                provenance={
-                    "operation": "run_pyscenic",
-                    "expression": {
-                        **expression.parameters(),
-                        "use_highly_variable": use_highly_variable,
-                        "highly_variable_key": highly_variable_key,
-                    },
-                    "tf_list": input_file_provenance(tf_list_file, (".txt",)),
-                    "ranking_databases": [
-                        input_file_provenance(name, (".feather",))
-                        for name in _resource_names(ranking_database_files, "Ranking database files")
-                    ],
-                    "motif_annotations": input_file_provenance(motif_annotations_file, (".tbl",)),
-                    "random_seed": random_seed,
-                },
-            )
-
-            ctx_arguments = [
-                "ctx",
-                str(adjacency_csv),
-                *ranking_paths,
-                "--annotations_fname",
-                motif_path,
-                "--expression_mtx_fname",
-                str(input_loom),
-                "--output",
-                str(regulons_csv),
-                "--num_workers",
-                str(num_workers),
-            ]
-            if mask_dropouts:
-                ctx_arguments.append("--mask_dropouts")
-            _run_pyscenic_cli(ctx_arguments, temporary_directory)
-
-            _run_pyscenic_cli(
-                [
-                    "aucell",
-                    str(input_loom),
-                    str(regulons_csv),
-                    "--auc_threshold",
-                    str(auc_threshold),
-                    "--output",
-                    str(final_loom),
-                    "--num_workers",
-                    str(num_workers),
-                    "--seed",
-                    str(random_seed),
-                ],
-                temporary_directory,
-            )
-
-            _attach_pyscenic_results(output, str(final_loom), str(regulons_csv), activity_key, science)
-
-        parameters = {
-            **expression.parameters(),
-            "use_highly_variable": use_highly_variable,
-            "highly_variable_key": highly_variable_key,
-            "tf_list_file": tf_list_file,
-            "ranking_database_files": list(_resource_names(ranking_database_files, "Ranking database files")),
-            "motif_annotations_file": motif_annotations_file,
-            "grn_method": grn_method,
-            "mask_dropouts": mask_dropouts,
-            "auc_threshold": auc_threshold,
-            "num_workers": num_workers,
-            "activity_key": activity_key,
-            "random_seed": random_seed,
-        }
-        finish_adata(
-            output,
-            "run_pyscenic",
-            parameters,
-            cells,
-            genes,
-            started_at,
-            random_seed=random_seed,
-        )
-        return io.NodeOutput(output, network)
+        return io.NodeOutput(result, report, code)
 
 
 class OpenBioSingleCellImportPySCENICResults(io.ComfyNode):
@@ -550,55 +362,99 @@ class OpenBioSingleCellImportPySCENICResults(io.ComfyNode):
             node_id="OpenBioSingleCellImportPySCENICResults",
             display_name="Import pySCENIC Results",
             category=CATEGORY,
+            description=(
+                "Safely import one complete hash-bound external pySCENIC 0.12.1 CSV bundle without loading "
+                "pySCENIC, evaluating code, downloading resources, or executing a shell command."
+            ),
             inputs=[
                 AnnDataType.Input("adata"),
-                io.String.Input("final_loom_file", default="openbio-singlecell/pyscenic_output.loom"),
-                io.String.Input("regulons_csv", default="openbio-singlecell/regulons.csv"),
-                io.String.Input("activity_key", default="scenic_auc", advanced=True),
+                io.String.Input("run_manifest_json", default=""),
+                io.Boolean.Input("overwrite", default=False, advanced=True),
+                io.Int.Input(
+                    "max_file_bytes", default=2_147_483_647, min=1, max=2**63 - 1, advanced=True
+                ),
+                io.Int.Input(
+                    "max_adjacency_edges", default=10_000_000, min=1, max=2**31 - 1, advanced=True
+                ),
+                io.Int.Input(
+                    "max_regulon_edges", default=2_000_000, min=1, max=2**31 - 1, advanced=True
+                ),
+                io.Int.Input(
+                    "max_dense_bytes", default=1_073_741_824, min=1, max=2**63 - 1, advanced=True
+                ),
             ],
-            outputs=[AnnDataType.Output(display_name="adata")],
+            outputs=[
+                AnnDataType.Output(display_name="adata"),
+                SCENICResultArtifactType.Output(display_name="scenic_result"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
-    def validate_inputs(cls, final_loom_file: str, regulons_csv: str, **kwargs: Any) -> bool | str:
+    def validate_inputs(cls, run_manifest_json: str, **kwargs: Any) -> bool | str:
         try:
-            resolve_input_path(final_loom_file, extensions=(".loom",))
-            resolve_input_path(regulons_csv, extensions=(".csv",))
+            resolve_input_path(run_manifest_json, extensions=(".json",))
         except (ValueError, FileNotFoundError, OSError) as exc:
             return str(exc)
         return True
 
     @classmethod
-    def fingerprint_inputs(cls, final_loom_file: str, regulons_csv: str, **kwargs: Any) -> Any:
-        return (
-            input_file_fingerprint(final_loom_file, (".loom",)),
-            input_file_fingerprint(regulons_csv, (".csv",)),
+    def fingerprint_inputs(
+        cls,
+        run_manifest_json: str,
+        max_file_bytes: int = 2_147_483_647,
+        **kwargs: Any,
+    ) -> Any:
+        path = resolve_input_path(run_manifest_json, extensions=(".json",))
+        return pyscenic_bundle_cache_fingerprint(
+            path,
+            max_file_bytes=max_file_bytes,
         )
 
     @classmethod
     def execute(
         cls,
         adata: AnnData,
-        final_loom_file: str = "openbio-singlecell/pyscenic_output.loom",
-        regulons_csv: str = "openbio-singlecell/regulons.csv",
-        activity_key: str = "scenic_auc",
+        run_manifest_json: str = "",
+        overwrite: bool = False,
+        max_file_bytes: int = 2_147_483_647,
+        max_adjacency_edges: int = 10_000_000,
+        max_regulon_edges: int = 2_000_000,
+        max_dense_bytes: int = 1_073_741_824,
     ) -> io.NodeOutput:
-        science = dependencies.require_scientific_dependencies()
-        activity_key = _required_name(activity_key, "pySCENIC activity key")
-        loom_path = resolve_input_path(final_loom_file, extensions=(".loom",))
-        regulons_path = resolve_input_path(regulons_csv, extensions=(".csv",))
         started_at = time.perf_counter()
-        cells, genes = int(adata.n_obs), int(adata.n_vars)
-        output = adata.copy()
-        _attach_pyscenic_results(output, loom_path, regulons_path, activity_key, science)
-
-        parameters = {
-            "final_loom_file": final_loom_file,
-            "regulons_csv": regulons_csv,
-            "activity_key": activity_key,
-        }
-        finish_adata(output, "import_pyscenic_results", parameters, cells, genes, started_at)
-        return io.NodeOutput(output)
+        manifest_path = resolve_input_path(run_manifest_json, extensions=(".json",))
+        output, scenic_result, summary = import_pyscenic_bundle(
+            adata,
+            manifest_path,
+            overwrite=overwrite,
+            max_file_bytes=max_file_bytes,
+            max_adjacency_edges=max_adjacency_edges,
+            max_regulon_edges=max_regulon_edges,
+            max_dense_bytes=max_dense_bytes,
+            openbio_version=PLUGIN_VERSION,
+        )
+        report = make_summary_result(
+            summary=summary,
+            title="Imported pySCENIC regulatory evidence",
+            operation="import_pyscenic_results",
+            parameters=summary["parameters"],
+            description=summary["results"],
+            warnings=summary["warnings"],
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+            started_at=started_at,
+        )
+        code = pyscenic_import_code(
+            manifest_path=manifest_path,
+            overwrite=overwrite,
+            max_file_bytes=max_file_bytes,
+            max_adjacency_edges=max_adjacency_edges,
+            max_regulon_edges=max_regulon_edges,
+            max_dense_bytes=max_dense_bytes,
+        )
+        return io.NodeOutput(output, scenic_result, report, code)
 
 
 class OpenBioSingleCellSCENICRegulonSpecificity(io.ComfyNode):
@@ -608,51 +464,77 @@ class OpenBioSingleCellSCENICRegulonSpecificity(io.ComfyNode):
             node_id="OpenBioSingleCellSCENICRegulonSpecificity",
             display_name="SCENIC Regulon Specificity",
             category=CATEGORY,
+            description=(
+                "Compute descriptive pySCENIC 0.12.1 regulon-specificity scores from a validated immutable "
+                "SCENIC artifact; this is annotation evidence, not a Condition test."
+            ),
             inputs=[
                 AnnDataType.Input("adata"),
-                io.String.Input("groupby", default="cell_type"),
-                io.String.Input("activity_key", default="scenic_auc", advanced=True),
+                SCENICResultArtifactType.Input("scenic_result"),
+                io.String.Input("annotation_key", default="cell_type"),
+                io.Combo.Input(
+                    "annotation_status",
+                    options=["unknown", "provisional", "curated"],
+                    default="unknown",
+                ),
+                io.Int.Input("max_output_rows", default=100_000, min=1, max=2**31 - 1, advanced=True),
             ],
-            outputs=[TableResultType.Output(display_name="table")],
+            outputs=[
+                TableResultType.Output(display_name="table"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
     def execute(
         cls,
         adata: AnnData,
-        groupby: str = "cell_type",
-        activity_key: str = "scenic_auc",
+        scenic_result: SCENICResultArtifact,
+        annotation_key: str = "cell_type",
+        annotation_status: str = "unknown",
+        max_output_rows: int = 100_000,
     ) -> io.NodeOutput:
-        science = dependencies.require_scientific_dependencies()
-        groupby = _required_name(groupby, "SCENIC groupby column")
-        activity_key = _required_name(activity_key, "SCENIC activity key")
-        if groupby not in adata.obs:
-            raise ValueError(f"SCENIC groupby column not found in obs: {groupby!r}")
-        if activity_key not in adata.obsm:
-            raise ValueError(f"SCENIC activities not found in obsm: {activity_key!r}")
-        auc_matrix = adata.obsm[activity_key]
-        if not isinstance(auc_matrix, science.pd.DataFrame):
-            raise ValueError(f"obsm[{activity_key!r}] must be a named regulon activity DataFrame.")
-
-        scenic_rss = _require_optional_dependency("pyscenic.rss")
         started_at = time.perf_counter()
-        rss = scenic_rss.regulon_specificity_scores(auc_matrix, adata.obs[groupby])
-        rss.index.name = "regulon"
-        table = rss.reset_index().melt(id_vars="regulon", var_name="group", value_name="rss")
-        table = table.sort_values(["group", "rss"], ascending=[True, False]).reset_index(drop=True)
-        parameters = {"groupby": groupby, "activity_key": activity_key}
+        table, summary = compute_scenic_rss(
+            adata,
+            scenic_result,
+            annotation_key=annotation_key,
+            annotation_status=annotation_status,
+            max_output_rows=max_output_rows,
+            openbio_version=PLUGIN_VERSION,
+        )
         result = make_table_result(
-            title=f"SCENIC regulon specificity by {groupby}",
+            title=f"SCENIC regulon specificity by {annotation_key}",
             operation="scenic_regulon_specificity",
-            parameters=parameters,
-            description="Regulon specificity scores calculated from the pySCENIC AUCell matrix.",
-            warnings=[],
+            parameters=summary["parameters"],
+            description=summary["results"],
+            warnings=summary["warnings"],
             input_cells=int(adata.n_obs),
             input_genes=int(adata.n_vars),
             started_at=started_at,
             table=table,
         )
-        return io.NodeOutput(result)
+        report = make_summary_result(
+            summary=summary,
+            title=f"SCENIC regulon specificity by {annotation_key}",
+            operation="scenic_regulon_specificity",
+            parameters=summary["parameters"],
+            description=summary["results"],
+            warnings=summary["warnings"],
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+            started_at=started_at,
+        )
+        code = scenic_rss_code(
+            parameters={
+                "annotation_key": annotation_key,
+                "annotation_status": annotation_status,
+                "max_output_rows": max_output_rows,
+                "openbio_version": PLUGIN_VERSION,
+            }
+        )
+        return io.NodeOutput(result, report, code)
 
 
 class OpenBioSingleCellSCENICActivityBinarization(io.ComfyNode):
@@ -662,143 +544,154 @@ class OpenBioSingleCellSCENICActivityBinarization(io.ComfyNode):
             node_id="OpenBioSingleCellSCENICActivityBinarization",
             display_name="SCENIC Activity Binarization",
             category=CATEGORY,
+            description=(
+                "Apply the deterministic one-process pySCENIC 0.12.1 HDT-compatible heuristic to one "
+                "validated activity artifact and return immutable binary evidence plus complete thresholds."
+            ),
             inputs=[
-                AnnDataType.Input("adata"),
-                io.String.Input("activity_key", default="scenic_auc", advanced=True),
-                io.String.Input("binary_key", default="scenic_binary", advanced=True),
-                io.String.Input("threshold_key", default="scenic_thresholds", advanced=True),
+                SCENICResultArtifactType.Input("scenic_result"),
+                io.Int.Input("random_seed", default=1, min=1, max=2**31 - 1),
+                TableResultType.Input("threshold_overrides", optional=True),
+                io.Int.Input(
+                    "max_dense_bytes", default=1_073_741_824, min=1, max=2**63 - 1, advanced=True
+                ),
             ],
-            outputs=[AnnDataType.Output(display_name="adata")],
+            outputs=[
+                SCENICBinaryArtifactType.Output(display_name="binary"),
+                TableResultType.Output(display_name="thresholds"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
     def execute(
         cls,
-        adata: AnnData,
-        activity_key: str = "scenic_auc",
-        binary_key: str = "scenic_binary",
-        threshold_key: str = "scenic_thresholds",
+        scenic_result: SCENICResultArtifact,
+        random_seed: int = 1,
+        threshold_overrides: Any | None = None,
+        max_dense_bytes: int = 1_073_741_824,
     ) -> io.NodeOutput:
-        science = dependencies.require_scientific_dependencies()
-        activity_key = _required_name(activity_key, "SCENIC activity key")
-        binary_key = _required_name(binary_key, "SCENIC binary output key")
-        threshold_key = _required_name(threshold_key, "SCENIC threshold output key")
-        if activity_key not in adata.obsm:
-            raise ValueError(f"SCENIC activities not found in obsm: {activity_key!r}")
-        activities = adata.obsm[activity_key]
-        if not isinstance(activities, science.pd.DataFrame):
-            raise ValueError(f"obsm[{activity_key!r}] must be a named regulon activity DataFrame.")
-
-        scenic_binarization = _require_optional_dependency("pyscenic.binarization")
         started_at = time.perf_counter()
-        binary, thresholds = scenic_binarization.binarize(activities)
-        output = adata.copy()
-        output.obsm[binary_key] = science.pd.DataFrame(binary).reindex(output.obs_names)
-        threshold_series = science.pd.Series(thresholds, dtype=float)
-        output.uns[threshold_key] = {str(name): float(value) for name, value in threshold_series.items()}
-        parameters = {
-            "activity_key": activity_key,
-            "binary_key": binary_key,
-            "threshold_key": threshold_key,
-        }
-        finish_adata(
-            output,
-            "scenic_activity_binarization",
-            parameters,
-            int(adata.n_obs),
-            int(adata.n_vars),
-            started_at,
+        overrides_frame = (
+            threshold_overrides.table if hasattr(threshold_overrides, "table") else threshold_overrides
         )
-        return io.NodeOutput(output)
+        binary, threshold_table, summary = binarize_scenic_activity(
+            scenic_result,
+            random_seed=random_seed,
+            threshold_overrides=overrides_frame,
+            max_dense_bytes=max_dense_bytes,
+            openbio_version=PLUGIN_VERSION,
+        )
+        provenance = scenic_result.provenance
+        dimensions = provenance["input_dimensions"]
+        threshold_result = make_table_result(
+            title="SCENIC activity thresholds",
+            operation="scenic_activity_binarization",
+            parameters=summary["parameters"],
+            description=summary["results"],
+            warnings=summary["warnings"],
+            input_cells=int(dimensions["cells"]),
+            input_genes=int(dimensions["genes"]),
+            started_at=started_at,
+            random_seed=random_seed,
+            table=threshold_table,
+        )
+        report = make_summary_result(
+            summary=summary,
+            title="SCENIC activity binarization",
+            operation="scenic_activity_binarization",
+            parameters=summary["parameters"],
+            description=summary["results"],
+            warnings=summary["warnings"],
+            input_cells=int(dimensions["cells"]),
+            input_genes=int(dimensions["genes"]),
+            started_at=started_at,
+            random_seed=random_seed,
+        )
+        code = scenic_binarization_code(
+            parameters={
+                "random_seed": random_seed,
+                "max_dense_bytes": max_dense_bytes,
+                "openbio_version": PLUGIN_VERSION,
+            }
+        )
+        return io.NodeOutput(binary, threshold_result, report, code)
 
 
 class OpenBioSingleCellSCENICTFModules(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="SCENIC TF module source",
-        include_raw=True,
-        layer_default="log1p_norm",
-    )
-
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="OpenBioSingleCellSCENICTFModules",
-            display_name="SCENIC TF Modules",
+            display_name="SCENIC Final Regulon Membership",
             category=CATEGORY,
+            description=(
+                "Project the final motif-pruned regulon membership from a validated immutable SCENIC result; "
+                "this node does not rerun pre-cisTarget adjacency modules."
+            ),
             inputs=[
-                AnnDataType.Input("adata"),
-                ScenicNetworkType.Input("network"),
+                SCENICResultArtifactType.Input("scenic_result"),
                 io.String.Input("transcription_factor", default=""),
-                cls.EXPRESSION_SOURCE.input(),
+                io.Int.Input("max_output_rows", default=100_000, min=1, max=2**31 - 1, advanced=True),
             ],
-            outputs=[TableResultType.Output(display_name="table")],
+            outputs=[
+                TableResultType.Output(display_name="table"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
     def execute(
         cls,
-        adata: AnnData,
-        network: ScenicNetwork,
+        scenic_result: SCENICResultArtifact,
         transcription_factor: str = "",
-        source: DynamicExpressionSource | None = None,
+        max_output_rows: int = 100_000,
     ) -> io.NodeOutput:
-        science = dependencies.require_scientific_dependencies()
-        adjacency = network.adjacency.copy(deep=True)
-        expression_source = cls.EXPRESSION_SOURCE.resolve(adata, source)
-        work = _expression_adata(adata, expression_source)
-        if not work.var_names.is_unique:
-            raise ValueError("SCENIC TF Modules requires unique expression gene names.")
-        missing_genes = [name for name in network.gene_names if name not in work.var_names]
-        if missing_genes:
-            raise ValueError(f"Selected expression source is missing SCENIC network genes: {missing_genes}")
-        work = work[:, list(network.gene_names)].copy()
-        matrix = work.X.toarray() if science.sparse.issparse(work.X) else science.np.asarray(work.X)
-        expression = science.pd.DataFrame(matrix, index=work.obs_names, columns=network.gene_names)
-
-        scenic_utils = _require_optional_dependency("pyscenic.utils")
         started_at = time.perf_counter()
-        modules = list(scenic_utils.modules_from_adjacencies(adjacency, expression))
-        transcription_factor = transcription_factor.strip()
-        if transcription_factor:
-            modules = [module for module in modules if str(module.transcription_factor) == transcription_factor]
-        rows = []
-        for index, module in enumerate(modules):
-            rows.extend(
-                {
-                    "transcription_factor": str(module.transcription_factor),
-                    "module": index,
-                    "gene": str(gene),
-                }
-                for gene in module.genes
-            )
-        table = science.pd.DataFrame.from_records(
-            rows,
-            columns=["transcription_factor", "module", "gene"],
+        table, summary = scenic_regulon_membership(
+            scenic_result,
+            transcription_factor=transcription_factor,
+            max_output_rows=max_output_rows,
+            openbio_version=PLUGIN_VERSION,
         )
-        warnings = [] if not table.empty else ["No SCENIC modules matched the requested transcription factor."]
-        parameters = {
-            "grn_method": network.grn_method,
-            "transcription_factor": transcription_factor,
-            **expression_source.parameters(),
-        }
+        dimensions = scenic_result.provenance["input_dimensions"]
         result = make_table_result(
-            title=f"SCENIC modules: {transcription_factor or 'all TFs'}",
-            operation="scenic_tf_modules",
-            parameters=parameters,
-            description="TF-module target genes generated from SCENIC adjacencies and the selected expression matrix.",
-            warnings=warnings,
-            input_cells=int(adata.n_obs),
-            input_genes=int(adata.n_vars),
+            title=f"SCENIC final regulons: {transcription_factor or 'all TFs'}",
+            operation="scenic_final_regulon_membership",
+            parameters=summary["parameters"],
+            description=summary["results"],
+            warnings=summary["warnings"],
+            input_cells=int(dimensions["cells"]),
+            input_genes=int(dimensions["genes"]),
             started_at=started_at,
             table=table,
         )
-        return io.NodeOutput(result)
+        report = make_summary_result(
+            summary=summary,
+            title=f"SCENIC final regulons: {transcription_factor or 'all TFs'}",
+            operation="scenic_final_regulon_membership",
+            parameters=summary["parameters"],
+            description=summary["results"],
+            warnings=summary["warnings"],
+            input_cells=int(dimensions["cells"]),
+            input_genes=int(dimensions["genes"]),
+            started_at=started_at,
+        )
+        code = scenic_membership_code(
+            parameters={
+                "transcription_factor": transcription_factor,
+                "max_output_rows": max_output_rows,
+                "openbio_version": PLUGIN_VERSION,
+            }
+        )
+        return io.NodeOutput(result, report, code)
 
 
 REGULATORY_NODE_CLASSES = [
     OpenBioSingleCellCollecTRIULM,
     OpenBioSingleCellRankTFActivities,
-    OpenBioSingleCellRunPySCENIC,
     OpenBioSingleCellImportPySCENICResults,
     OpenBioSingleCellSCENICRegulonSpecificity,
     OpenBioSingleCellSCENICActivityBinarization,
@@ -811,7 +704,6 @@ __all__ = [
     "OpenBioSingleCellCollecTRIULM",
     "OpenBioSingleCellImportPySCENICResults",
     "OpenBioSingleCellRankTFActivities",
-    "OpenBioSingleCellRunPySCENIC",
     "OpenBioSingleCellSCENICActivityBinarization",
     "OpenBioSingleCellSCENICRegulonSpecificity",
     "OpenBioSingleCellSCENICTFModules",

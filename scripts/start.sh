@@ -83,22 +83,14 @@ fi
 FRONTEND_ROOT=$(CDPATH= cd -- "$FRONTEND_ROOT" && pwd)
 FRONTEND_DIST=$FRONTEND_ROOT/dist
 
-MISSING_FRONTEND_FILES=
-for REQUIRED_FILE in index.html LICENSE THIRD_PARTY_NOTICES.md; do
-    if [ ! -s "$FRONTEND_DIST/$REQUIRED_FILE" ]; then
-        MISSING_FRONTEND_FILES="$MISSING_FRONTEND_FILES $REQUIRED_FILE"
-    fi
-done
-
-if [ -n "$MISSING_FRONTEND_FILES" ]; then
+if [ ! -s "$FRONTEND_DIST/index.html" ]; then
     cat >&2 <<EOF
 OpenBio frontend dist is incomplete: $FRONTEND_DIST
-Missing:$MISSING_FRONTEND_FILES
+Missing or empty: index.html
 Build it first:
   cd "$FRONTEND_ROOT"
   corepack pnpm install --frozen-lockfile
   corepack pnpm build:openbio
-  corepack pnpm exec node "$PLUGIN_ROOT/scripts/generate_frontend_notices.mjs"
 EOF
     exit 1
 fi

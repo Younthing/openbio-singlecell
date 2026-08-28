@@ -21,6 +21,7 @@ from .nodes_preprocess import PREPROCESS_NODE_CLASSES
 from .nodes_qc import QC_NODE_CLASSES
 from .nodes_regulatory import REGULATORY_NODE_CLASSES
 from .nodes_results import RESULT_NODE_CLASSES
+from .nodes_schist import SCHIST_NODE_CLASSES
 from .nodes_study import STUDY_NODE_CLASSES
 from .nodes_trajectory import TRAJECTORY_NODE_CLASSES
 from .nodes_velocity import VELOCITY_NODE_CLASSES
@@ -35,6 +36,7 @@ NODE_CLASSES: list[type[io.ComfyNode]] = [
     *FACTORIZATION_NODE_CLASSES,
     *INTEGRATION_NODE_CLASSES,
     *EMBEDDING_NODE_CLASSES,
+    *SCHIST_NODE_CLASSES,
     *ANNOTATION_NODE_CLASSES,
     *COMMUNICATION_NODE_CLASSES,
     *TRAJECTORY_NODE_CLASSES,

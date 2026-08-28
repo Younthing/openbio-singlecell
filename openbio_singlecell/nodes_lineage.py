@@ -1,45 +1,94 @@
 from __future__ import annotations
 
+import hashlib
 import time
 from typing import TYPE_CHECKING, Any
 
 from comfy_api.latest import io
 
-from . import dependencies
-from .analysis_utils import finish_adata, make_table_result
+from . import PLUGIN_VERSION
+from .analysis_utils import finish_adata, make_summary_result, make_table_result
 from .cassiopeia_tree import (
     ALLELE_TABLE_EXTENSIONS,
+    CassiopeiaCharacters,
     CassiopeiaTree,
-    _normalize_columns,
-    _read_allele_table,
-    _require_cassiopeia,
     add_cassiopeia_plasticity,
     compute_cassiopeia_expansions,
+    prepare_cassiopeia_characters,
     reconstruct_cassiopeia_tree,
 )
-from .files import input_file_fingerprint, resolve_input_path
-from .node_types import AnnDataType, CassiopeiaTreeType, TableResultType
+from .files import resolve_input_path
+from .node_types import (
+    AnnDataType,
+    CassiopeiaCharactersType,
+    CassiopeiaTreeType,
+    SummaryResultType,
+    TableResultType,
+)
 
 if TYPE_CHECKING:
     from anndata import AnnData
+
 
 CATEGORY = "openbio/single-cell/lineage"
 MAX_INTEGER = 2**31 - 1
 
 
-def _percent_uncut(values: Any, science: dependencies.ScientificDependencies) -> float:
-    values = science.np.asarray(values)
-    observed = values != -1
-    return float(science.np.count_nonzero(values == 0) / max(1, int(science.np.count_nonzero(observed))))
+def _summary_result(
+    summary: dict[str, Any],
+    *,
+    title: str,
+    operation: str,
+    started_at: float,
+    input_cells: int,
+    input_genes: int = 0,
+) -> Any:
+    return make_summary_result(
+        summary=summary,
+        title=title,
+        operation=operation,
+        parameters=summary["parameters"],
+        description=summary["results"],
+        warnings=summary["warnings"],
+        input_cells=int(input_cells),
+        input_genes=int(input_genes),
+        started_at=started_at,
+    )
 
 
-def _percent_indels(character_matrix: Any, science: dependencies.ScientificDependencies) -> float:
-    values = science.np.asarray(character_matrix).ravel()
-    observed = values != -1
-    observed_count = int(science.np.count_nonzero(observed))
-    if observed_count == 0:
-        return float("nan")
-    return float(1.0 - (science.np.count_nonzero(values[observed] == 0) / observed_count))
+def _table_result(
+    table: Any,
+    summary: dict[str, Any],
+    *,
+    title: str,
+    operation: str,
+    started_at: float,
+    input_cells: int,
+    input_genes: int = 0,
+) -> Any:
+    return make_table_result(
+        table=table,
+        title=title,
+        operation=operation,
+        parameters=summary["parameters"],
+        description=summary["results"],
+        warnings=summary["warnings"],
+        input_cells=int(input_cells),
+        input_genes=int(input_genes),
+        started_at=started_at,
+    )
+
+
+def _bounded_file_fingerprint(relative_path: str, max_file_mib: int) -> tuple[str, int]:
+    path = resolve_input_path(relative_path, extensions=ALLELE_TABLE_EXTENSIONS)
+    limit = int(max_file_mib) * 1024 * 1024
+    if int(max_file_mib) <= 0:
+        raise ValueError("max_file_mib must be positive.")
+    with open(path, "rb") as handle:
+        content = handle.read(limit + 1)
+    if len(content) > limit:
+        raise ValueError(f"Allele table exceeds max_file_mib={int(max_file_mib)}.")
+    return hashlib.sha256(content).hexdigest(), len(content)
 
 
 class OpenBioSingleCellCassiopeiaLineageQC(io.ComfyNode):
@@ -47,213 +96,116 @@ class OpenBioSingleCellCassiopeiaLineageQC(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="OpenBioSingleCellCassiopeiaLineageQC",
-            display_name="Cassiopeia Lineage QC",
+            display_name="Prepare Cassiopeia Characters + QC",
             category=CATEGORY,
-            description="Summarize lineage-tracing quality for each tumor in a Cassiopeia allele table.",
+            description=(
+                "Conflict-audit one bounded allele table, compute empirical priors, encode exact cut sites, and emit "
+                "a fingerprinted character artifact with disclosed QC pass/warning status."
+            ),
             inputs=[
-                io.String.Input(
-                    "allele_table_file",
-                    default="openbio-singlecell/allele_table.tsv",
-                ),
+                io.String.Input("allele_table_file", default="openbio-singlecell/allele_table.tsv"),
                 io.Boolean.Input("first_column_as_index", default=True, advanced=True),
-                io.String.Input("tumor_column", default="Tumor", advanced=True),
+                io.String.Input("lineage_column", default="Tumor", advanced=True),
                 io.String.Input("cell_barcode_column", default="cellBC", advanced=True),
                 io.String.Input("integration_barcode_column", default="intBC", advanced=True),
-                io.Int.Input("cut_sites_per_intbc", default=3, min=1, max=MAX_INTEGER, advanced=True),
+                io.String.Input("cut_site_columns", default="r1,r2,r3"),
+                io.String.Input("prior_grouping_columns", default="Tumor,intBC"),
+                io.String.Input("missing_data_allele", default="", advanced=True),
                 io.Float.Input(
-                    "minimum_intbc_fraction",
-                    default=0.2,
-                    min=0.0,
-                    max=1.0,
-                    step=0.01,
+                    "allele_representation_threshold", default=0.98, min=1e-12, max=1.0, step=0.01
                 ),
-                io.Int.Input(
-                    "minimum_cells_for_summary",
-                    default=2,
-                    min=1,
-                    max=MAX_INTEGER,
-                    advanced=True,
-                ),
+                io.Int.Input("minimum_cells", default=2, min=1, max=MAX_INTEGER, advanced=True),
+                io.Float.Input("maximum_missing_fraction", default=0.8, min=0.0, max=1.0, step=0.01),
+                io.Float.Input("maximum_uncut_fraction", default=0.8, min=0.0, max=1.0, step=0.01),
+                io.Float.Input("minimum_unique_fraction", default=0.05, min=0.0, max=1.0, step=0.01),
                 io.Float.Input(
-                    "maximum_uncut_fraction",
-                    default=0.8,
-                    min=0.0,
-                    max=1.0,
-                    step=0.01,
+                    "minimum_informative_character_fraction", default=0.2, min=0.0, max=1.0, step=0.01
                 ),
-                io.Float.Input(
-                    "allele_representation_threshold",
-                    default=0.98,
-                    min=0.0,
-                    max=1.0,
-                    step=0.01,
-                ),
-                io.Int.Input(
-                    "lineage_size_threshold",
-                    default=100,
-                    min=1,
-                    max=MAX_INTEGER,
-                    advanced=True,
-                ),
-                io.Float.Input(
-                    "percent_unique_threshold",
-                    default=0.05,
-                    min=0.0,
-                    max=1.0,
-                    step=0.01,
-                    advanced=True,
-                ),
-                io.Float.Input(
-                    "percent_unsaturated_threshold",
-                    default=0.2,
-                    min=0.0,
-                    max=1.0,
-                    step=0.01,
-                    advanced=True,
-                ),
+                io.Int.Input("max_file_mib", default=512, min=1, max=MAX_INTEGER, advanced=True),
+                io.Float.Input("max_matrix_gib", default=2.0, min=1e-12, advanced=True),
             ],
-            outputs=[TableResultType.Output(display_name="table")],
+            outputs=[
+                CassiopeiaCharactersType.Output(display_name="characters"),
+                TableResultType.Output(display_name="table"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
-    def validate_inputs(cls, allele_table_file: str, **kwargs: Any) -> bool | str:
+    def validate_inputs(cls, allele_table_file: str, max_file_mib: int = 512, **kwargs: Any) -> bool | str:
+        del kwargs
         try:
-            resolve_input_path(allele_table_file, extensions=ALLELE_TABLE_EXTENSIONS)
+            _bounded_file_fingerprint(allele_table_file, max_file_mib)
         except (ValueError, FileNotFoundError, OSError) as error:
             return str(error)
         return True
 
     @classmethod
-    def fingerprint_inputs(cls, allele_table_file: str, **kwargs: Any) -> Any:
-        return input_file_fingerprint(allele_table_file, ALLELE_TABLE_EXTENSIONS)
+    def fingerprint_inputs(
+        cls, allele_table_file: str, max_file_mib: int = 512, **kwargs: Any
+    ) -> tuple[str, int]:
+        del kwargs
+        return _bounded_file_fingerprint(allele_table_file, max_file_mib)
 
     @classmethod
     def execute(
         cls,
         allele_table_file: str,
         first_column_as_index: bool = True,
-        tumor_column: str = "Tumor",
+        lineage_column: str = "Tumor",
         cell_barcode_column: str = "cellBC",
         integration_barcode_column: str = "intBC",
-        cut_sites_per_intbc: int = 3,
-        minimum_intbc_fraction: float = 0.2,
-        minimum_cells_for_summary: int = 2,
-        maximum_uncut_fraction: float = 0.8,
+        cut_site_columns: str = "r1,r2,r3",
+        prior_grouping_columns: str = "Tumor,intBC",
+        missing_data_allele: str = "",
         allele_representation_threshold: float = 0.98,
-        lineage_size_threshold: int = 100,
-        percent_unique_threshold: float = 0.05,
-        percent_unsaturated_threshold: float = 0.2,
+        minimum_cells: int = 2,
+        maximum_missing_fraction: float = 0.8,
+        maximum_uncut_fraction: float = 0.8,
+        minimum_unique_fraction: float = 0.05,
+        minimum_informative_character_fraction: float = 0.2,
+        max_file_mib: int = 512,
+        max_matrix_gib: float = 2.0,
     ) -> io.NodeOutput:
-        cassiopeia, lineage_utils = _require_cassiopeia()
-        science = dependencies.require_scientific_dependencies()
         started_at = time.perf_counter()
-        allele_table = _read_allele_table(allele_table_file, first_column_as_index)
-        allele_table = _normalize_columns(
-            allele_table,
-            {
-                "Tumor": tumor_column,
-                "cellBC": cell_barcode_column,
-                "intBC": integration_barcode_column,
-            },
+        path = resolve_input_path(allele_table_file, extensions=ALLELE_TABLE_EXTENSIONS)
+        artifact, table, summary, code = prepare_cassiopeia_characters(
+            path,
+            first_column_as_index=first_column_as_index,
+            lineage_column=lineage_column,
+            cell_barcode_column=cell_barcode_column,
+            integration_barcode_column=integration_barcode_column,
+            cut_site_columns=cut_site_columns,
+            prior_grouping_columns=prior_grouping_columns,
+            missing_data_allele=missing_data_allele,
+            allele_representation_threshold=allele_representation_threshold,
+            minimum_cells=minimum_cells,
+            maximum_missing_fraction=maximum_missing_fraction,
+            maximum_uncut_fraction=maximum_uncut_fraction,
+            minimum_unique_fraction=minimum_unique_fraction,
+            minimum_informative_character_fraction=minimum_informative_character_fraction,
+            max_file_mib=max_file_mib,
+            max_matrix_gib=max_matrix_gib,
+            openbio_version=PLUGIN_VERSION,
         )
-        rows = []
-        warnings = []
-        skipped_small_tumors = 0
-        for tumor, tumor_allele_table in allele_table.groupby("Tumor", observed=True, sort=True):
-            if int(tumor_allele_table["cellBC"].nunique()) < minimum_cells_for_summary:
-                skipped_small_tumors += 1
-                continue
-
-            tumor_allele_table = tumor_allele_table.copy()
-            tumor_allele_table["lineageGrp"] = tumor_allele_table["Tumor"]
-            lineage_group = lineage_utils.filter_intbcs_final_lineages(
-                tumor_allele_table,
-                min_intbc_thresh=minimum_intbc_fraction,
-            )[0]
-            number_of_cut_sites = int(lineage_group["intBC"].nunique()) * cut_sites_per_intbc
-            if number_of_cut_sites == 0:
-                warnings.append(f"Skipped tumor {tumor!r} because no integration barcodes passed filtering.")
-                continue
-
-            character_matrix, _, _ = cassiopeia.pp.convert_alleletable_to_character_matrix(
-                lineage_group,
-                allele_rep_thresh=allele_representation_threshold,
-            )
-            if character_matrix.shape[1] == 0:
-                character_matrix, _, _ = cassiopeia.pp.convert_alleletable_to_character_matrix(
-                    lineage_group,
-                    allele_rep_thresh=1.0,
-                )
-            if character_matrix.shape[1] == 0:
-                warnings.append(f"Skipped tumor {tumor!r} because no lineage characters remained.")
-                continue
-
-            percent_uncut = character_matrix.apply(
-                lambda row: _percent_uncut(row.to_numpy(), science),
-                axis=1,
-            )
-            filtered = character_matrix[percent_uncut < maximum_uncut_fraction]
-            if filtered.empty:
-                percent_unique = float("nan")
-                cut_rate = float("nan")
-                warnings.append(f"Tumor {tumor!r} has no cells below the maximum uncut fraction.")
-            else:
-                percent_unique = float(filtered.drop_duplicates().shape[0] / filtered.shape[0])
-                cut_rate = _percent_indels(filtered, science)
-
-            saturated_targets = number_of_cut_sites - int(character_matrix.shape[1])
-            percent_unsaturated = float(1.0 - (saturated_targets / number_of_cut_sites))
-            rows.append(
-                {
-                    "Tumor": str(tumor),
-                    "PercentUnique": percent_unique,
-                    "CutRate": cut_rate,
-                    "NumSaturatedTargets": saturated_targets,
-                    "PercentUnsaturatedTargets": percent_unsaturated,
-                    "NumCells": int(filtered.shape[0]),
-                }
-            )
-
-        if not rows:
-            raise ValueError("No tumors produced Cassiopeia lineage QC statistics.")
-        table = science.pd.DataFrame.from_records(rows)
-        table["PoorQC"] = (
-            table["PercentUnique"].isna()
-            | (table["PercentUnique"] <= percent_unique_threshold)
-            | (table["PercentUnsaturatedTargets"] <= percent_unsaturated_threshold)
-        )
-        table["SmallLineage"] = table["NumCells"] < lineage_size_threshold
-        table["PassesQC"] = ~(table["PoorQC"] | table["SmallLineage"])
-        if skipped_small_tumors:
-            warnings.append(f"Skipped {skipped_small_tumors} tumors with fewer than {minimum_cells_for_summary} cells.")
-
-        parameters = {
-            "allele_table_file": allele_table_file,
-            "first_column_as_index": first_column_as_index,
-            "tumor_column": tumor_column,
-            "cell_barcode_column": cell_barcode_column,
-            "integration_barcode_column": integration_barcode_column,
-            "cut_sites_per_intbc": cut_sites_per_intbc,
-            "minimum_intbc_fraction": minimum_intbc_fraction,
-            "minimum_cells_for_summary": minimum_cells_for_summary,
-            "maximum_uncut_fraction": maximum_uncut_fraction,
-            "allele_representation_threshold": allele_representation_threshold,
-            "lineage_size_threshold": lineage_size_threshold,
-            "percent_unique_threshold": percent_unique_threshold,
-            "percent_unsaturated_threshold": percent_unsaturated_threshold,
-        }
-        result = make_table_result(
-            title="Cassiopeia lineage quality",
-            operation="cassiopeia_lineage_qc",
-            parameters=parameters,
-            description="Tumor-level lineage quality statistics from the Cassiopeia allele-table workflow.",
-            warnings=warnings,
-            input_cells=int(allele_table["cellBC"].nunique()),
-            input_genes=0,
+        input_cells = int(summary["key_results"]["globally_unique_cells"])
+        table_result = _table_result(
+            table,
+            summary,
+            title="Cassiopeia character preparation QC",
+            operation="prepare_cassiopeia_characters",
             started_at=started_at,
-            table=table,
+            input_cells=input_cells,
         )
-        return io.NodeOutput(result)
+        report = _summary_result(
+            summary,
+            title="Cassiopeia character preparation summary",
+            operation="prepare_cassiopeia_characters",
+            started_at=started_at,
+            input_cells=input_cells,
+        )
+        return io.NodeOutput(artifact, table_result, report, code)
 
 
 class OpenBioSingleCellReconstructCassiopeiaTree(io.ComfyNode):
@@ -261,66 +213,50 @@ class OpenBioSingleCellReconstructCassiopeiaTree(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="OpenBioSingleCellReconstructCassiopeiaTree",
-            display_name="Reconstruct Cassiopeia Tree",
+            display_name="Reconstruct Cassiopeia VanillaGreedy Tree",
             category=CATEGORY,
-            description="Reconstruct and solve one reusable Cassiopeia tumor lineage tree.",
+            description="Solve one computable lineage character payload with fixed Cassiopeia VanillaGreedy.",
             inputs=[
-                io.String.Input(
-                    "allele_table_file",
-                    default="openbio-singlecell/allele_table.tsv",
+                CassiopeiaCharactersType.Input("characters"),
+                io.String.Input("lineage_id", default=""),
+                io.Combo.Input(
+                    "prior_transformation",
+                    options=["negative_log", "inverse", "square_root_inverse"],
+                    default="negative_log",
                 ),
-                io.String.Input("tumor", default=""),
-                io.Boolean.Input("first_column_as_index", default=True, advanced=True),
-                io.String.Input("tumor_column", default="Tumor", advanced=True),
-                io.String.Input("cell_barcode_column", default="cellBC", advanced=True),
-                io.String.Input("integration_barcode_column", default="intBC", advanced=True),
-                io.String.Input("mutation_family_column", default="MetFamily", advanced=True),
-                io.Float.Input(
-                    "allele_representation_threshold",
-                    default=0.9,
-                    min=0.0,
-                    max=1.0,
-                    step=0.01,
-                ),
+                io.Boolean.Input("collapse_mutationless_edges", default=False, advanced=True),
             ],
-            outputs=[CassiopeiaTreeType.Output(display_name="tree")],
+            outputs=[
+                CassiopeiaTreeType.Output(display_name="tree"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
-
-    @classmethod
-    def validate_inputs(cls, allele_table_file: str, **kwargs: Any) -> bool | str:
-        try:
-            resolve_input_path(allele_table_file, extensions=ALLELE_TABLE_EXTENSIONS)
-        except (ValueError, FileNotFoundError, OSError) as error:
-            return str(error)
-        return True
-
-    @classmethod
-    def fingerprint_inputs(cls, allele_table_file: str, **kwargs: Any) -> Any:
-        return input_file_fingerprint(allele_table_file, ALLELE_TABLE_EXTENSIONS)
 
     @classmethod
     def execute(
         cls,
-        allele_table_file: str,
-        tumor: str = "",
-        first_column_as_index: bool = True,
-        tumor_column: str = "Tumor",
-        cell_barcode_column: str = "cellBC",
-        integration_barcode_column: str = "intBC",
-        mutation_family_column: str = "MetFamily",
-        allele_representation_threshold: float = 0.9,
+        characters: CassiopeiaCharacters,
+        lineage_id: str,
+        prior_transformation: str = "negative_log",
+        collapse_mutationless_edges: bool = False,
     ) -> io.NodeOutput:
-        tree = reconstruct_cassiopeia_tree(
-            allele_table_file=allele_table_file,
-            tumor=tumor,
-            first_column_as_index=first_column_as_index,
-            tumor_column=tumor_column,
-            cell_barcode_column=cell_barcode_column,
-            integration_barcode_column=integration_barcode_column,
-            mutation_family_column=mutation_family_column,
-            allele_representation_threshold=allele_representation_threshold,
+        started_at = time.perf_counter()
+        artifact, summary, code = reconstruct_cassiopeia_tree(
+            characters,
+            lineage_id,
+            prior_transformation=prior_transformation,
+            collapse_mutationless_edges=collapse_mutationless_edges,
+            openbio_version=PLUGIN_VERSION,
         )
-        return io.NodeOutput(tree)
+        report = _summary_result(
+            summary,
+            title=f"Cassiopeia VanillaGreedy tree: {artifact.lineage_id}",
+            operation="reconstruct_cassiopeia_vanilla_greedy",
+            started_at=started_at,
+            input_cells=artifact.input_cells,
+        )
+        return io.NodeOutput(artifact, report, code)
 
 
 class OpenBioSingleCellCassiopeiaExpansionTest(io.ComfyNode):
@@ -328,71 +264,54 @@ class OpenBioSingleCellCassiopeiaExpansionTest(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="OpenBioSingleCellCassiopeiaExpansionTest",
-            display_name="Cassiopeia Expansion Test",
+            display_name="Cassiopeia Clade Expansion Test",
             category=CATEGORY,
-            description="Test the clades of a reconstructed Cassiopeia tree for expansion.",
+            description="Test one complete within-tree clade family and apply Benjamini-Hochberg FDR correction.",
             inputs=[
                 CassiopeiaTreeType.Input("tree"),
-                io.Float.Input(
-                    "minimum_clade_fraction",
-                    default=0.15,
-                    min=0.0,
-                    max=1.0,
-                    step=0.01,
-                ),
+                io.Int.Input("minimum_clade_size", default=10, min=1, max=MAX_INTEGER),
                 io.Int.Input("minimum_depth", default=1, min=0, max=MAX_INTEGER, advanced=True),
-                io.Float.Input(
-                    "expansion_pvalue_threshold",
-                    default=0.01,
-                    min=0.0,
-                    max=1.0,
-                    step=0.01,
-                ),
+                io.Float.Input("fdr_threshold", default=0.05, min=0.0, max=1.0, step=0.01),
             ],
-            outputs=[TableResultType.Output(display_name="table")],
+            outputs=[
+                TableResultType.Output(display_name="table"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
     def execute(
         cls,
         tree: CassiopeiaTree,
-        minimum_clade_fraction: float = 0.15,
+        minimum_clade_size: int = 10,
         minimum_depth: int = 1,
-        expansion_pvalue_threshold: float = 0.01,
+        fdr_threshold: float = 0.05,
     ) -> io.NodeOutput:
         started_at = time.perf_counter()
-        table, effective_min_clade_size = compute_cassiopeia_expansions(
+        table, summary, code = compute_cassiopeia_expansions(
             tree,
-            minimum_clade_fraction=minimum_clade_fraction,
+            minimum_clade_size=minimum_clade_size,
             minimum_depth=minimum_depth,
-            expansion_pvalue_threshold=expansion_pvalue_threshold,
+            fdr_threshold=fdr_threshold,
+            openbio_version=PLUGIN_VERSION,
         )
-        warnings = []
-        if not bool(table["is_expansion"].any()):
-            warnings.append("No lineage nodes passed the requested expansion p-value threshold.")
-
-        parameters = {
-            "tree_provenance": dict(tree.provenance),
-            "tumor": tree.tumor,
-            "minimum_clade_fraction": minimum_clade_fraction,
-            "effective_min_clade_size": effective_min_clade_size,
-            "minimum_depth": minimum_depth,
-            "expansion_pvalue_threshold": expansion_pvalue_threshold,
-            "tree_cells": tree.input_cells,
-            "tree_characters": tree.character_count,
-        }
-        result = make_table_result(
-            title=f"Cassiopeia expansions: {tree.tumor}",
-            operation="cassiopeia_expansion_test",
-            parameters=parameters,
-            description="Node-level expansion probabilities from a VanillaGreedy Cassiopeia lineage reconstruction.",
-            warnings=warnings,
-            input_cells=tree.input_cells,
-            input_genes=0,
+        table_result = _table_result(
+            table,
+            summary,
+            title=f"Cassiopeia clade expansion evidence: {tree.lineage_id}",
+            operation="cassiopeia_clade_expansion_test",
             started_at=started_at,
-            table=table,
+            input_cells=tree.input_cells,
         )
-        return io.NodeOutput(result)
+        report = _summary_result(
+            summary,
+            title=f"Cassiopeia clade expansion summary: {tree.lineage_id}",
+            operation="cassiopeia_clade_expansion_test",
+            started_at=started_at,
+            input_cells=tree.input_cells,
+        )
+        return io.NodeOutput(table_result, report, code)
 
 
 class OpenBioSingleCellCassiopeiaPlasticity(io.ComfyNode):
@@ -400,17 +319,32 @@ class OpenBioSingleCellCassiopeiaPlasticity(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="OpenBioSingleCellCassiopeiaPlasticity",
-            display_name="Cassiopeia Plasticity",
+            display_name="Cassiopeia EffectivePlasticity",
             category=CATEGORY,
-            description="Add single-cell effective plasticity from a reconstructed Cassiopeia tree to AnnData.",
+            description="Compute descriptive per-cell EffectivePlasticity for one tree and categorical annotation.",
             inputs=[
                 AnnDataType.Input("adata"),
                 CassiopeiaTreeType.Input("tree"),
                 io.String.Input("annotation_key", default="cell_type"),
-                io.String.Input("output_key", default="scPlasticity", advanced=True),
-                io.String.Input("summary_key", default="cassiopeia_plasticity", advanced=True),
+                io.Combo.Input(
+                    "annotation_status",
+                    options=["unknown", "provisional", "curated"],
+                    default="unknown",
+                ),
+                io.Combo.Input(
+                    "analysis_mode", options=["exploratory", "report_grade"], default="exploratory"
+                ),
+                io.Float.Input("minimum_state_fraction", default=0.025, min=0.0, max=1.0, step=0.005),
+                io.String.Input("output_key", default="sc_effective_plasticity", advanced=True),
+                io.Boolean.Input("overwrite_existing", default=False, advanced=True),
+                io.Float.Input("max_working_gib", default=4.0, min=1e-12, advanced=True),
             ],
-            outputs=[AnnDataType.Output(display_name="adata")],
+            outputs=[
+                AnnDataType.Output(display_name="adata"),
+                TableResultType.Output(display_name="table"),
+                SummaryResultType.Output(display_name="summary"),
+                io.String.Output("code"),
+            ],
         )
 
     @classmethod
@@ -419,35 +353,52 @@ class OpenBioSingleCellCassiopeiaPlasticity(io.ComfyNode):
         adata: AnnData,
         tree: CassiopeiaTree,
         annotation_key: str = "cell_type",
-        output_key: str = "scPlasticity",
-        summary_key: str = "cassiopeia_plasticity",
+        annotation_status: str = "unknown",
+        analysis_mode: str = "exploratory",
+        minimum_state_fraction: float = 0.025,
+        output_key: str = "sc_effective_plasticity",
+        overwrite_existing: bool = False,
+        max_working_gib: float = 4.0,
     ) -> io.NodeOutput:
         started_at = time.perf_counter()
-        output = add_cassiopeia_plasticity(
-            tree,
+        output, table, summary, code = add_cassiopeia_plasticity(
             adata,
+            tree,
             annotation_key=annotation_key,
+            annotation_status=annotation_status,
+            analysis_mode=analysis_mode,
+            minimum_state_fraction=minimum_state_fraction,
             output_key=output_key,
-            summary_key=summary_key,
+            overwrite_existing=overwrite_existing,
+            max_working_gib=max_working_gib,
+            openbio_version=PLUGIN_VERSION,
         )
-        parameters = {
-            "tree_provenance": dict(tree.provenance),
-            "tumor": tree.tumor,
-            "annotation_key": annotation_key.strip(),
-            "output_key": output_key.strip(),
-            "summary_key": summary_key.strip(),
-            "tree_cells": tree.input_cells,
-            "tree_characters": tree.character_count,
-        }
         finish_adata(
             output,
-            "cassiopeia_plasticity",
-            parameters,
+            "cassiopeia_effective_plasticity",
+            summary["parameters"],
             int(adata.n_obs),
             int(adata.n_vars),
             started_at,
         )
-        return io.NodeOutput(output)
+        table_result = _table_result(
+            table,
+            summary,
+            title=f"Cassiopeia EffectivePlasticity cells: {tree.lineage_id}",
+            operation="cassiopeia_effective_plasticity",
+            started_at=started_at,
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+        )
+        report = _summary_result(
+            summary,
+            title=f"Cassiopeia EffectivePlasticity summary: {tree.lineage_id}",
+            operation="cassiopeia_effective_plasticity",
+            started_at=started_at,
+            input_cells=int(adata.n_obs),
+            input_genes=int(adata.n_vars),
+        )
+        return io.NodeOutput(output, table_result, report, code)
 
 
 LINEAGE_NODE_CLASSES = [

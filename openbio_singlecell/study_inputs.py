@@ -63,10 +63,7 @@ def _schema_version(value: Any, *, expected: int, label: str) -> int:
 def _text(value: Any, *, label: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a string.")
-    normalized = value.strip()
-    if value != normalized:
-        raise ValueError(f"{label} must be trimmed.")
-    return normalized
+    return value
 
 
 @dataclass(frozen=True, slots=True)

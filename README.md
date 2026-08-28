@@ -9,10 +9,82 @@
 - ComfyUI_frontend commit `795292d90777efdfb92fc5d3f928dcf13a7cf8a8` / version 1.52.3
 - Python 3.12 or newer
 - Node.js 25 and pnpm 11.13.1 for building the paired frontend
-- `scanpy[leiden]>=1.12.3,<1.13`
+- `scanpy[leiden,scrublet]>=1.12.3,<1.13`
 - `anndata>=0.13.2,<0.14`
 
-Notebook-derived optional nodes import their own libraries only when executed. Install the relevant packages in the ComfyUI Python environment for Harmony, scVI, CellTypist, decoupler, pertpy, LIANA, scVelo, infercnvpy, Schist, OmicVerse cNMF, Cassiopeia, or pySCENIC/loompy analyses.
+Notebook-derived optional nodes import their own scientific backends only when executed. The core
+`requirements.txt` deliberately does not install those large or platform-specific stacks.
+
+### Optional backend installation
+
+Install an extra from the plugin root with the same Python interpreter that runs ComfyUI, for example
+`python -m pip install ".[velocity]"`. The reviewed extras are:
+
+| Extra | Reviewed backend | Node family |
+| --- | --- | --- |
+| `celltypist` | `celltypist>=1.7,<2` | CellTypist annotation |
+| `decoupler` | `decoupler==2.2.0` | scoring, enrichment, CollecTRI and pseudobulk preparation |
+| `harmony` | `harmonypy==2.0.0` | Harmony integration |
+| `scvi` | `scvi-tools>=1.5,<1.6` | scVI integration and model differential evidence |
+| `pertpy` | `pertpy==1.3.0` | Augur and drug perturbation nodes |
+| `composition` | `pertpy[tcoda]==1.3.0` | scCODA and tascCODA, including the audited JAX/tree stack |
+| `milo` | `pertpy[milo-edger]==1.3.0` | Milo plus its Python-to-R bridge |
+| `pseudobulk` | `decoupler==2.2.0`, `pertpy[de]==1.3.0`, `pydeseq2>=0.5,<0.6` | pseudobulk preparation, edgeR and PyDESeq2 |
+| `liana` | `liana==1.9.0`, `pandas<3` | LIANA communication and its result plot |
+| `velocity` | `scvelo==0.3.4` | RNA-velocity processing and analysis |
+| `cnv` | `infercnvpy==0.6.1` | inferCNV, CNV PCA and group scores |
+| `cnmf` | `cnmf==1.7.1` | method-author cNMF rank survey and consensus programs |
+| `lineage` | `cassiopeia-mt==2.1.3; platform_system == 'Linux'` | Cassiopeia lineage preparation, reconstruction and analysis on the verified Linux/WSL release boundary |
+| `forceatlas2` | `fa2-modified==0.4` | explicit ForceAtlas2 graph layout |
+
+The `milo` extra installs `rpy2`, but pip cannot install R or Bioconductor packages. Milo additionally requires an
+external R runtime with `edgeR`, `limma`, and `statmod`. The edgeR pseudobulk engine requires R with `edgeR`,
+`BiocParallel`, and `RhpcBLASctl`. Install those packages in the R installation used by `rpy2`; neither engine
+silently falls back to PyDESeq2. The `pseudobulk` extra is sufficient for the audited PyDESeq2 path.
+
+`harmonypy==2.0.0` publishes official wheels for Linux and macOS, not native Windows. On Windows, run the
+plugin under WSL with a supported Linux wheel or provide and validate a supported source build; the extra must not
+be expected to produce a native Windows wheel.
+
+Schist is intentionally not a pip extra. The package named `schist` on PyPI is an unrelated knowledge-graph
+project. Install the audited single-cell Schist and graph-tool into the same environment that runs ComfyUI using
+conda-forge (or build the official sources and graph-tool yourself):
+
+```sh
+conda install -c conda-forge "schist=0.10.0" graph-tool
+```
+
+Graph-tool's supported ordinary paths are Linux and macOS; use WSL on Windows. The Schist nodes verify the official
+package identity, exact version, graph-tool backend, and public API before analysis.
+
+pySCENIC is an external workflow, not an in-process extra. pySCENIC 0.12.1 is incompatible with this plugin's
+Python 3.12+/NumPy 2 baseline. Run the official `aertslab/pyscenic:0.12.1` image or a dedicated Python 3.10
+environment pinned to `pyscenic==0.12.1`, `ctxcore==0.2.0`, `arboreto==0.1.6`, `loompy==3.0.8`,
+`numpy>=1.21,<1.24`, and `pandas>=1.3.5,<2`, then import the complete
+`openbio-singlecell/pyscenic-external-run/v1` bundle. OpenBio does not patch removed NumPy aliases or start a
+container engine on the user's behalf.
+
+The Cassiopeia extra is intentionally marked for Linux only. This is the verified release boundary for
+`cassiopeia-mt==2.1.3`; use WSL/Linux on Windows. Native Windows and macOS execution are not claimed by this release.
+
+OmicVerse is not declared as an extra. Its 2.3.1 distribution requires `anndata<0.12.0`, which cannot coexist with
+this release's `anndata>=0.13.2,<0.14` core contract. The cNMF extra uses the method authors' `cnmf==1.7.1`
+distribution; installing OmicVerse does not satisfy that adapter.
+
+All extras remain opt-in and are not installed by ComfyUI Manager's core `requirements.txt` path.
+
+CellTypist models are also opt-in. Before running the node, either provide a trusted local `.pkl` path or deliberately
+download one with CellTypist's official API (replace the example model as appropriate):
+
+```python
+from celltypist import models
+
+models.download_models(model="Adult_Human_Vascular.pkl")
+```
+
+That explicit command uses the network; node execution itself never downloads or enumerates the remote catalog.
+Python pickle model files can execute code when loaded, so use only an official or otherwise trusted source. A
+reported SHA-256 identifies the bytes used but does not establish that the file is safe or biologically appropriate.
 
 The exact source pairing is recorded in `release_manifest.json`.
 
@@ -105,8 +177,8 @@ Open one of the five production starting-point templates in `example_workflows`:
   plots, and explicit outputs. It deliberately omits Scale so the production path does not densify the expression
   matrix merely to reach PCA.
 - `Sample Composition Comparison.json` loads AnnData that already contains sample metadata and fans reusable
-  sample, condition, annotation, reference, and comparison strings into two composition nodes whose concrete
-  table outputs can be previewed or exported.
+  Sample, Condition, and annotation strings into one descriptive Sample Composition Summary node. Its complete
+  Sample-by-population table and report can be previewed, and the table can be exported.
 - `scVI Batch Integration and Contrast.json` trains scVI from raw counts in `adata.X`, constructs neighbors
   from `X_scVI`, visualizes the integrated embedding, and passes the concrete in-memory model to scVI differential
   expression instead of retraining it.
@@ -128,16 +200,19 @@ feature count, grouping columns, labels, comparison groups, and output names. In
 - QC assumes gene symbols use the `MT-` mitochondrial prefix. Its starting cell thresholds are 90 minimum genes
   and 20% maximum mitochondrial counts, and its starting gene threshold is 3 minimum cells.
 - composition requires `adata.obs["sample"]`, `adata.obs["condition"]`, and `adata.obs["cell_type"]`. The demonstration
-  compares the `control` and `treated` biological conditions, balanced across `adata.obs["batch"]`. Its Kruskal-Wallis
-  and Mann-Whitney results are an exploratory sample-level comparison; use a covariate-aware compositional model when
-  the study design requires it.
-- QC and the complete scVI template require non-negative integer counts in `adata.X` at entry because QC and
-  filtering operate on `X`. If counts only exist in a layer, first use Use Expression Layer to restore that layer to
-  `X`, then keep the scVI template's source set to `X`. The clustering template can instead read a counts layer by
-  changing Normalize to Layer's `source` and `source_layer`; it does not overwrite `X` or existing layers.
-- scVI also requires `adata.obs["batch"]`; its downstream contrast requires the grouping column and labels shown on
-  that node. Install the optional `scvi-tools` dependency in the same Python environment that runs ComfyUI before
-  executing this template.
+  records the declared `control` and `treated` Condition mapping while constructing the complete descriptive
+  Sample-by-cell-type count/proportion grid, including structural zeros. It performs no Condition hypothesis test;
+  choose a reviewed Sample-level compositional model when inferential comparison is required.
+- Every consumer declares its expression source. Count-model methods enforce the numeric domain their algorithms
+  require; QC, filtering, and normalization nodes that support broader finite expert inputs disclose signed or
+  non-count-like states as warnings rather than imposing a universal count gate. For conventional practice, select
+  a non-negative count representation. When counts live in `layers["counts"]`, select that layer directly on each
+  count-dependent node. Consumer-local sources preserve each expression state's meaning. The clustering template reads counts
+  into `log1p_norm` without overwriting `X` or existing layers.
+- The two bundled scVI templates explicitly set `technical_batch_key="batch"`, so their input data require
+  `adata.obs["batch"]`; another workflow may declare a different Technical batch key. The downstream contrast
+  requires the grouping column and labels shown on that node. Install the optional `scvi-tools` dependency in the
+  same Python environment that runs ComfyUI before executing this template.
 - `Single-Cell Best Practice` expects the external file
   `ComfyUI/input/openbio-singlecell/anndata_qc.h5ad`; it is not bundled with the plugin or generated by the
   installer. The reviewed contract uses raw integer counts in `X` and the `sample`, `batch`, and `group` observation
@@ -216,7 +291,7 @@ OPENBIO_PYTHON=/path/to/comfyui/python \
 sh scripts/start.sh
 ```
 
-The start scripts require `ComfyUI_frontend/dist/index.html`, `dist/LICENSE`, and `dist/THIRD_PARTY_NOTICES.md`, then launch ComfyUI with:
+The start scripts require a built `ComfyUI_frontend/dist/index.html`, then launch ComfyUI with:
 
 ```text
 --disable-api-nodes --enable-assets --front-end-root <sibling frontend dist>
@@ -232,39 +307,93 @@ Additional arguments are forwarded to ComfyUI. ComfyUI's own requirements must a
 - Tables, plots, and structured summaries use distinct `table`, `plot`, and `summary` ports with the
   plugin-owned `OPENBIO_SINGLE_CELL_TABLE`, `OPENBIO_SINGLE_CELL_PLOT`, and
   `OPENBIO_SINGLE_CELL_SUMMARY` wire types.
+- Refactored analysis and transformation nodes expose their primary result first, followed by a structured
+  `summary` and a standard `STRING` `code` port. The summary wire carries an OpenBio result artifact whose
+  `.summary` payload is strict JSON-compatible data with report-ready
+  Methods and Results text, key results, resolved parameters, warnings and limitations, references, and runtime
+  software versions; the preview/API payload adapter serializes that inner payload as JSON. The code port contains
+  an equivalent Python function with the resolved scientific choices and scientific input checks; it intentionally
+  omits plugin-specific `analysis_history` bookkeeping because the adjacent summary carries that provenance.
 - Modifying nodes copy their input before changing it; read-only nodes do not copy it.
-- AnnData transforms output `adata`; analysis artifacts output their concrete table, plot, or summary type;
-  preview and save nodes are terminal and have no data output.
+- AnnData transforms use `adata` as their primary output; analysis artifacts use their concrete table, plot, or
+  summary type as the primary output; preview and save nodes are terminal and have no data output.
 - Preview accepts all three artifact types, while CSV and PNG outputs accept only tables and plots respectively,
-  so incompatible links are rejected before execution.
+  so incompatible links are rejected before execution. CSV export always retains the row index under an explicit,
+  collision-checked header; H5AD export exposes portable `gzip`, `lzf`, or uncompressed storage, defaulting to gzip.
 - Frequently tuned analysis choices, expression sources, and result-defining thresholds stay visible. Core Study
   Parameters is an optional source for reusing sample, condition, annotation, and primary-contrast strings; analysis
   nodes keep their ordinary explicit inputs and do not consume a combined design object. Random seeds, internal
   storage keys, output column names, and iteration limits are advanced inputs.
+- PCA, Harmony, scVI, Neighbors, embedding, and clustering nodes keep representations and named graph bundles
+  explicit. `n_dimensions=0` means all available dimensions after validation; this avoids requesting nonexistent PCs
+  from short learned latent spaces. Harmony/scVI covariates are Technical batch or nuisance variables, not biological
+  Sample replicates or Condition labels. Existing representation, graph, embedding, or clustering keys are protected
+  by default and require an explicit overwrite choice.
+- Force-Directed Graph defaults to Fruchterman-Reingold. PAGA and existing-coordinate initialization are explicit and
+  validated; Fruchterman-Reingold and Kamada-Kawai use python-igraph, while ForceAtlas2 requires `fa2-modified` and
+  never falls back silently. Every result reports the actual method and backend.
+- PCA Metadata Associations aggregates scores within biological Samples before association testing. Its results are
+  Sample-level diagnostics with one Benjamini-Hochberg adjustment across all valid PC-by-metadata hypotheses, not
+  cell-level independent-replicate tests or proof that a Technical batch correction is appropriate.
+- Leiden Resolution Sweep reports size, modularity, repeat-start stability, and adjacent-resolution agreement for
+  every declared resolution. It does not select or label a biologically "best" resolution automatically.
+- Marker Genes ranks every selected-source gene for each categorical cluster, recomputes within-cluster
+  Benjamini-Hochberg adjustment over that complete tested family, and emits both a canonical marker table and the
+  exact ordered tested-gene universe. Filter Marker Genes accepts only that direct pair; rerun filtering from the
+  original ranking instead of chaining filters. These are exploratory Cluster marker results, not Sample-level
+  Condition inference.
+- UMAP Plot and Marker Expression Plot are read-only renderers. They report the actual embedding dimensions,
+  expression source/state, missing-value handling, package versions, and plot-specific method; marker plots copy only
+  selected genes and grouping metadata. Seeded violin jitter is isolated from NumPy's global random state.
+- CellTypist Annotation produces provisional per-cell model labels and score evidence from an explicitly verified
+  count or CP10K/log1p source. A selected model must already exist locally; execution does not enumerate or download
+  the model catalog. Marker ORA Evidence consumes a direct filtered-marker table plus its pinned universe and an
+  explicitly licensed resource CSV, but does not assign cell types. Map Cluster Annotations is the separate reviewed
+  commitment step and records whether labels are provisional or curated.
 - Dataset-specific condition, tumor, cluster, and cell-type values are never supplied as defaults; nodes that need them require an explicit value.
 - Load H5AD and Load 10x H5 accept a browser file selection or a file dropped directly onto the node; uploads are
   stored under `ComfyUI/input/openbio-singlecell` and the node keeps the resulting relative path.
 - Inputs are limited to relative paths under the ComfyUI `input` directory and are checked again at the read boundary.
 - Temporary plots are written below `temp/openbio-singlecell`; ComfyUI clears its temp directory at startup.
-- CSV, PNG, and H5AD files are only made permanent by explicit output nodes and are written below `output/openbio-singlecell`.
+- CSV, PNG, and H5AD files are only made permanent by explicit output nodes and are written below
+  `output/openbio-singlecell`. They are staged and validated in the destination directory before an atomic commit;
+  a failed write leaves an existing destination unchanged. PNG previews use the same validation/commit discipline
+  below the temporary directory.
 - Node UI payloads are bounded; complete tables are exported as CSV.
 - DataFrames remain inside table artifacts and plots carry rendered PNG data. Library-specific models, trees,
   figures, and other opaque Python objects remain node implementation details unless a workflow has a concrete
   reusable downstream contract for them.
-- Trained scVI models, pySCENIC regulatory networks, and solved Cassiopeia trees have explicit
-  `OPENBIO_SCVI_MODEL`, `OPENBIO_SCENIC_NETWORK`, and `OPENBIO_CASSIOPEIA_TREE` contracts because each has a
-  real downstream consumer. No generic Python-object or generic model wire is exposed.
+- Completed cNMF rank surveys, trained scVI models, validated external pySCENIC result bundles, and solved
+  Cassiopeia trees have explicit typed contracts because each has a real downstream consumer. No generic
+  Python-object or generic model wire is exposed. A cNMF run owns a managed temporary workspace and is process-local
+  factorization state: it is not serialized into AnnData, cannot survive an application restart, and is consumed only
+  by cNMF Consensus Programs. Imported pySCENIC evidence is immutable and hash-bound to its external-run manifest.
 - A transformation keeps one `adata` output when it has no reusable secondary product. The deliberate exceptions
-  are scVI Integration (`adata`, `model`) and Run pySCENIC (`adata`, `network`); Cassiopeia reconstruction produces
-  one reusable `tree` for its expansion and plasticity consumers.
+  include scVI Integration (`adata`, `model`) and Import pySCENIC Results (`adata`, `scenic_result`); cNMF Rank Survey
+  produces reusable `run` state plus a K-metrics table, and Cassiopeia reconstruction produces one reusable `tree`
+  for its expansion and plasticity consumers.
 
 ## Scope and limitations
 
-The current in-memory workflow includes 10x study loading, QC, expression snapshots, layer-aware preprocessing, Harmony/scVI integration, clustering, annotation, pseudobulk differential analysis, enrichment, LIANA communication, compositional abundance testing, OmicVerse cNMF, pySCENIC, Cassiopeia lineage analysis, PAGA/DPT, RNA velocity, and inferCNV. The pack does not declare a maximum AnnData size and does not yet provide AnnData backed mode, out-of-core processing, automatic disk caching, ATAC, or spatial analysis. Notebook stages implemented only in R, destructive file organization, publication-only plots, the empty Geneformer notebook, and the import-only spatial notebook are intentionally not represented as nodes. Scale and GSVA may densify data as their underlying libraries normally do. A running scientific operation may finish before a stop request takes effect; stopping prevents later nodes from starting.
+The current workflow includes 10x study loading, QC, expression snapshots, layer-aware preprocessing, Harmony/scVI
+integration, clustering, annotation, pseudobulk differential analysis, enrichment, LIANA communication,
+compositional abundance testing, method-author cNMF, Schist, external pySCENIC result import, Cassiopeia lineage
+analysis, PAGA/DPT, RNA velocity, and inferCNV. The pack does not declare a maximum AnnData size and does not yet
+provide AnnData backed mode, general out-of-core processing, automatic disk caching, ATAC, or spatial analysis.
+Notebook stages implemented only in R, destructive file organization, publication-only plots, the empty Geneformer
+notebook, and the import-only spatial notebook are intentionally not represented as nodes. Scale and GSVA may
+densify data as their underlying libraries normally do. A running scientific operation may finish before a stop
+request takes effect; stopping prevents later nodes from starting.
 
 ## Offline behavior
 
-The plugin contains no telemetry, analytics, update checks, or remote configuration. The OpenBio launcher disables Comfy API nodes. Optional scientific libraries may download a selected model or knowledge resource, such as CellTypist, CollecTRI, or DGIdb data, when it is not already cached; prepare those resources in advance for an offline run. The installer may contact the Python package index configured for `pip`.
+The plugin contains no telemetry, analytics, update checks, or remote configuration. The OpenBio launcher disables
+Comfy API nodes. Node execution never performs an implicit model or knowledge-resource download. CellTypist requires
+an explicitly preinstalled local model. The DGIdb loader accepts only a user-provided, versioned local CSV/TSV
+resource and has no network path. CollecTRI defaults to a user-provided local network; it accesses decoupler's
+official remote resource only when the user selects the official-resource mode and separately enables its visible
+`allow_network_access` control. Prepare every selected resource in advance and keep that control disabled for an
+offline run. The installer may contact the Python package index configured for `pip`.
 
 ## License and attribution
 

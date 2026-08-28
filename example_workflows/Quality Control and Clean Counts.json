@@ -109,7 +109,7 @@
       ],
       "size": [
         320,
-        100
+        124
       ],
       "flags": {},
       "order": 1,
@@ -129,6 +129,16 @@
             2,
             5
           ]
+        },
+        {
+          "name": "summary",
+          "type": "OPENBIO_SINGLE_CELL_SUMMARY",
+          "links": []
+        },
+        {
+          "name": "code",
+          "type": "STRING",
+          "links": []
         }
       ],
       "properties": {
@@ -141,7 +151,8 @@
         "RPS,RPL",
         "^HB[^(P)]",
         "20,50,100,200,500",
-        true
+        true,
+        "X"
       ],
       "widgets_values_named": {
         "include_ribosomal": true,
@@ -150,7 +161,8 @@
         "ribosomal_prefixes": "RPS,RPL",
         "hemoglobin_pattern": "^HB[^(P)]",
         "percent_top": "20,50,100,200,500",
-        "log1p": true
+        "log1p": true,
+        "source": "X"
       }
     },
     {
@@ -182,13 +194,27 @@
             3,
             4
           ]
+        },
+        {
+          "name": "summary",
+          "type": "OPENBIO_SINGLE_CELL_SUMMARY",
+          "links": []
+        },
+        {
+          "name": "code",
+          "type": "STRING",
+          "links": []
         }
       ],
       "properties": {
         "Node name for S&R": "OpenBioSingleCellQCPlots"
       },
-      "widgets_values": [],
-      "widgets_values_named": {}
+      "widgets_values": [
+        "X"
+      ],
+      "widgets_values_named": {
+        "source": "X"
+      }
     },
     {
       "id": 4,
@@ -261,7 +287,7 @@
       ],
       "size": [
         320,
-        172
+        268
       ],
       "flags": {},
       "order": 5,
@@ -281,6 +307,16 @@
             6,
             7
           ]
+        },
+        {
+          "name": "summary",
+          "type": "OPENBIO_SINGLE_CELL_SUMMARY",
+          "links": []
+        },
+        {
+          "name": "code",
+          "type": "STRING",
+          "links": []
         }
       ],
       "properties": {
@@ -292,7 +328,11 @@
         0,
         0,
         20.0,
-        "pct_counts_mt"
+        "pct_counts_mt",
+        "X",
+        false,
+        false,
+        true
       ],
       "widgets_values_named": {
         "min_genes": 90,
@@ -300,7 +340,11 @@
         "min_counts": 0,
         "max_counts": 0,
         "max_pct_mito": 20.0,
-        "mito_column": "pct_counts_mt"
+        "mito_column": "pct_counts_mt",
+        "source": "X",
+        "enable_min_counts": false,
+        "enable_max_counts": false,
+        "enable_max_pct_mito": true
       }
     },
     {
@@ -312,7 +356,7 @@
       ],
       "size": [
         320,
-        148
+        220
       ],
       "flags": {},
       "order": 6,
@@ -332,6 +376,16 @@
             10,
             12
           ]
+        },
+        {
+          "name": "summary",
+          "type": "OPENBIO_SINGLE_CELL_SUMMARY",
+          "links": []
+        },
+        {
+          "name": "code",
+          "type": "STRING",
+          "links": []
         }
       ],
       "properties": {
@@ -340,14 +394,20 @@
       "widgets_values": [
         3,
         0,
-        0,
-        0
+        0.0,
+        0.0,
+        "X",
+        false,
+        false
       ],
       "widgets_values_named": {
         "min_cells": 3,
         "max_cells": 0,
-        "min_counts": 0,
-        "max_counts": 0
+        "min_counts": 0.0,
+        "max_counts": 0.0,
+        "source": "X",
+        "enable_min_counts": false,
+        "enable_max_counts": false
       }
     },
     {
@@ -379,13 +439,27 @@
             8,
             9
           ]
+        },
+        {
+          "name": "summary",
+          "type": "OPENBIO_SINGLE_CELL_SUMMARY",
+          "links": []
+        },
+        {
+          "name": "code",
+          "type": "STRING",
+          "links": []
         }
       ],
       "properties": {
         "Node name for S&R": "OpenBioSingleCellQCPlots"
       },
-      "widgets_values": [],
-      "widgets_values_named": {}
+      "widgets_values": [
+        "X"
+      ],
+      "widgets_values_named": {
+        "source": "X"
+      }
     },
     {
       "id": 9,
@@ -477,6 +551,11 @@
           "links": [
             11
           ]
+        },
+        {
+          "name": "code",
+          "type": "STRING",
+          "links": []
         }
       ],
       "properties": {
@@ -540,11 +619,13 @@
       },
       "widgets_values": [
         "qc_clean_counts",
-        false
+        false,
+        "gzip"
       ],
       "widgets_values_named": {
         "filename_prefix": "qc_clean_counts",
-        "overwrite": false
+        "overwrite": false,
+        "compression": "gzip"
       }
     }
   ],
