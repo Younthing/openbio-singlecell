@@ -36,3 +36,8 @@ The key result is the data model inventory: dimensions, representation/storage, 
 
 The module hides bounded traversal of all AnnData slots, dtype/shape normalization, provenance extraction, narrative construction, references, version capture, and code rendering behind a one-input interface. Dependencies are in-process. Tests should assert strict JSON, deterministic bounds, sparse/dense/backed/view behavior without materialization, complete slot coverage, non-unique indexes, provenance, and generated-code equivalence.
 
+## 2026-08-29 repair record
+
+- New category: `openbio/single-cell/diagnostics`.
+- Classification rationale: the atomic analysis is a read-only structural inventory of an existing AnnData object; it neither ingests data nor creates an input artifact, so `input` is misleading.
+- Merge/delete decision: retain the standalone diagnostic. Do not merge it into loaders, QC, or every transformation and do not delete it, because the same bounded inventory is useful at any workflow seam.

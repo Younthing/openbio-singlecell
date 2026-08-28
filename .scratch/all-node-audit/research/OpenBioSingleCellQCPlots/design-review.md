@@ -4,10 +4,10 @@
 
 This is a read-only reporting module with one coherent purpose: visualize cell-level QC evidence. It already returns a concrete plot artifact and does not mutate `AnnData`.
 
-## Problems
+## Problems found during the audit
 
 - When mitochondrial annotations are unavailable, it plots zeros. A warning exists, but the image can still be misread as observed zero mitochondrial content.
-- Counts and detected genes are recalculated from implicit `X` even when official QC columns may already represent the intended count source.
+- Counts and detected genes were recalculated from implicit `X` when official QC columns were absent.
 - It returns no structured distribution summary or code.
 
 ## Decision: enhance, do not merge
@@ -16,11 +16,13 @@ Keep separate from metric calculation. A plot is a report adapter over available
 
 ## Target interface
 
-- Inputs: `adata`; expression source used only when standard QC columns are absent.
+- Inputs: `adata`; one explicit expression source used for the complete plotted metric family.
 - Outputs: `plot`, structured `summary`, equivalent Python `code`.
-- Invariants: at least one cell and one gene; finite plottable values; selected fallback source exists.
-- Warnings: missing mitochondrial evidence, fallback-derived metrics, non-finite observations dropped from display.
-- Provenance rule: an existing metric is used as a whole column. When mitochondrial percentage must be derived, its numerator, denominator, and scatter-plot total all come from the same selected expression source; historical `obs` totals are never mixed into that calculation.
+- Invariants: at least one cell and one gene; finite selected-source values; selected source exists.
+- Warnings: missing mitochondrial evidence, non-count-like selected sources, non-finite derived observations dropped from display.
+- Provenance rule: total expression, detected genes, mitochondrial numerator, denominator, and scatter-plot totals are
+  derived atomically from the selected expression source. Pre-existing `obs` QC columns are not treated as a cache
+  because they carry no immutable matrix binding.
 
 ## Depth and dependencies
 
@@ -28,4 +30,12 @@ The module hides metric selection/fallback, robust distribution summarization, f
 
 ## Open expert boundary decision
 
-Raw/current equality and analysis-history provenance are not gates. The selected representation owns fallback totals, detected features, and any derived mitochondrial numerator/denominator. If the selected representation lacks compatible mitochondrial annotations, that panel is omitted and disclosed. Signed or fractional finite evidence is drawn with warnings; the only hard data-domain boundary is that each required primary panel needs at least one finite value.
+Raw/current equality and analysis-history provenance are not gates. The selected representation owns totals, detected features, and any derived mitochondrial numerator/denominator. If the selected representation lacks compatible mitochondrial annotations, that panel is omitted and disclosed. Signed or fractional finite evidence is drawn with warnings; the only hard data-domain boundary is that each required primary panel needs at least one finite value.
+
+## 2026-08-29 consistency repair
+
+The post-refactor audit found that the implementation still preferred each existing `obs` metric independently, so a
+single plot could combine different expression states. The node now ignores those unbound cache columns and derives the
+complete metric family once from the explicit source. Runtime and generated code call the same source-embeddable pure
+metric function, use zero-library `NaN` mitochondrial percentages matching Scanpy semantics, and preserve the input
+AnnData.

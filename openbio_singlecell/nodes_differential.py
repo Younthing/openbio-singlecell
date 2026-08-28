@@ -427,7 +427,7 @@ class OpenBioSingleCellSCVIDifferentialExpression(io.ComfyNode):
             random_seed=random_seed,
         )
         parameters = dict(summary["parameters"])
-        description = str(summary["analysis_summary"]["results"])
+        description = summary["results"]
         warnings = [str(warning) for warning in summary["warnings"]]
         input_cells = int(summary["comparison"]["selected_scope_cells"])
         result = make_table_result(

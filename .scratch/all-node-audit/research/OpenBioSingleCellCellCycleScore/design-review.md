@@ -67,3 +67,9 @@ identifiers, overlap and low-coverage advisories, Raw/X/layer plus count-like/si
 dense/sparse matrices, retained structural/non-finite failures, deterministic seed and global RNG isolation,
 collision behavior, input preservation, phase/score postconditions, strict JSON without nonfinite values,
 self-contained compiled code, and runtime/code equivalence.
+
+## 2026-08-29 repair record
+
+- New category: `openbio/single-cell/annotation`.
+- Classification rationale: the atomic analysis assigns supervised per-cell phase scores and a phase label from a declared gene program; it does not infer a continuous trajectory or lineage.
+- Merge/delete decision: retain the standalone scoring node. Do not merge it with normalization, regression, PCA, or trajectory reconstruction and do not delete it, because its gene-program validation and annotation outputs form one cohesive operation.

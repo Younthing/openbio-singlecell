@@ -84,3 +84,9 @@ The deletion test supports retention: deleting this module would force graph val
 - Require strict JSON and H5AD round-trip of the annotated output.
 
 The open-tool implementation keeps type/axis/finite/undirected graph failures hard, but turns zero resolution, zero iterations, unusual repeat counts, singleton/dominant communities, and weak repeat-start agreement into disclosed expert diagnostics. Runtime and generated source cross the same graph seam and accept graph-only zero-variable AnnData.
+
+## 2026-08-29 repair record
+
+- New category: `openbio/single-cell/clustering`.
+- Classification rationale: the atomic analysis partitions one existing named neighbor graph; it does not construct or reduce a feature representation, so `dimension-reduction` misstates the operation.
+- Merge/delete decision: retain the one-resolution node. Do not merge it with neighbor construction or the multi-resolution sweep and do not delete it; those nodes answer distinct graph-construction and resolution-selection questions.

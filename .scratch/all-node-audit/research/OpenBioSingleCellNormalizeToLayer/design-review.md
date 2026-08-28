@@ -62,3 +62,9 @@ The module is highly cohesive when described as “derive one reusable expressio
 - Existing destination fails by default and is reproducibly replaced only with explicit overwrite and report disclosure.
 - Reports distinguish intermediate normalized totals from final transformed sums and mark the output as non-count derived expression.
 - Strict-JSON `summary` and compiling generated `code` reproduce the layer and all scientific error invariants.
+
+## 2026-08-29 generated-code provenance repair
+
+Equivalent source still creates exactly one requested derived layer and preserves all other states, but it no longer
+creates or extends OpenBio `analysis_history`. The `summary` remains the reproducibility/provenance artifact for the
+node run.

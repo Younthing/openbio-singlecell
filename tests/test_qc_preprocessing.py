@@ -464,71 +464,88 @@ def test_qc_plot_reports_missing_mitochondrial_metric_as_unavailable(adata):
     assert "Mitochondrial metric unavailable" in code
 
 
-def test_qc_plot_derived_mitochondrial_percent_uses_one_expression_source(science):
+def test_qc_plot_ignores_stale_obs_metrics_and_uses_one_explicit_expression_source(science):
     value = science.ad.AnnData(
-        science.sparse.csr_matrix([[10.0, 0.0], [0.0, 10.0]]),
+        science.sparse.csr_matrix([[1.0, 1.0], [1.0, 1.0]]),
         obs=science.pd.DataFrame(
             {
-                "total_counts": [100.0, 100.0],
-                "n_genes_by_counts": [1, 1],
+                "total_counts": [900.0, 900.0],
+                "n_genes_by_counts": [2, 2],
+                "pct_counts_mt": [99.0, 99.0],
             },
             index=["mitochondrial", "nuclear"],
         ),
         var=science.pd.DataFrame({"mt": [True, False]}, index=["MT-G", "G"]),
     )
+    value.layers["counts"] = science.sparse.csr_matrix([[10.0, 0.0], [0.0, 20.0]])
+    snapshot = value.copy()
 
-    _, report, code = OpenBioSingleCellQCPlots.execute(value).result
+    _, report, code = OpenBioSingleCellQCPlots.execute(
+        value,
+        source={"source": "layer", "source_layer": "counts"},
+    ).result
 
-    assert report.summary["key_results"]["distributions"]["mitochondrial_percent"]["median"] == 50.0
-    assert report.summary["key_results"]["metric_sources"]["mitochondrial_panel_total_expression"] == "AnnData.X"
+    key_results = report.summary["key_results"]
+    assert key_results["distributions"]["total_expression"]["median"] == 15.0
+    assert key_results["distributions"]["detected_genes"]["median"] == 1.0
+    assert key_results["distributions"]["mitochondrial_percent"]["median"] == 50.0
+    assert set(key_results["metric_sources"].values()) == {"AnnData layer 'counts'"}
+    assert_adata_equal(value, snapshot, science)
     namespace = {}
     exec(code, namespace)
     figure = namespace["qc_plots"](value)
-    offsets = figure.axes[3].collections[0].get_offsets()
-    science.np.testing.assert_allclose(offsets[:, 0], [10.0, 10.0])
-    science.np.testing.assert_allclose(offsets[:, 1], [100.0, 0.0])
+    primary_offsets = figure.axes[2].collections[0].get_offsets()
+    mito_offsets = figure.axes[3].collections[0].get_offsets()
+    science.np.testing.assert_allclose(primary_offsets, [[10.0, 1.0], [20.0, 1.0]])
+    science.np.testing.assert_allclose(mito_offsets, [[10.0, 100.0], [20.0, 0.0]])
 
 
-def test_qc_plot_omits_nonfinite_mitochondrial_evidence(adata, science):
+def test_qc_plot_ignores_nonfinite_obs_mitochondrial_cache(adata, science):
     qc = OpenBioSingleCellCalculateQC.execute(adata).result[0]
     qc.obs["pct_counts_mt"] = science.np.nan
 
     _, report, code = OpenBioSingleCellQCPlots.execute(qc).result
 
     key_results = report.summary["key_results"]
-    assert "mitochondrial_percent" not in key_results["distributions"]
-    assert "total_expression_vs_mitochondrial_percent" not in key_results["panels"]
-    assert any("no finite values" in warning for warning in report.warnings)
+    assert key_results["distributions"]["mitochondrial_percent"]["missing"] == 0
+    assert "total_expression_vs_mitochondrial_percent" in key_results["panels"]
+    assert set(key_results["metric_sources"].values()) == {"AnnData.X"}
     namespace = {}
     exec(code, namespace)
     figure = namespace["qc_plots"](qc)
-    assert figure.axes[3].axison is False
-    assert figure.axes[3].texts[0].get_text() == "Mitochondrial metric unavailable"
+    assert figure.axes[3].axison is True
 
 
-def test_qc_plot_reports_partially_nonfinite_mitochondrial_evidence(adata, science):
-    qc = OpenBioSingleCellCalculateQC.execute(adata).result[0]
-    qc.obs.loc[qc.obs_names[0], "pct_counts_mt"] = science.np.nan
+def test_qc_plot_reports_zero_library_mitochondrial_percentage_as_missing(science):
+    value = science.ad.AnnData(
+        science.sparse.csr_matrix([[0.0, 0.0], [0.0, 10.0]]),
+        obs=science.pd.DataFrame(index=["empty", "expressed"]),
+        var=science.pd.DataFrame({"mt": [True, False]}, index=["MT-G", "G"]),
+    )
 
-    _, report, _ = OpenBioSingleCellQCPlots.execute(qc).result
+    _, report, code = OpenBioSingleCellQCPlots.execute(value).result
 
     distribution = report.summary["key_results"]["distributions"]["mitochondrial_percent"]
-    assert distribution["n"] == qc.n_obs
+    assert distribution["n"] == value.n_obs
     assert distribution["missing"] == 1
     assert any("non-finite mitochondrial percentages" in warning for warning in report.warnings)
+    namespace = {}
+    exec(code, namespace)
+    figure = namespace["qc_plots"](value)
+    science.np.testing.assert_allclose(figure.axes[3].collections[0].get_offsets(), [[10.0, 0.0]])
 
 
-def test_qc_plot_code_reproduces_nonfinite_primary_metric_error(adata, science):
-    _, _, code = OpenBioSingleCellQCPlots.execute(adata).result
-    invalid = adata.copy()
-    invalid.obs["total_counts"] = science.np.nan
-    invalid.obs["n_genes_by_counts"] = science.np.inf
+def test_qc_plot_code_reproduces_nonfinite_selected_source_error(science):
+    value = science.ad.AnnData(science.np.asarray([[1.0, 0.0], [0.0, 1.0]]))
+    _, _, code = OpenBioSingleCellQCPlots.execute(value).result
+    invalid = value.copy()
+    invalid.X[0, 0] = science.np.nan
 
-    with pytest.raises(ValueError, match="at least one finite"):
+    with pytest.raises(ValueError, match="non-finite expression values"):
         OpenBioSingleCellQCPlots.execute(invalid)
     namespace = {}
     exec(code, namespace)
-    with pytest.raises(ValueError, match="at least one finite"):
+    with pytest.raises(ValueError, match="non-finite expression values"):
         namespace["qc_plots"](invalid)
 
 

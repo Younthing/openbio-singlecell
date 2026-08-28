@@ -1127,18 +1127,18 @@ def _standalone_milo_differential_abundance_impl(
         f"{analysis_summary['comparison_enriched_calls']} neighborhoods were enriched in {comparison_condition} and "
         f"{analysis_summary['reference_enriched_calls']} were enriched in {reference_condition}."
     )
+    methods_text = (
+        "Pairwise Milo overlapping K-nearest-neighbor differential abundance used independent Sample neighborhood "
+        "cell counts, TMM-normalized negative-binomial edgeR robust quasi-likelihood F tests, and k-distance weighted "
+        "SpatialFDR over the complete neighborhood universe. Neighborhood labels are descriptive majority annotations "
+        "with an explicit mixed-label threshold."
+    )
     summary = {
         "schema_version": 1,
         "schema_id": "openbio-singlecell/milo-differential-abundance/v1",
         "node_id": "OpenBioSingleCellMiloDifferentialAbundance",
         "analysis_status": "sample_level_condition_inference",
-        "methods": [
-            "Pairwise Milo overlapping K-nearest-neighbor differential abundance",
-            "Independent-Sample neighborhood cell counts",
-            "TMM-normalized negative-binomial edgeR robust quasi-likelihood F test",
-            "k-distance weighted SpatialFDR over the complete neighborhood universe",
-            "Descriptive majority neighborhood annotation with an explicit mixed-label threshold",
-        ],
+        "methods": methods_text,
         "results": results_text,
         "comparison": {
             "condition_key": condition_key,
@@ -1202,8 +1202,8 @@ def _standalone_milo_differential_abundance_impl(
             "samples_represented_per_neighborhood_by_condition": condition_sample_coverage,
             "selected_cell_coverage": float((np.asarray(membership.sum(axis=1)).ravel() > 0).mean()),
         },
-        "analysis_summary": analysis_summary,
         "key_results": {
+            **analysis_summary,
             "comparison_enriched": result_records(comparison_calls, ascending=False),
             "reference_enriched": result_records(reference_calls, ascending=True),
         },

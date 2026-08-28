@@ -124,3 +124,9 @@ No workflow migration file change is required for the backend replacement.
 ## Cohesion assessment
 
 The result is high-cohesion because the node performs one analysis: a complete rank survey. It is low-coupling because downstream code sees a typed run with scientific metadata, while file layout, lifecycle, external quirks, and cache details stay behind the adapter. Retaining the node is preferable to merging it with consensus or general preprocessing.
+
+## 2026-08-29 expression-state consistency repair
+
+The standalone cNMF resolver now recognizes `scale_to_layer` provenance as `scaled`, matching the package resolver and
+triggering the existing cautious expert-source disclosure. Runtime and generated rank-survey functions are
+contract-tested to return the same state and evidence.

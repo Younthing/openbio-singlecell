@@ -276,3 +276,9 @@ The refactor is scientifically and architecturally complete only when:
 8. legacy ambiguity is rejected atomically rather than guessed.
 
 The official and primary-source evidence for these decisions is recorded in [`official-usage.md`](./official-usage.md), especially the pinned Pertpy loader, design, NUTS, selection, and output-field behavior.
+
+## 2026-08-29 report-contract repair
+
+The scientific Interface is unchanged. The report now uses a prose `methods` field, a writing-ready `results` string,
+and a structured `key_results` mapping; the redundant singular `method` field was removed. Python is recorded beside
+the pinned backend and OpenBio versions so the shared report seam can validate complete runtime disclosure.

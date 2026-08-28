@@ -353,3 +353,9 @@ def run_milo_differential_abundance(adata, ...):
 - summary 是 strict JSON，无 NaN/Infinity，包含完整 Sample/design/graph/方法/引用/版本/限制；provisional 语言始终保留；
 - `code` 可编译、无 UI/网络依赖，并与节点在 canonical table、邻域、设计/contrast、calls 和 summary 核心字段上等价；
 - 输入在成功、预检失败和 backend 失败后均逐槽不变，且不发布部分输出。
+
+## 2026-08-29 report-contract repair
+
+The node remains one atomic Sample-level contrast. Its method disclosures are now one report-ready `methods` string,
+and all numeric/call highlights live in the canonical `key_results` mapping. The redundant `analysis_summary` branch
+was removed; detailed comparison, design, graph, references, limitations, and versions remain additive report fields.

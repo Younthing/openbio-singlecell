@@ -24,6 +24,22 @@ from openbio_singlecell.nodes_output import (
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
+def canonical_summary(**extra):
+    return {
+        "schema_version": 1,
+        "node_id": "OpenBioSingleCellTest",
+        "methods": "Test method.",
+        "results": "Test result.",
+        "key_results": {},
+        "parameters": {},
+        "warnings": [],
+        "limitations": [],
+        "references": [{"citation": "Test citation.", "url": "https://example.org", "kind": "method"}],
+        "software_versions": {"python": "test", "openbio-singlecell": "test"},
+        **extra,
+    }
+
+
 def result_fields():
     return dict(
         title="result",
@@ -39,7 +55,7 @@ def result_fields():
 
 
 def make_summary(summary=None):
-    return SummaryResult(summary={"description": "summary"} if summary is None else summary, **result_fields())
+    return SummaryResult(summary=canonical_summary(description="summary") if summary is None else summary, **result_fields())
 
 
 def make_table(table):

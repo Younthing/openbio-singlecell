@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 
 PRIORITY_CATEGORY = "openbio/single-cell/cell-prioritization"
-VISUALIZATION_CATEGORY = "openbio/single-cell/visualization"
+DIAGNOSTIC_CATEGORY = "openbio/single-cell/diagnostics"
 
 
 class OpenBioSingleCellAugur(io.ComfyNode):
@@ -216,7 +216,7 @@ class OpenBioSingleCellCellTypeCorrelation(io.ComfyNode):
         return io.Schema(
             node_id="OpenBioSingleCellCellTypeCorrelation",
             display_name="Population Centroid Correlation",
-            category=VISUALIZATION_CATEGORY,
+            category=DIAGNOSTIC_CATEGORY,
             description=(
                 "Compute descriptive correlations between population centroids in one explicit representation, "
                 "with a canonical pair table and dendrogram-ordered matrix plot."

@@ -178,8 +178,20 @@ def _ta_sparse_graph_matrix(matrix, *, n_obs, operation, name, numpy, scipy_spar
     if values.size and bool((values < 0).any()):
         raise ValueError(f"{operation} {name} matrix contains negative values.")
     coordinates = canonical.tocoo(copy=False)
-    if bool(numpy.any(coordinates.row == coordinates.col)):
-        raise ValueError(f"{operation} {name} matrix must not store diagonal entries, including explicit zeros.")
+    diagonal = coordinates.row == coordinates.col
+    if bool(numpy.any(diagonal)):
+        if not bool(numpy.allclose(coordinates.data[diagonal], 0.0, rtol=0.0, atol=1e-12)):
+            raise ValueError(f"{operation} {name} matrix must have a zero diagonal.")
+        off_diagonal = ~diagonal
+        canonical = scipy_sparse.csr_matrix(
+            (
+                coordinates.data[off_diagonal],
+                (coordinates.row[off_diagonal], coordinates.col[off_diagonal]),
+            ),
+            shape=canonical.shape,
+        )
+        canonical.sum_duplicates()
+        canonical.sort_indices()
     if not preserve_zeros:
         canonical.eliminate_zeros()
         canonical.sort_indices()

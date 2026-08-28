@@ -59,3 +59,9 @@ This shape has high cohesion: one call maps one declared count representation to
 - Non-integer corrected counts produce a report warning without being mislabeled as raw UMI counts.
 - High-expression exclusion, if exposed, matches Scanpy and reports its different total interpretation.
 - Strict-JSON `summary` and compiling generated `code` reproduce the normalized `X` and all scientific input/error invariants.
+
+## 2026-08-29 generated-code provenance repair
+
+Equivalent source still reproduces validation and normalization, but no longer creates or extends OpenBio
+`analysis_history`. Runtime nodes remain the only writers of plugin provenance; standalone code consumes existing
+evidence when present and otherwise reports an unknown state.

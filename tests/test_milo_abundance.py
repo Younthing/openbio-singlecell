@@ -422,11 +422,14 @@ def test_milo_runs_one_edge_r_sample_contrast_and_code_is_equivalent(science, mo
     assert table_result.table["reported_annotation"].tolist() == ["Mixed", "T", "T", "Mixed"]
     assert table_result.table["is_mixed"].tolist() == [True, False, False, True]
     assert report.summary["analysis_status"] == "sample_level_condition_inference"
+    assert isinstance(report.summary["methods"], str)
+    assert "Pairwise Milo" in report.summary["methods"]
     assert report.summary["comparison"]["positive_log2_fold_change"] == "treated enriched versus control"
     assert report.summary["design_evidence"]["samples_by_condition"] == {"control": 3, "treated": 3}
-    assert report.summary["analysis_summary"]["tested_neighborhoods"] == 4
-    assert report.summary["analysis_summary"]["comparison_enriched_calls"] == 2
-    assert report.summary["analysis_summary"]["reference_enriched_calls"] == 1
+    assert report.summary["key_results"]["tested_neighborhoods"] == 4
+    assert report.summary["key_results"]["comparison_enriched_calls"] == 2
+    assert report.summary["key_results"]["reference_enriched_calls"] == 1
+    assert "analysis_summary" not in report.summary
     assert report.summary["parameters"]["solver"] == "edger"
     assert report.summary["parameters"]["neighbor_transformer"] == "pynndescent"
     assert report.summary["software_versions"]["edgeR"] == "4.10.3"
@@ -661,10 +664,11 @@ def test_milo_reporting_thresholds_do_not_filter_or_refit_the_neighborhood_unive
     )
 
     science.pd.testing.assert_frame_equal(strict_table.table, baseline_table.table)
-    assert strict_report.summary["analysis_summary"]["tested_neighborhoods"] == 4
-    assert strict_report.summary["analysis_summary"]["comparison_enriched_calls"] == 0
-    assert strict_report.summary["analysis_summary"]["reference_enriched_calls"] == 0
-    assert strict_report.summary["key_results"] == {"comparison_enriched": [], "reference_enriched": []}
+    assert strict_report.summary["key_results"]["tested_neighborhoods"] == 4
+    assert strict_report.summary["key_results"]["comparison_enriched_calls"] == 0
+    assert strict_report.summary["key_results"]["reference_enriched_calls"] == 0
+    assert strict_report.summary["key_results"]["comparison_enriched"] == []
+    assert strict_report.summary["key_results"]["reference_enriched"] == []
     assert len([call for call in fake.calls if call[0] == "da_nhoods"]) == 2
 
 

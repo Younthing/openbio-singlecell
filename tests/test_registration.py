@@ -184,32 +184,44 @@ def test_input_extension_loads():
     assert REMOVED_NODE_IDS.isdisjoint(node_ids)
     assert all(schema.is_deprecated is False for schema in schemas)
     assert Counter(schema.category for schema in schemas) == {
-        "openbio/single-cell/annotation": 3,
+        "openbio/single-cell/annotation": 4,
         "openbio/single-cell/batch-integration": 2,
         "openbio/single-cell/cell-communication": 2,
         "openbio/single-cell/cell-prioritization": 2,
-        "openbio/single-cell/clustering": 2,
+        "openbio/single-cell/clustering": 3,
         "openbio/single-cell/copy-number": 3,
         "openbio/single-cell/correction": 3,
         "openbio/single-cell/data": 4,
-        "openbio/single-cell/diagnostics": 1,
+        "openbio/single-cell/diagnostics": 3,
         "openbio/single-cell/differential-abundance": 4,
-        "openbio/single-cell/differential-expression": 6,
-        "openbio/single-cell/dimension-reduction": 6,
+        "openbio/single-cell/differential-expression": 4,
+        "openbio/single-cell/dimension-reduction": 5,
         "openbio/single-cell/enrichment": 10,
         "openbio/single-cell/factorization": 2,
-        "openbio/single-cell/input": 5,
+        "openbio/single-cell/input": 4,
         "openbio/single-cell/lineage": 4,
+        "openbio/single-cell/marker-evidence": 2,
         "openbio/single-cell/output": 4,
         "openbio/single-cell/preprocessing": 6,
         "openbio/single-cell/qc": 4,
         "openbio/single-cell/regulatory": 6,
         "openbio/single-cell/study": 1,
-        "openbio/single-cell/trajectory": 4,
+        "openbio/single-cell/trajectory": 3,
         "openbio/single-cell/velocity": 7,
-        "openbio/single-cell/visualization": 3,
+        "openbio/single-cell/visualization": 2,
     }
     assert asyncio.run(extension.get_node_list()) == NODE_CLASSES
+
+
+def test_node_categories_preserve_domain_distinctions():
+    categories = {node.GET_SCHEMA().node_id: node.GET_SCHEMA().category for node in NODE_CLASSES}
+
+    assert categories["OpenBioSingleCellMarkerGenes"] == "openbio/single-cell/marker-evidence"
+    assert categories["OpenBioSingleCellFilterMarkerGenes"] == "openbio/single-cell/marker-evidence"
+    assert categories["OpenBioSingleCellLeiden"] == "openbio/single-cell/clustering"
+    assert categories["OpenBioSingleCellAnnDataSummary"] == "openbio/single-cell/diagnostics"
+    assert categories["OpenBioSingleCellCellCycleScore"] == "openbio/single-cell/annotation"
+    assert categories["OpenBioSingleCellCellTypeCorrelation"] == "openbio/single-cell/diagnostics"
 
 
 def test_node_outputs_use_only_their_concrete_public_contracts():

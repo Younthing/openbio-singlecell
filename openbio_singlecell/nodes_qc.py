@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import inspect
 import math
 import time
 from textwrap import dedent
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from comfy_api.latest import io
 
@@ -1040,17 +1041,71 @@ class OpenBioSingleCellFilterGenes(io.ComfyNode):
         return io.NodeOutput(output, report, code)
 
 
+def _qc_plot_metric_values(matrix, source_var, numpy, scipy_sparse):
+    values = matrix.data if scipy_sparse.issparse(matrix) else numpy.asarray(matrix).ravel()
+    values = numpy.asarray(values)
+    if values.size and not numpy.isfinite(values).all():
+        raise ValueError("Selected expression source contains non-finite expression values.")
+    if scipy_sparse.issparse(matrix):
+        total_expression = numpy.asarray(matrix.sum(axis=1)).ravel()
+        detected_genes = numpy.asarray(matrix.copy().count_nonzero(axis=1)).ravel()
+    else:
+        dense = numpy.asarray(matrix)
+        total_expression = dense.sum(axis=1)
+        detected_genes = numpy.count_nonzero(dense, axis=1)
+    total_expression = numpy.asarray(total_expression, dtype=float)
+    detected_genes = numpy.asarray(detected_genes, dtype=float)
+
+    mitochondrial_percent = None
+    if "mt" in source_var and bool(numpy.asarray(source_var["mt"], dtype=bool).any()):
+        mitochondrial_mask = numpy.asarray(source_var["mt"], dtype=bool)
+        mitochondrial_matrix = matrix[:, mitochondrial_mask]
+        if scipy_sparse.issparse(mitochondrial_matrix):
+            mitochondrial_expression = numpy.asarray(mitochondrial_matrix.sum(axis=1)).ravel()
+        else:
+            mitochondrial_expression = numpy.asarray(mitochondrial_matrix).sum(axis=1)
+        mitochondrial_percent = numpy.divide(
+            mitochondrial_expression * 100.0,
+            total_expression,
+            out=numpy.full(total_expression.shape, numpy.nan, dtype=float),
+            where=total_expression != 0,
+        )
+    return total_expression, detected_genes, mitochondrial_percent
+
+
+def _derive_qc_plot_metrics(
+    matrix: Any,
+    source_var: Any,
+    source_label: str,
+) -> tuple[Any, Any, Any | None, dict[str, str], list[str]]:
+    science = dependencies.require_scientific_dependencies()
+    warnings = validate_count_expression(matrix, source_label=source_label, require_nonnegative=False)
+    total_expression, detected_genes, mitochondrial_percent = _qc_plot_metric_values(
+        matrix,
+        source_var,
+        science.np,
+        science.sparse,
+    )
+    metric_sources = {
+        "total_expression": source_label,
+        "detected_genes": source_label,
+    }
+
+    if mitochondrial_percent is not None:
+        metric_sources["mitochondrial_percent"] = source_label
+        metric_sources["mitochondrial_panel_total_expression"] = source_label
+    else:
+        warnings.append("Mitochondrial annotations are unavailable; the mitochondrial panel was omitted.")
+    return total_expression, detected_genes, mitochondrial_percent, metric_sources, warnings
+
+
 def _qc_plots_code(expression: ExpressionSource) -> str:
     matrix_code = _expression_matrix_code(expression, "adata")
     layer_argument = repr(expression.layer_name) if expression.kind == "layer" else "None"
     use_raw = expression.kind == "raw"
-    return dedent(
+    helper_source = dedent(inspect.getsource(_qc_plot_metric_values)).strip()
+    implementation = dedent(
         f"""
-        import numpy as np
-        from matplotlib.figure import Figure
-        from scipy import sparse
-
-
         def qc_plots(adata):
             if adata.n_obs == 0 or adata.n_vars == 0:
                 raise ValueError("QC plots require at least one cell and one gene.")
@@ -1061,55 +1116,13 @@ def _qc_plots_code(expression: ExpressionSource) -> str:
                 raise ValueError("Raw expression is unavailable.")
             matrix = {matrix_code}
             source_var = adata.raw.var if {use_raw!r} else adata.var
-            needs_fallback = (
-                "total_counts" not in adata.obs
-                or "n_genes_by_counts" not in adata.obs
-                or (
-                    "pct_counts_mt" not in adata.obs
-                    and "mt" in source_var
-                    and bool(np.asarray(source_var["mt"], dtype=bool).any())
-                )
+            total_expression, detected_genes, mitochondrial_percent = _qc_plot_metric_values(
+                matrix,
+                source_var,
+                np,
+                sparse,
             )
-            if needs_fallback:
-                values = matrix.data if sparse.issparse(matrix) else np.asarray(matrix).ravel()
-                values = np.asarray(values)
-                if values.size and not np.isfinite(values).all():
-                    raise ValueError("Selected expression source contains non-finite expression values.")
-            if "total_counts" in adata.obs:
-                total_expression = np.asarray(adata.obs["total_counts"], dtype=float)
-            elif sparse.issparse(matrix):
-                total_expression = np.asarray(matrix.sum(axis=1)).ravel()
-            else:
-                total_expression = np.asarray(matrix).sum(axis=1)
-
-            if "n_genes_by_counts" in adata.obs:
-                detected_genes = np.asarray(adata.obs["n_genes_by_counts"], dtype=float)
-            elif sparse.issparse(matrix):
-                detected_genes = np.asarray(matrix.copy().count_nonzero(axis=1)).ravel()
-            else:
-                detected_genes = np.count_nonzero(np.asarray(matrix), axis=1)
-
-            mitochondrial_percent = None
-            mitochondrial_total_expression = total_expression
-            if "pct_counts_mt" in adata.obs:
-                mitochondrial_percent = np.asarray(adata.obs["pct_counts_mt"], dtype=float)
-            elif "mt" in source_var and bool(np.asarray(source_var["mt"], dtype=bool).any()):
-                mitochondrial_mask = np.asarray(source_var["mt"], dtype=bool)
-                mitochondrial_matrix = matrix[:, mitochondrial_mask]
-                if sparse.issparse(matrix):
-                    mitochondrial_total_expression = np.asarray(matrix.sum(axis=1)).ravel()
-                else:
-                    mitochondrial_total_expression = np.asarray(matrix).sum(axis=1)
-                if sparse.issparse(mitochondrial_matrix):
-                    mitochondrial_expression = np.asarray(mitochondrial_matrix.sum(axis=1)).ravel()
-                else:
-                    mitochondrial_expression = np.asarray(mitochondrial_matrix).sum(axis=1)
-                mitochondrial_percent = np.divide(
-                    mitochondrial_expression * 100.0,
-                    mitochondrial_total_expression,
-                    out=np.zeros_like(mitochondrial_total_expression, dtype=float),
-                    where=mitochondrial_total_expression != 0,
-                )
+            mitochondrial_total_expression = total_expression if mitochondrial_percent is not None else None
             if mitochondrial_percent is not None and not np.isfinite(mitochondrial_percent).any():
                 mitochondrial_percent = None
                 mitochondrial_total_expression = None
@@ -1143,12 +1156,14 @@ def _qc_plots_code(expression: ExpressionSource) -> str:
                 axes[1, 1].set_ylabel("Mitochondrial expression (%)")
             return figure
         """
-    )
+    ).strip()
+    imports = "import numpy as np\nfrom matplotlib.figure import Figure\nfrom scipy import sparse"
+    return "\n\n".join((imports, helper_source, implementation))
 
 
 class OpenBioSingleCellQCPlots(io.ComfyNode):
     EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="QC plot fallback expression source",
+        description="QC plot expression source",
         default="X",
         include_raw=True,
         layer_input_id="source_layer",
@@ -1161,7 +1176,7 @@ class OpenBioSingleCellQCPlots(io.ComfyNode):
             node_id="OpenBioSingleCellQCPlots",
             display_name="QC Plots",
             category=CATEGORY,
-            description="Visualize cell-level QC evidence; standard QC columns are preferred when available.",
+            description="Visualize a coherent family of cell-level QC metrics derived from one explicit source.",
             inputs=[AnnDataType.Input("adata"), cls.EXPRESSION_SOURCE.input()],
             outputs=[
                 PlotResultType.Output(display_name="plot"),
@@ -1186,65 +1201,12 @@ class OpenBioSingleCellQCPlots(io.ComfyNode):
         source_label = _expression_source_label(expression)
         matrix = expression.matrix(adata)
         source_var = _expression_var(adata, expression)
-        metric_sources = {}
-        warnings = []
-        fallback_validated = False
-
-        if "total_counts" in adata.obs:
-            total_counts = science.np.asarray(adata.obs["total_counts"], dtype=float)
-            metric_sources["total_expression"] = "obs['total_counts']"
-        else:
-            warnings.extend(
-                validate_count_expression(matrix, source_label=source_label, require_nonnegative=False)
-            )
-            fallback_validated = True
-            total_counts, _ = matrix_totals_and_nonzero(matrix, axis=1)
-            metric_sources["total_expression"] = source_label
-            warnings.append("Total-expression QC annotations were absent and were derived from the fallback source.")
-
-        if "n_genes_by_counts" in adata.obs:
-            detected = science.np.asarray(adata.obs["n_genes_by_counts"], dtype=float)
-            metric_sources["detected_genes"] = "obs['n_genes_by_counts']"
-        else:
-            if not fallback_validated:
-                warnings.extend(
-                    validate_count_expression(matrix, source_label=source_label, require_nonnegative=False)
-                )
-                fallback_validated = True
-            _, detected = matrix_totals_and_nonzero(matrix, axis=1)
-            metric_sources["detected_genes"] = source_label
-            warnings.append("Detected-gene QC annotations were absent and were derived from the fallback source.")
-
-        if "pct_counts_mt" in adata.obs:
-            pct_mt = science.np.asarray(adata.obs["pct_counts_mt"], dtype=float)
-            mito_total_counts = total_counts
-            metric_sources["mitochondrial_percent"] = "obs['pct_counts_mt']"
-            metric_sources["mitochondrial_panel_total_expression"] = metric_sources["total_expression"]
-        elif "mt" in source_var and bool(science.np.asarray(source_var["mt"], dtype=bool).any()):
-            if not fallback_validated:
-                warnings.extend(
-                    validate_count_expression(matrix, source_label=source_label, require_nonnegative=False)
-                )
-                fallback_validated = True
-            mt_mask = science.np.asarray(source_var["mt"], dtype=bool)
-            mito_total_counts, _ = matrix_totals_and_nonzero(matrix, axis=1)
-            mt_counts, _ = matrix_totals_and_nonzero(matrix[:, mt_mask], axis=1)
-            pct_mt = science.np.divide(
-                mt_counts * 100.0,
-                mito_total_counts,
-                out=science.np.zeros_like(mito_total_counts, dtype=float),
-                where=mito_total_counts != 0,
-            )
-            metric_sources["mitochondrial_percent"] = f"{source_label} numerator and denominator with var['mt']"
-            metric_sources["mitochondrial_panel_total_expression"] = source_label
-            warnings.append(
-                "Mitochondrial percentages and their plot denominator were derived from the fallback source "
-                "and the selected source's var['mt']."
-            )
-        else:
-            pct_mt = None
-            mito_total_counts = None
-            warnings.append("Mitochondrial annotations are unavailable; the mitochondrial panel was omitted.")
+        total_counts, detected, pct_mt, metric_sources, warnings = _derive_qc_plot_metrics(
+            matrix,
+            source_var,
+            source_label,
+        )
+        mito_total_counts = total_counts if pct_mt is not None else None
 
         if pct_mt is not None:
             finite_pct_mt = science.np.isfinite(pct_mt)
@@ -1252,6 +1214,8 @@ class OpenBioSingleCellQCPlots(io.ComfyNode):
             if finite_pct_count == 0:
                 pct_mt = None
                 mito_total_counts = None
+                metric_sources.pop("mitochondrial_percent", None)
+                metric_sources.pop("mitochondrial_panel_total_expression", None)
                 warnings.append(
                     "Mitochondrial percentage annotations contained no finite values; the mitochondrial panel "
                     "was omitted."
@@ -1326,8 +1290,8 @@ class OpenBioSingleCellQCPlots(io.ComfyNode):
         )
         methods = (
             "Cell-level total expression, detected-gene counts, and mitochondrial percentage were visualized as "
-            "distributions and pairwise QC scatter plots. Existing Scanpy QC annotations were preferred; missing "
-            f"metrics were derived from {source_label}."
+            f"distributions and pairwise QC scatter plots. Every metric was derived atomically from {source_label}; "
+            "pre-existing observation-level QC columns were not used as an unverified cache."
         )
         results = (
             f"The plot summarizes {cells:,} cells and {genes:,} genes. Median total expression was "

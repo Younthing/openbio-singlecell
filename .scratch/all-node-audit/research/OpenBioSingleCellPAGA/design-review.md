@@ -35,3 +35,8 @@ PAGA now independently reconstructs the exact Scanpy 1.12.3 model-v1.2 calculati
 The public `scanpy.tl.paga` call runs on a minimal zero-variable scratch AnnData containing only the selected categorical observation column, audited neighbor metadata, and canonical graph matrices. Only the verified PAGA bundle and current `{groupby}_sizes` are transferred; unrelated `obs`/`var` strings cannot be sanitized, and overwrite removes the former grouping's sizes sidecar. Partition hashing streams the categorical codes instead of materializing per-cell JSON records. Reports retain the exact total edge count but cap serialized edge rows at 2,000 with an explicit truncation flag, limit, and warning. Standalone code is PAGA-only, preserves NumPy process state, and has runtime/code parity. Migration atomically adds non-overwrite/report controls while preserving links/exposures in root and subgraphs.
 
 The scratch graph is also compared byte-canonically after the backend call, closing equal-and-opposite sparse-matrix tampering that would survive an averaged symmetry fingerprint.
+
+## 2026-08-29 named-graph consistency repair
+
+The shared trajectory graph validator now canonicalizes stored zero diagonal coordinates before PAGA-specific checks.
+Nonzero self-loops remain invalid, while off-diagonal zero distances remain part of the exact named-graph identity.

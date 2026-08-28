@@ -496,6 +496,7 @@ def _standalone_composition_model_impl(
     import json
     import math
     import numbers
+    import platform
 
     import numpy as np
     import pandas as pd
@@ -1118,10 +1119,13 @@ def _standalone_composition_model_impl(
     if method == "sccoda" and int(contract.get("reference_index", -1)) != resolved_reference_index:
         raise RuntimeError(f"{operation} backend reference index differs from the audited cell-type axis.")
 
-    software_versions = backend_result.get("software_versions")
-    if not isinstance(software_versions, dict) or software_versions.get("pertpy") != "1.3.0":
+    backend_software_versions = backend_result.get("software_versions")
+    if not isinstance(backend_software_versions, dict) or backend_software_versions.get("pertpy") != "1.3.0":
         raise RuntimeError(f"{operation} requires exact Pertpy version 1.3.0.")
+    software_versions = dict(backend_software_versions)
+    software_versions["python"] = platform.python_version()
     required_software = {
+        "python",
         "openbio-singlecell",
         "pertpy",
         "numpy",
@@ -1609,6 +1613,19 @@ def _standalone_composition_model_impl(
     else:
         parameters["hierarchy_keys"] = hierarchy_keys
         parameters["aggregation_bias"] = aggregation_bias
+    key_results = dict(results)
+    results_text = key_results.pop("writing_summary")
+    methods_text = (
+        f"Cell-type counts per biological Sample were fit with the Pertpy 1.3.0 {method_name}, using a declared "
+        "compositional reference, a Dirichlet-multinomial likelihood, one NUTS chain, and the explicit Condition "
+        "contrast with any declared Sample-level adjustments. "
+        + (
+            "Effects were selected by the posterior expected-FDR credibility rule."
+            if method == "sccoda"
+            else "Hierarchy-node effects were selected by the tree-adaptive Delta credibility rule before derived "
+            "leaf effects were propagated."
+        )
+    )
     summary = {
         "schema_version": 1,
         "node_id": (
@@ -1617,7 +1634,7 @@ def _standalone_composition_model_impl(
             else "OpenBioSingleCellTasccodaDifferentialComposition"
         ),
         "operation": "sccoda_differential_composition" if method == "sccoda" else "tasccoda_differential_composition",
-        "method": method_name,
+        "methods": methods_text,
         "status": diagnostic_status,
         "inference_scope": "formal" if annotation_status == "curated" else "exploratory",
         "parameters": parameters,
@@ -1691,7 +1708,8 @@ def _standalone_composition_model_impl(
         },
         "selection": selection,
         "diagnostics": diagnostics,
-        "results": results,
+        "results": results_text,
+        "key_results": key_results,
         "warnings": warnings,
         "limitations": [
             "The one-chain Pertpy fit cannot establish between-chain mixing; R-hat is unavailable.",

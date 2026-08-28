@@ -56,3 +56,9 @@ The external seam exposes one operation with no storage decision. Scanpy and Ann
 - Unproven normalization state is disclosed without inventing certainty.
 - Deprecated `set_raw=False` compatibility, if retained, matches the target operation; `True` raises and never writes `raw`.
 - Strict-JSON `summary` and compiling generated `code` reproduce the primary scientific state and invariant failures.
+
+## 2026-08-29 generated-code provenance repair
+
+Equivalent source no longer signs OpenBio history. It relies on existing provenance and AnnData's `uns['log1p']`
+marker, so repeated generated calls still detect a log-transformed matrix while a generated normalize-then-log chain
+honestly discloses unknown normalization provenance.

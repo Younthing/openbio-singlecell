@@ -38,6 +38,7 @@ if TYPE_CHECKING:
 
 
 DIFFERENTIAL_CATEGORY = "openbio/single-cell/differential-expression"
+MARKER_CATEGORY = "openbio/single-cell/marker-evidence"
 PLOT_CATEGORY = "openbio/single-cell/visualization"
 DIAGNOSTIC_CATEGORY = "openbio/single-cell/diagnostics"
 PCA_METADATA_COLUMNS = [
@@ -244,7 +245,11 @@ class OpenBioSingleCellMarkerGenes(io.ComfyNode):
         return io.Schema(
             node_id="OpenBioSingleCellMarkerGenes",
             display_name="Marker Genes",
-            category=DIFFERENTIAL_CATEGORY,
+            category=MARKER_CATEGORY,
+            description=(
+                "Compute exploratory all-groups-versus-rest Cluster marker evidence; this is not a Sample-level "
+                "Condition contrast."
+            ),
             inputs=[
                 AnnDataType.Input("adata"),
                 io.String.Input("groupby", default="leiden"),
@@ -616,7 +621,11 @@ class OpenBioSingleCellFilterMarkerGenes(io.ComfyNode):
         return io.Schema(
             node_id="OpenBioSingleCellFilterMarkerGenes",
             display_name="Filter Marker Genes",
-            category=DIFFERENTIAL_CATEGORY,
+            category=MARKER_CATEGORY,
+            description=(
+                "Filter a validated Cluster marker evidence table and its tested universe by inclusive thresholds "
+                "without recomputing the marker tests."
+            ),
             inputs=[
                 TableResultType.Input("table"),
                 TableResultType.Input("universe"),

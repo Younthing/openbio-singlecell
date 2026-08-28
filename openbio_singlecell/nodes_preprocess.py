@@ -584,40 +584,9 @@ def _generated_state_helpers() -> str:
             return [entry for entry in history.values() if isinstance(entry, Mapping)]
 
 
-        def _openbio_record_operation(adata, operation, parameters):
-            existing = adata.uns.get("openbio_singlecell")
-            metadata = dict(existing) if isinstance(existing, Mapping) else {}
-            existing_history = metadata.get("analysis_history")
-            history = dict(existing_history) if isinstance(existing_history, Mapping) else {}
-            indices = []
-            for key in history:
-                try:
-                    indices.append(int(key))
-                except (TypeError, ValueError):
-                    continue
-            index = max(indices, default=-1) + 1
-            key = f"{index:06d}"
-            while key in history:
-                index += 1
-                key = f"{index:06d}"
-            history[key] = {"operation": operation, "parameters": dict(parameters)}
-            metadata.setdefault("schema_version", 1)
-            metadata.setdefault("version", "0.2.0")
-            metadata.setdefault("display_name", "AnnData")
-            metadata.setdefault("source", {})
-            metadata.setdefault("random_seed", 0)
-            metadata.setdefault("warnings", [])
-            metadata["analysis_history"] = history
-            adata.uns["openbio_singlecell"] = metadata
-
-
         def _openbio_expression_state(adata, source_kind, layer_name=None):
-            if isinstance(adata.uns.get("log1p"), Mapping):
-                x_state = "logged_unverified"
-                x_evidence = "AnnData uns['log1p'] marker without normalization provenance"
-            else:
-                x_state = "unknown"
-                x_evidence = None
+            x_state = "unknown"
+            x_evidence = None
             layer_states = {}
             for entry in _openbio_history_entries(adata):
                 operation = entry.get("operation")
@@ -664,6 +633,8 @@ def _generated_state_helpers() -> str:
 
             if source_kind == "layer":
                 return layer_states.get(layer_name, ("unknown", None))
+            if x_state != "logged" and isinstance(adata.uns.get("log1p"), Mapping):
+                return "logged_unverified", "AnnData uns['log1p'] marker without normalization provenance"
             return x_state, x_evidence
 
 
@@ -761,16 +732,6 @@ def _normalize_total_code(expression: ExpressionSource, target_sum: float) -> st
                     raise RuntimeError("Normalize Total produced non-finite expression values.")
                 output.X = work.X.copy()
                 output.uns.pop("log1p", None)
-                _openbio_record_operation(
-                    output,
-                    "normalize_total",
-                    {{
-                        "target_sum": target_sum,
-                        "exclude_highly_expressed": False,
-                        "source": source_kind,
-                        "source_layer": layer_name,
-                    }},
-                )
                 return output
             """
         ).strip()
@@ -824,11 +785,6 @@ def _log1p_code() -> str:
                 )
                 if output_values.size and not np.isfinite(output_values).all():
                     raise RuntimeError("Log1p produced non-finite expression values.")
-                _openbio_record_operation(
-                    output,
-                    "log1p",
-                    {"source": "X", "base": "natural", "pseudocount": 1.0},
-                )
                 return output
             """
         ).strip()
@@ -912,19 +868,6 @@ def _normalize_to_layer_code(
                 if output_values.size and not np.isfinite(output_values).all():
                     raise RuntimeError("Normalize to Layer produced non-finite output values.")
                 output.layers[output_layer] = work.X.copy()
-                _openbio_record_operation(
-                    output,
-                    "normalize_to_layer",
-                    {{
-                        "source": source_kind,
-                        "source_layer": source_layer,
-                        "target_sum": target_sum,
-                        "exclude_highly_expressed": False,
-                        "transform": transform,
-                        "output_layer": output_layer,
-                        "overwrite_existing": overwrite_existing,
-                    }},
-                )
                 return output
             """
         ).strip()

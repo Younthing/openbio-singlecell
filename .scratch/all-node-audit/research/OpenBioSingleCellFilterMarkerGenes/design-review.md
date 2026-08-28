@@ -72,3 +72,9 @@ The report must call the output filtered Cluster marker evidence. It must not sa
 - Add a regression proving logistic-shaped NaN statistics fail loudly rather than silently producing an empty result.
 - Test input/universe immutability, inclusive equality at every threshold, per-group diagnostics, overlapping failures, preserved order/ranks, direct-only enforcement, content-number tampering, same-axis/different-ranking cross-pair rejection, strict JSON, and generated-code two-table equivalence.
 - Do not add a compatibility branch accepting both legacy and canonical names indefinitely; that would create two public interfaces and spread migration complexity across every consumer.
+
+## 2026-08-29 repair record
+
+- New category: `openbio/single-cell/marker-evidence`.
+- Classification rationale: this atomic analysis selects from validated **Cluster marker evidence** without fitting a new model; it does not produce a replicate-aware **Condition contrast**. This preserves the boundary defined by [ADR-0001](../../../../docs/adr/0001-separate-marker-evidence-from-condition-inference.md) and the terms in [CONTEXT.md](../../../../CONTEXT.md).
+- Merge/delete decision: retain the standalone table-native filter. Do not merge it into MarkerGenes or differential-expression nodes and do not delete it, because analysts must be able to revise transparent thresholds without recomputing the ranking.

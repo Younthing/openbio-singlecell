@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 
 CATEGORY = "openbio/single-cell/dimension-reduction"
+CLUSTERING_CATEGORY = "openbio/single-cell/clustering"
 MAX_RANDOM_SEED = 2**31 - 1
 SOFTWARE_PACKAGES = ("scanpy", "anndata", "numpy", "scipy", "scikit-learn")
 _DRAW_GRAPH_RNG_LOCK = threading.RLock()
@@ -1795,7 +1796,11 @@ class OpenBioSingleCellLeiden(io.ComfyNode):
         return io.Schema(
             node_id="OpenBioSingleCellLeiden",
             display_name="Leiden Clustering",
-            category=CATEGORY,
+            category=CLUSTERING_CATEGORY,
+            description=(
+                "Partition one named neighbor graph with Leiden and report modularity, cluster sizes, and multi-start "
+                "stability."
+            ),
             inputs=[
                 AnnDataType.Input("adata"),
                 io.Float.Input("resolution", default=1.0, min=0.0, step=0.1),

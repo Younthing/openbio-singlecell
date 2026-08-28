@@ -129,7 +129,7 @@ def _result_fields(
 
 def make_summary_result(
     *,
-    summary: Any,
+    summary: dict[str, Any],
     title: str,
     operation: str,
     parameters: dict[str, Any],

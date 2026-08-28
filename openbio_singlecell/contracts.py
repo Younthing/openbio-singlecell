@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from . import PLUGIN_VERSION, SCHEMA_VERSION
+from .report_contract import validate_report_summary
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -33,12 +34,11 @@ class _SingleCellResultBase:
 
 @dataclass(frozen=True, slots=True)
 class SummaryResult(_SingleCellResultBase):
-    summary: Any
+    summary: dict[str, Any]
     kind: Literal["summary"] = field(init=False, default="summary")
 
     def __post_init__(self) -> None:
-        if self.summary is None:
-            raise ValueError("SummaryResult requires summary data.")
+        validate_report_summary(self.summary)
 
 
 @dataclass(frozen=True, slots=True)

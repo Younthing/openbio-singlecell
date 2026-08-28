@@ -720,6 +720,36 @@ def test_noninteger_and_logged_expert_source_is_advisory_not_gate():
     run.close()
 
 
+def test_scale_to_layer_history_is_classified_consistently_in_runtime_and_code():
+    adata = _adata()
+    adata.layers["scaled"] = adata.layers["counts"] / 10.0
+    adata.uns["openbio_singlecell"] = {
+        "analysis_history": {
+            "000000": {
+                "operation": "scale_to_layer",
+                "parameters": {"output_layer": "scaled"},
+            }
+        }
+    }
+
+    run, _, report, code = _run_survey(
+        adata,
+        source={"source": "layer", "layer_name": "scaled"},
+    )
+    assert run.metadata.source_state == "scaled"
+    assert run.metadata.source_state_evidence == "OpenBio Scale history"
+    assert report.summary["key_results"]["source_state"] == "scaled"
+    assert any("proven to be scaled" in warning for warning in report.summary["warnings"])
+
+    namespace: dict[str, object] = {}
+    exec(code, namespace)
+    generated_run, _ = namespace["cnmf_rank_survey"](adata)
+    assert generated_run.metadata.source_state == "scaled"
+    assert generated_run.metadata.source_state_evidence == "OpenBio Scale history"
+    generated_run.close()
+    run.close()
+
+
 def test_unknown_noninteger_source_is_not_described_as_integer_valued_or_umi():
     run, _, report, _ = _run_survey(_adata(noninteger=True))
     provenance_warnings = [

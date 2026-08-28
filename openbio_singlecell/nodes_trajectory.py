@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 
 CATEGORY = "openbio/single-cell/trajectory"
+ANNOTATION_CATEGORY = "openbio/single-cell/annotation"
 
 
 def _parse_dpt_root_value(value_type: object, value: object) -> str | int | float:
@@ -66,7 +67,7 @@ class OpenBioSingleCellCellCycleScore(io.ComfyNode):
         return io.Schema(
             node_id="OpenBioSingleCellCellCycleScore",
             display_name="Cell Cycle Score",
-            category=CATEGORY,
+            category=ANNOTATION_CATEGORY,
             description=(
                 "Score one versioned human or custom cell-cycle program on an explicit Raw, X, or layer source; "
                 "the report discloses departures from recommended full-gene log-normalized input."

@@ -67,3 +67,8 @@ table+summary equivalence.
 The module owns one descriptive centroid-correlation result and its direct view. Representation construction and
 statistical inference remain outside; Scanpy result normalization, validation, reporting, and rendering stay local.
 
+## 2026-08-29 repair record
+
+- New category: `openbio/single-cell/diagnostics`.
+- Classification rationale: the atomic analysis computes descriptive population-centroid similarities and emits a canonical table plus its deterministic view; returning a plot does not make the underlying operation merely `visualization`.
+- Merge/delete decision: retain the cohesive analysis node. Do not merge it with representation construction or inferential models, and do not split or delete it until a second renderer or independent table consumer creates a real seam.

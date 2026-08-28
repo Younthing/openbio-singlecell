@@ -106,6 +106,87 @@ def test_diffusion_map_real_backend_report_state_and_standalone_code(science):
     )
 
 
+def test_diffusion_map_treats_stored_zero_diagonal_as_absent_in_runtime_and_code(science):
+    baseline = _trajectory_input(science)
+    with_zero_diagonal = baseline.copy()
+    storage_before = {}
+    for field in ("connectivities_key", "distances_key"):
+        key = with_zero_diagonal.uns["neighbors"][field]
+        coo = with_zero_diagonal.obsp[key].tocoo()
+        matrix = science.sparse.csr_matrix(
+            (
+                science.np.concatenate([coo.data, science.np.asarray([0.0])]),
+                (
+                    science.np.concatenate([coo.row, science.np.asarray([0])]),
+                    science.np.concatenate([coo.col, science.np.asarray([0])]),
+                ),
+            ),
+            shape=coo.shape,
+        )
+        diagonal = matrix.tocoo()
+        assert bool(((diagonal.row == 0) & (diagonal.col == 0) & (diagonal.data == 0.0)).any())
+        with_zero_diagonal.obsp[key] = matrix
+        storage_before[key] = (matrix.data.copy(), matrix.indices.copy(), matrix.indptr.copy())
+
+    _, baseline_summary = analyze_diffusion_map(baseline, n_comps=5, random_seed=19)
+    _, report, code = OpenBioSingleCellDiffusionMap.execute(
+        with_zero_diagonal,
+        n_comps=5,
+        random_seed=19,
+    ).result
+
+    baseline_fingerprint = baseline_summary["key_results"]["graph"]["graph_fingerprint_sha256"]
+    assert report.summary["key_results"]["graph"]["graph_fingerprint_sha256"] == baseline_fingerprint
+    for key, (data, indices, indptr) in storage_before.items():
+        science.np.testing.assert_array_equal(with_zero_diagonal.obsp[key].data, data)
+        science.np.testing.assert_array_equal(with_zero_diagonal.obsp[key].indices, indices)
+        science.np.testing.assert_array_equal(with_zero_diagonal.obsp[key].indptr, indptr)
+
+    namespace: dict[str, object] = {}
+    exec(code, namespace)
+    _, generated_summary = namespace["run_diffusion_map"](with_zero_diagonal)
+    assert generated_summary["key_results"]["graph"]["graph_fingerprint_sha256"] == baseline_fingerprint
+
+
+def test_diffusion_map_preserves_off_diagonal_zero_distances_and_rejects_self_loops(science):
+    baseline = _trajectory_input(science)
+    with_zero_distance = baseline.copy()
+    distance_key = with_zero_distance.uns["neighbors"]["distances_key"]
+    distance = with_zero_distance.obsp[distance_key].tocsr()
+    row, column = next(
+        (row, column)
+        for row in range(distance.shape[0])
+        for column in range(distance.shape[1])
+        if row != column and distance[row, column] == 0
+    )
+    coo = distance.tocoo()
+    with_zero_distance.obsp[distance_key] = science.sparse.csr_matrix(
+        (
+            science.np.concatenate([coo.data, science.np.asarray([0.0])]),
+            (
+                science.np.concatenate([coo.row, science.np.asarray([row])]),
+                science.np.concatenate([coo.col, science.np.asarray([column])]),
+            ),
+        ),
+        shape=coo.shape,
+    )
+
+    _, baseline_summary = analyze_diffusion_map(baseline, n_comps=5, random_seed=29)
+    _, zero_summary = analyze_diffusion_map(with_zero_distance, n_comps=5, random_seed=29)
+    baseline_graph = baseline_summary["key_results"]["graph"]
+    zero_graph = zero_summary["key_results"]["graph"]
+    assert zero_graph["stored_directed_distance_edges"] == baseline_graph["stored_directed_distance_edges"] + 1
+    assert zero_graph["graph_fingerprint_sha256"] != baseline_graph["graph_fingerprint_sha256"]
+
+    self_loop = baseline.copy()
+    connectivity_key = self_loop.uns["neighbors"]["connectivities_key"]
+    connectivity = self_loop.obsp[connectivity_key].tolil(copy=True)
+    connectivity[0, 0] = 0.25
+    self_loop.obsp[connectivity_key] = connectivity.tocsr()
+    with pytest.raises(ValueError, match="zero diagonal"):
+        analyze_diffusion_map(self_loop, n_comps=5)
+
+
 @pytest.mark.parametrize("failure", ["missing_pointer", "dense", "asymmetric", "nonfinite", "duplicate_axis"])
 def test_trajectory_named_graph_preflight_is_fail_closed(science, failure):
     adata = _trajectory_input(science)

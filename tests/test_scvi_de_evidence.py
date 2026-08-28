@@ -320,10 +320,13 @@ def test_scvi_model_de_uses_only_shared_supported_batches_and_reports(scvi_evide
     assert summary["comparison"]["shared_technical_batches_used"] == ["b1", "b2"]
     assert summary["comparison"]["excluded_nonshared_technical_batches"] == ["b3", "b4"]
     assert summary["comparison"]["unused_declared_group_categories"] == ["unused-group"]
-    assert summary["analysis_summary"]["posterior_fdr_tagged_features"] == 1
-    assert summary["analysis_summary"]["posterior_fdr_tagged_positive_features"] == 1
-    assert summary["analysis_summary"]["posterior_fdr_tagged_negative_features"] == 0
-    assert summary["analysis_summary"]["leading_tagged_positive_effects"] == [
+    assert isinstance(summary["methods"], str)
+    assert "scVI" in summary["methods"]
+    assert isinstance(summary["results"], str)
+    assert summary["key_results"]["posterior_fdr_tagged_features"] == 1
+    assert summary["key_results"]["posterior_fdr_tagged_positive_features"] == 1
+    assert summary["key_results"]["posterior_fdr_tagged_negative_features"] == 0
+    assert summary["key_results"]["leading_tagged_positive_effects"] == [
         {
             "gene": "g1",
             "lfc_mean": 1.2,
@@ -334,9 +337,9 @@ def test_scvi_model_de_uses_only_shared_supported_batches_and_reports(scvi_evide
             "raw_mean_group2": 2.0,
         }
     ]
-    assert summary["analysis_summary"]["leading_tagged_negative_effects"] == []
-    assert summary["analysis_summary"]["top_model_evidence"] == []
-    assert summary["analysis_summary"]["top_ranked_effects"][0]["bayes_factor"] == 2.9
+    assert summary["key_results"]["leading_tagged_negative_effects"] == []
+    assert summary["key_results"]["top_model_evidence"] == []
+    assert summary["key_results"]["top_ranked_effects"][0]["bayes_factor"] == 2.9
     assert summary["model_evidence"]["artifact_schema_version"] == SCVI_MODEL_ARTIFACT_SCHEMA
     assert summary["model_evidence"]["registered_count_state"] == "counts"
     assert summary["model_evidence"]["registered_count_state_evidence"] == "test fixture raw counts"
@@ -348,7 +351,9 @@ def test_scvi_model_de_uses_only_shared_supported_batches_and_reports(scvi_evide
         "mps_available": False,
     }
     assert summary["runtime_environment"]["accelerator"] == summary["model_evidence"]["accelerator_runtime"]
-    assert summary["method"]["test_mode"] == "two"
+    assert summary["method_details"]["test_mode"] == "two"
+    assert "method" not in summary
+    assert "analysis_summary" not in summary
     assert any(reference["doi"] == "10.1038/s41587-021-01206-w" for reference in summary["references"])
     assert "not independent biological Samples" in summary["warnings"][0]
     json.dumps(summary, allow_nan=False)
@@ -546,10 +551,10 @@ def test_scvi_model_de_vanilla_discloses_directional_model_evidence(scvi_evidenc
     assert table["gene"].tolist() == ["g1", "g3", "g2"]
     assert "is_de_fdr" not in table
     assert raw_model.calls[-1]["mode"] == "vanilla"
-    assert summary["analysis_summary"]["posterior_fdr_tagged_features"] is None
-    assert summary["analysis_summary"]["posterior_fdr_tagged_positive_features"] is None
-    assert summary["analysis_summary"]["leading_tagged_positive_effects"] == []
-    assert summary["analysis_summary"]["top_model_evidence"][0] == {
+    assert summary["key_results"]["posterior_fdr_tagged_features"] is None
+    assert summary["key_results"]["posterior_fdr_tagged_positive_features"] is None
+    assert summary["key_results"]["leading_tagged_positive_effects"] == []
+    assert summary["key_results"]["top_model_evidence"][0] == {
         "gene": "g1",
         "bayes_factor": 2.9,
         "probability_group1_higher": 0.95,

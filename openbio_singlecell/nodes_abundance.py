@@ -332,7 +332,7 @@ class OpenBioSingleCellSccodaDifferentialComposition(io.ComfyNode):
         )
         parameters = dict(summary["parameters"])
         warnings = list(summary["warnings"])
-        description = summary["results"]["writing_summary"]
+        description = summary["results"]
         table_result = make_table_result(
             title="scCODA differential composition",
             operation="sccoda_differential_composition",
@@ -448,7 +448,7 @@ class OpenBioSingleCellTasccodaDifferentialComposition(io.ComfyNode):
         )
         parameters = dict(summary["parameters"])
         warnings = list(summary["warnings"])
-        description = summary["results"]["writing_summary"]
+        description = summary["results"]
         table_result = make_table_result(
             title="tascCODA differential composition",
             operation="tasccoda_differential_composition",

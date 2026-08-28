@@ -53,3 +53,8 @@ The public `group_medoid` branch now requires `root_value_type=string|integer|nu
 Whole-graph migration rewrites the old string root to explicit string-typed `group_medoid`, preserves and renames connected/direct/proxied root controls, and either verifies a directly upstream same-key Diffusion Map with enough components or inserts one immediately on the same AnnData edge. It uses one collision-free allocator across root/subgraphs and object/array links, preserves every DPT slot-zero consumer, adds a result-changing review note, and returns zero on a second pass. Unconnected, boundary/reroute, graph-key/component conflicts, broken links, and partial/mixed serialization reject the complete workflow before mutation.
 
 An inserted prerequisite uses `overwrite_existing=true` deliberately on its output copy so a bare or indirectly inherited legacy diffusion basis cannot collide with or masquerade as the new graph-bound provenance. Direct current/legacy Diffusion Map producers with the same key and enough components are reused instead. DPT-to-DPT chains are rejected during preflight because their already oriented state cannot be a valid new-basis prerequisite.
+
+## 2026-08-29 named-graph consistency repair
+
+The shared trajectory graph validator now canonicalizes stored zero diagonal coordinates before DPT provenance and
+root checks. Nonzero self-loops remain invalid, and valid off-diagonal zero distances retain their structural identity.

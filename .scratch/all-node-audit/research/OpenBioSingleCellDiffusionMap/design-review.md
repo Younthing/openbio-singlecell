@@ -37,3 +37,9 @@ Postconditions compare the exact stored sparse connectivity/distance fingerprint
 Standalone source now contains only the Diffusion Map dependency closure. Whole-workflow migration recognizes exact old positional `n_comps,neighbors_key,random_seed`, rewrites the current order with `overwrite_existing=false`, preserves slot-zero fan-out and connected/exposed controls, appends `summary/code`, and is idempotent. Partial/mixed schemas and malformed links fail during all-graph preflight before any workflow mutation. Real Scanpy, asymmetric-within-policy canonicalization, malicious orthonormal-but-wrong eigenpairs, stale-DPT rejection, strict JSON, generated-code parity, object/array-link, subgraph, exposure, and idempotence regressions cover the closure.
 
 Report size is explicitly bounded: all at-most-4,096 eigenvalues remain disclosed, while per-component distribution summaries are capped at 100 with total/truncation metadata; named-graph component-size lists are likewise capped at 100 and isolated-cell examples at 20.
+
+## 2026-08-29 named-graph consistency repair
+
+Sparse graph validation now treats explicitly stored zero diagonal coordinates as the same zero-diagonal graph as an
+unstored diagonal. Actual nonzero self-loops still fail. Distance matrices retain legitimate off-diagonal stored zeros,
+including zero distances between duplicate observations; runtime and standalone code share the same helper source.

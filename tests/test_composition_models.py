@@ -265,7 +265,13 @@ def test_sccoda_fake_backend_has_focal_only_expected_fdr_table_and_code_parity()
     assert summary["diagnostics"]["rhat_available"] is False
     assert summary["diagnostics"]["divergences_available"] is False
     assert "converged" not in str(summary).lower()
+    assert isinstance(summary["methods"], str)
+    assert "scCODA" in summary["methods"]
+    assert isinstance(summary["results"], str)
+    assert summary["key_results"]["credible_effect_count"] == 1
+    assert "method" not in summary
     assert len(summary["references"]) >= 4
+    assert summary["software_versions"]["python"]
     assert summary["software_versions"]["pertpy"] == "1.3.0"
     pd.testing.assert_frame_equal(adata.obs, obs_before)
     assert adata.uns == uns_before
@@ -449,6 +455,12 @@ def test_tasccoda_fake_backend_separates_direct_nodes_and_derived_leaves_with_co
     assert summary["selection"]["theta"] == 0.5
     assert summary["hierarchy"]["reference_path"] == ["root_immune", "lineage_lymphoid", "T"]
     assert summary["hierarchy"]["derived_leaf_effects_are_propagated"] is True
+    assert isinstance(summary["methods"], str)
+    assert "tascCODA" in summary["methods"]
+    assert isinstance(summary["results"], str)
+    assert summary["key_results"]["direct_credible_node_count"] == 3
+    assert "method" not in summary
+    assert summary["software_versions"]["python"]
     assert "estimated_fdr" not in summary["parameters"]
     assert "estimated_fdr" not in str(summary)
     pd.testing.assert_frame_equal(adata.obs, obs_before)

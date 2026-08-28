@@ -143,6 +143,35 @@ def test_basic_preprocessing_schemas_expose_primary_summary_and_code():
         ]
 
 
+@pytest.mark.parametrize(
+    ("operation", "function_name"),
+    [
+        ("normalize_total", "normalize_total_expression"),
+        ("log1p", "log1p_expression"),
+        ("normalize_to_layer", "normalize_expression_to_layer"),
+    ],
+)
+def test_generated_basic_preprocessing_code_does_not_write_openbio_history(science, operation, function_name):
+    adata = _adata(science, include_states=False)
+    if operation == "normalize_total":
+        _, _, code = OpenBioSingleCellNormalizeTotal.execute(adata, 100.0).result
+    elif operation == "log1p":
+        _, _, code = OpenBioSingleCellLog1p.execute(adata).result
+    else:
+        _, _, code = OpenBioSingleCellNormalizeToLayer.execute(
+            adata,
+            {"source": "X"},
+            100.0,
+            "none",
+            "normalized",
+        ).result
+
+    assert "_openbio_record_operation" not in code
+    with pytest.warns(UserWarning):
+        generated = _run_code(code, function_name, adata)
+    assert "openbio_singlecell" not in generated.uns
+
+
 @pytest.mark.parametrize("sparse", [False, True])
 def test_normalize_total_uses_declared_source_and_preserves_all_stored_states(science, sparse):
     adata = _adata(science, sparse=sparse)
@@ -345,7 +374,8 @@ def test_normalize_total_clears_stale_log_marker_before_followup_log1p(science):
         generated_normalized = _run_code(normalize_code, "normalize_total_expression", adata)
     assert [str(item.message) for item in generated_warnings] == report.summary["warnings"]
     assert "log1p" not in generated_normalized.uns
-    generated_logged = _run_code(log_code, "log1p_expression", generated_normalized)
+    with pytest.warns(UserWarning, match="source state is 'unknown'"):
+        generated_logged = _run_code(log_code, "log1p_expression", generated_normalized)
     _assert_expression_states_equal(generated_logged, logged, science)
 
 

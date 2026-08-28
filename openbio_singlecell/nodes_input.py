@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 
 
 CATEGORY = "openbio/single-cell/input"
+DIAGNOSTIC_CATEGORY = "openbio/single-cell/diagnostics"
 INPUT_FILE_UPLOAD_WIDGET = "OPENBIO_INPUT_FILE_UPLOAD_WIDGET"
 SLOT_ITEM_LIMIT = 64
 SLOT_NAME_CHARACTER_LIMIT = 256
@@ -358,16 +359,6 @@ def _read_10x_mtx(
         ],
     }
     return adata, details
-
-
-def read_10x_mtx(
-    relative_directory: str,
-    var_names: str = "gene_symbols",
-    make_unique: bool = True,
-    gex_only: bool = True,
-) -> AnnData:
-    adata, _ = _read_10x_mtx(relative_directory, var_names, make_unique, gex_only)
-    return adata
 
 
 def _discover_10x_study(relative_root: str) -> list[tuple[str, str]]:
@@ -1193,8 +1184,8 @@ class OpenBioSingleCellAnnDataSummary(io.ComfyNode):
         return io.Schema(
             node_id="OpenBioSingleCellAnnDataSummary",
             display_name="AnnData Summary",
-            category=CATEGORY,
-            description="Create a bounded structural summary of AnnData.",
+            category=DIAGNOSTIC_CATEGORY,
+            description="Report a bounded structural diagnostic of an existing AnnData object without loading data.",
             inputs=[AnnDataType.Input("adata")],
             outputs=[
                 SummaryResultType.Output(display_name="summary"),

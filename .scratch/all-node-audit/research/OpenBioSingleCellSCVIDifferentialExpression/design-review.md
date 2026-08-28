@@ -372,3 +372,9 @@ The refactor is acceptable only when:
 - `code` is equivalent conditional on the same fitted model and says so;
 - no output or text can reasonably be read as replicate-aware Sample-level Condition inference; and
 - scVI Integration and pseudobulk Condition inference remain separate modules with narrow, high-leverage seams.
+
+## 2026-08-29 report-contract repair
+
+The node remains one exploratory fitted-model population contrast. It now exposes report-ready `methods` and `results`
+strings plus one `key_results` mapping. Detailed model choices remain under `method_details`; the former singular
+`method` and duplicate `analysis_summary` branches were removed. Runtime and generated-code summaries remain equal.

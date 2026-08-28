@@ -307,3 +307,9 @@ The refactor is complete only when:
 10. ambiguous legacy state is rejected atomically rather than guessed.
 
 The official and primary-source evidence behind these choices is recorded in [`official-usage.md`](./official-usage.md), including the root-to-leaf loader contract, tree-adaptive prior, signed `phi`, fixed penalty defaults, inactive FDR input, selection fields, dependency extras, and one-chain diagnostics.
+
+## 2026-08-29 report-contract repair
+
+The scientific Interface is unchanged. The report now separates prose `methods`/`results` from structured
+`key_results`; hierarchy diagnostics and direct-versus-derived effect detail remain additive fields. The redundant
+singular `method` field was removed and Python joined the complete software-version disclosure.

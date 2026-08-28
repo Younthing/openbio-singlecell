@@ -93,3 +93,9 @@ The summary must use the domain term Cluster marker evidence and must not call t
 - Migrate legacy workflows using Raw to a full-gene `log1p_norm` layer. Existing packaged workflows already use that layer and Wilcoxon, so their scientific path is retained.
 - Migrate table-column consumers and serialized workflows together. A temporary alias layer inside `FilterMarkerGenes` would prolong two table interfaces and weaken the seam; prefer one coordinated migration.
 - Verify strict JSON, generated-code two-table equivalence, dense/sparse parity for all three methods, exact-extrema detection of all-zero/constant-positive neutral genes (without a tolerance that can erase real small nonzero values), complete-family BH, memory/output preflight before backend, content tampering, same-axis/different-ranking pair rejection, and small clusters.
+
+## 2026-08-29 repair record
+
+- New category: `openbio/single-cell/marker-evidence`.
+- Classification rationale: this atomic analysis ranks **Cluster marker evidence** for exploratory annotation review; it is not a replicate-aware **Condition contrast**. This preserves the boundary defined by [ADR-0001](../../../../docs/adr/0001-separate-marker-evidence-from-condition-inference.md) and the terms in [CONTEXT.md](../../../../CONTEXT.md).
+- Merge/delete decision: retain the standalone ranking node. Do not merge it with Condition inference, threshold filtering, plotting, or annotation, and do not delete it; each neighboring operation has a different decision, cost, or claim.

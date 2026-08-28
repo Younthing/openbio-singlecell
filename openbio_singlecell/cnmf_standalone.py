@@ -819,6 +819,10 @@ def _expression_state(adata: Any, source_kind: str, source_layer: str | None) ->
             output_layer = parameters.get("output_layer")
             if isinstance(output_layer, str):
                 layer_states[output_layer] = ("derived", f"OpenBio {operation} history")
+        elif operation == "scale_to_layer":
+            output_layer = parameters.get("output_layer")
+            if isinstance(output_layer, str):
+                layer_states[output_layer] = ("scaled", "OpenBio Scale history")
         if operation == "normalize_total":
             x_state, x_evidence = "normalized", "OpenBio Normalize Total history"
         elif operation == "log1p":

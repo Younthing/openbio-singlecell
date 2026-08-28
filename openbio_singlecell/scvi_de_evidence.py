@@ -569,15 +569,22 @@ def _analyze_scvi_model_de_evidence_core(
         "Equivalent code requires the same live fitted weights, registered count view, software/device environment, "
         "and observation metadata; it does not reconstruct or retrain the model.",
     ]
+    methods_text = (
+        "Exploratory scVI model-based differential-expression evidence compared the selected populations over the "
+        "fitted model's exact feature view, using its model-owned registered count source and decoded normalized "
+        "expression. Posterior draws used uniform weights; the declared Technical batch handling defines the decoder "
+        "estimand. This is cell/model-conditional evidence rather than replicate-aware Condition inference."
+    )
     summary = {
         "schema_version": SCVI_DE_SUMMARY_SCHEMA,
         "status": "exploratory_model_evidence",
         "node_id": SCVI_DE_NODE_ID,
-        "method": method,
+        "methods": methods_text,
+        "results": results_text,
+        "method_details": method,
         "comparison": comparison,
         "model_evidence": model_evidence,
-        "analysis_summary": {
-            "results": results_text,
+        "key_results": {
             "tested_fitted_features": len(table),
             "posterior_fdr_tagged_features": tagged,
             "posterior_fdr_tagged_positive_features": len(tagged_positive) if mode == "change" else None,

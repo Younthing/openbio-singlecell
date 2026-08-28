@@ -13,6 +13,22 @@ from openbio_singlecell.payload import MAX_COLUMNS, MAX_ROWS, result_to_payload
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
+def canonical_summary(**extra):
+    return {
+        "schema_version": 1,
+        "node_id": "OpenBioSingleCellTest",
+        "methods": "Test method.",
+        "results": "Test result.",
+        "key_results": {},
+        "parameters": {},
+        "warnings": [],
+        "limitations": [],
+        "references": [{"citation": "Test citation.", "url": "https://example.org", "kind": "method"}],
+        "software_versions": {"python": "test", "openbio-singlecell": "test"},
+        **extra,
+    }
+
+
 def result_fields():
     return dict(
         title="result",
@@ -56,11 +72,11 @@ def test_table_payload_is_bounded_and_normalizes_nonfinite_values(science):
 
 
 def test_summary_collections_and_strings_are_bounded():
-    summary = {
-        "values": list(range(100)),
-        "long": "x" * 5000,
+    summary = canonical_summary(
+        values=list(range(100)),
+        long="x" * 5000,
         **{f"key_{index}": index for index in range(100)},
-    }
+    )
     payload = result_to_payload(SummaryResult(summary=summary, **result_fields()))
 
     assert len(payload["summary"]["values"]) == 65
@@ -69,7 +85,7 @@ def test_summary_collections_and_strings_are_bounded():
 
 
 def test_specific_factories_construct_the_concrete_result_types(science):
-    summary = make_summary_result(summary={"cells": 1}, **factory_fields())
+    summary = make_summary_result(summary=canonical_summary(cells=1), **factory_fields())
     table = make_table_result(table=science.pd.DataFrame({"value": [1]}), **factory_fields())
     plot = make_plot_result(png=PNG_SIGNATURE + b"plot", **factory_fields())
 
@@ -104,7 +120,7 @@ def test_specific_factory_interfaces_cannot_accept_the_wrong_payload(science):
 
 
 def test_concrete_results_expose_only_their_payload(science):
-    summary = SummaryResult(summary={"cells": 1}, **result_fields())
+    summary = SummaryResult(summary=canonical_summary(cells=1), **result_fields())
     table = TableResult(table=science.pd.DataFrame({"value": [1]}), **result_fields())
     plot = PlotResult(png=PNG_SIGNATURE + b"plot", **result_fields())
 
@@ -112,11 +128,11 @@ def test_concrete_results_expose_only_their_payload(science):
     assert not hasattr(table, "summary") and not hasattr(table, "png")
     assert not hasattr(plot, "summary") and not hasattr(plot, "table")
     with pytest.raises(TypeError, match="unexpected keyword argument 'table'"):
-        SummaryResult(summary={"cells": 1}, table=table.table, **result_fields())
+        SummaryResult(summary=canonical_summary(cells=1), table=table.table, **result_fields())
 
 
 def test_concrete_results_reject_invalid_content():
-    with pytest.raises(ValueError, match="requires summary data"):
+    with pytest.raises(TypeError, match="must be a mapping"):
         SummaryResult(summary=None, **result_fields())
     with pytest.raises(TypeError, match="pandas DataFrame"):
         TableResult(table=object(), **result_fields())
@@ -127,7 +143,7 @@ def test_concrete_results_reject_invalid_content():
 
 
 def test_result_kind_and_fields_are_read_only(science):
-    summary = SummaryResult(summary={"cells": 1}, **result_fields())
+    summary = SummaryResult(summary=canonical_summary(cells=1), **result_fields())
     table = TableResult(table=science.pd.DataFrame({"value": [1]}), **result_fields())
     plot = PlotResult(png=PNG_SIGNATURE + b"plot", **result_fields())
 
