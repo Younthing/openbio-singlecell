@@ -9,6 +9,41 @@ from openbio_singlecell.nodes_preprocess import (
     OpenBioSingleCellNormalizeToLayer,
     OpenBioSingleCellNormalizeTotal,
 )
+from openbio_singlecell.operations_preprocess import log1p, normalize_to_layer, normalize_total
+from tests.artifact_operation_harness import run_anndata_operation
+
+
+def _normalize_total(adata, target_sum=10000.0, source=None):
+    return run_anndata_operation(
+        normalize_total,
+        adata,
+        {"target_sum": target_sum, "source": source or {"source": "X"}},
+    )
+
+
+def _log1p(adata):
+    return run_anndata_operation(log1p, adata, {})
+
+
+def _normalize_to_layer(
+    adata,
+    source=None,
+    target_sum=10000.0,
+    transform="log1p",
+    output_layer="log1p_norm",
+    overwrite_existing=False,
+):
+    return run_anndata_operation(
+        normalize_to_layer,
+        adata,
+        {
+            "source": source or {"source": "X"},
+            "target_sum": target_sum,
+            "transform": transform,
+            "output_layer": output_layer,
+            "overwrite_existing": overwrite_existing,
+        },
+    )
 
 
 def _dense(matrix, science):
@@ -118,9 +153,9 @@ def _assert_report(node_id: str, report, code: str):
 
 
 def test_basic_preprocessing_schemas_expose_primary_summary_and_code():
-    normalize_schema = OpenBioSingleCellNormalizeTotal.GET_SCHEMA()
-    log_schema = OpenBioSingleCellLog1p.GET_SCHEMA()
-    layer_schema = OpenBioSingleCellNormalizeToLayer.GET_SCHEMA()
+    normalize_schema = OpenBioSingleCellNormalizeTotal.define_schema()
+    log_schema = OpenBioSingleCellLog1p.define_schema()
+    layer_schema = OpenBioSingleCellNormalizeToLayer.define_schema()
 
     assert [item.id for item in normalize_schema.inputs] == ["adata", "target_sum", "source"]
     assert normalize_schema.inputs[-1].optional is False
@@ -154,11 +189,11 @@ def test_basic_preprocessing_schemas_expose_primary_summary_and_code():
 def test_generated_basic_preprocessing_code_does_not_write_openbio_history(science, operation, function_name):
     adata = _adata(science, include_states=False)
     if operation == "normalize_total":
-        _, _, code = OpenBioSingleCellNormalizeTotal.execute(adata, 100.0).result
+        _, _, code = _normalize_total(adata, 100.0).result
     elif operation == "log1p":
-        _, _, code = OpenBioSingleCellLog1p.execute(adata).result
+        _, _, code = _log1p(adata).result
     else:
-        _, _, code = OpenBioSingleCellNormalizeToLayer.execute(
+        _, _, code = _normalize_to_layer(
             adata,
             {"source": "X"},
             100.0,
@@ -178,7 +213,7 @@ def test_normalize_total_uses_declared_source_and_preserves_all_stored_states(sc
     adata.layers["counts"] = adata.layers["counts"] * 2
     original = adata.copy()
 
-    output, report, code = OpenBioSingleCellNormalizeTotal.execute(
+    output, report, code = _normalize_total(
         adata,
         100.0,
         {"source": "layer", "source_layer": "counts"},
@@ -207,7 +242,7 @@ def test_normalize_total_uses_declared_source_and_preserves_all_stored_states(sc
 def test_normalize_total_never_creates_counts_or_raw(science):
     adata = _adata(science, include_states=False)
 
-    output, report, _ = OpenBioSingleCellNormalizeTotal.execute(adata, 10_000.0).result
+    output, report, _ = _normalize_total(adata, 10_000.0).result
 
     assert _named_layer_keys(adata) == set()
     assert _named_layer_keys(output) == set()
@@ -219,20 +254,20 @@ def test_normalize_total_never_creates_counts_or_raw(science):
 @pytest.mark.parametrize("target_sum", [0.0, -1.0, float("nan"), float("inf")])
 def test_normalize_total_rejects_invalid_target(science, target_sum):
     with pytest.raises(ValueError, match="finite and greater than zero"):
-        OpenBioSingleCellNormalizeTotal.execute(_adata(science), target_sum)
+        _normalize_total(_adata(science), target_sum)
 
 
 def test_normalize_total_warns_for_zero_library_and_proven_transformed_source(science):
     zero_library = _adata(science, sparse=False)
     zero_library.X = zero_library.X.copy()
     zero_library.X[1, :] = 0
-    zero_output, zero_report, _ = OpenBioSingleCellNormalizeTotal.execute(zero_library, 100.0).result
+    zero_output, zero_report, _ = _normalize_total(zero_library, 100.0).result
     science.np.testing.assert_array_equal(zero_output.X[1], science.np.zeros(zero_library.n_vars))
     assert zero_report.summary["key_results"]["zero_total_cells"] == 1
     assert any("leaves those rows unchanged" in warning for warning in zero_report.summary["warnings"])
 
-    normalized = OpenBioSingleCellNormalizeTotal.execute(_adata(science), 100.0).result[0]
-    repeated, report, _ = OpenBioSingleCellNormalizeTotal.execute(normalized, 100.0).result
+    normalized = _normalize_total(_adata(science), 100.0).result[0]
+    repeated, report, _ = _normalize_total(normalized, 100.0).result
     assert repeated.shape == normalized.shape
     assert any("normalized expression" in warning for warning in report.summary["warnings"])
 
@@ -240,8 +275,8 @@ def test_normalize_total_warns_for_zero_library_and_proven_transformed_source(sc
 @pytest.mark.parametrize(("bad_value", "message"), [(float("nan"), "non-finite")])
 def test_count_normalization_nodes_reject_invalid_expression(science, bad_value, message):
     for execute in (
-        lambda value: OpenBioSingleCellNormalizeTotal.execute(value, 100.0),
-        lambda value: OpenBioSingleCellNormalizeToLayer.execute(
+        lambda value: _normalize_total(value, 100.0),
+        lambda value: _normalize_to_layer(
             value,
             {"source": "X"},
             100.0,
@@ -257,8 +292,8 @@ def test_count_normalization_nodes_reject_invalid_expression(science, bad_value,
 
 def test_count_normalization_nodes_allow_signed_finite_expert_input_with_warning(science):
     for execute in (
-        lambda value: OpenBioSingleCellNormalizeTotal.execute(value, 100.0),
-        lambda value: OpenBioSingleCellNormalizeToLayer.execute(
+        lambda value: _normalize_total(value, 100.0),
+        lambda value: _normalize_to_layer(
             value,
             {"source": "X"},
             100.0,
@@ -291,7 +326,7 @@ def test_normalize_to_layer_retains_transform_math_domain_hard_gates(science, tr
     adata = _adata(science, sparse=False, include_states=False)
     adata.X[0, 0] = -0.5
     with pytest.raises(ValueError, match=message):
-        OpenBioSingleCellNormalizeToLayer.execute(
+        _normalize_to_layer(
             adata,
             {"source": "X"},
             100.0,
@@ -301,10 +336,10 @@ def test_normalize_to_layer_retains_transform_math_domain_hard_gates(science, tr
 
 
 def test_log1p_is_atomic_preserves_states_and_generated_code_matches(science):
-    normalized = OpenBioSingleCellNormalizeTotal.execute(_adata(science), 100.0).result[0]
+    normalized = _normalize_total(_adata(science), 100.0).result[0]
     before = normalized.copy()
 
-    output, report, code = OpenBioSingleCellLog1p.execute(normalized).result
+    output, report, code = _log1p(normalized).result
 
     science.np.testing.assert_allclose(_dense(output.X, science), science.np.log1p(_dense(before.X, science)))
     for key in _named_layer_keys(before):
@@ -317,17 +352,18 @@ def test_log1p_is_atomic_preserves_states_and_generated_code_matches(science):
 
     generated = _run_code(code, "log1p_expression", normalized)
     _assert_expression_states_equal(generated, output, science)
+    before_second = generated.X.copy()
     with pytest.warns(UserWarning, match="already log-transformed"):
         generated_twice = _run_code(code, "log1p_expression", generated)
     science.np.testing.assert_allclose(
         _dense(generated_twice.X, science),
-        science.np.log1p(_dense(generated.X, science)),
+        science.np.log1p(_dense(before_second, science)),
     )
 
 
 def test_log1p_does_not_create_raw_or_layers(science):
     without_raw = _adata(science, include_states=False)
-    output = OpenBioSingleCellLog1p.execute(without_raw).result[0]
+    output = _log1p(without_raw).result[0]
     assert output.raw is None
     assert _named_layer_keys(output) == set()
 
@@ -335,21 +371,21 @@ def test_log1p_rejects_invalid_domain_and_nonfinite_but_warns_on_double_transfor
     negative = _adata(science, sparse=False, include_states=False)
     negative.X[0, 0] = -1
     with pytest.raises(ValueError, match="finite real log1p domain"):
-        OpenBioSingleCellLog1p.execute(negative)
+        _log1p(negative)
 
     nonfinite = _adata(science, sparse=False, include_states=False)
     nonfinite.X[0, 0] = science.np.nan
     with pytest.raises(ValueError, match="non-finite"):
-        OpenBioSingleCellLog1p.execute(nonfinite)
+        _log1p(nonfinite)
 
-    logged = OpenBioSingleCellLog1p.execute(_adata(science, include_states=False)).result[0]
-    twice, report, _ = OpenBioSingleCellLog1p.execute(logged).result
+    logged = _log1p(_adata(science, include_states=False)).result[0]
+    twice, report, _ = _log1p(logged).result
     assert science.np.isfinite(_dense(twice.X, science)).all()
     assert any("already log-transformed" in warning for warning in report.summary["warnings"])
 
     signed = _adata(science, sparse=False, include_states=False)
     signed.X[0, 0] = -0.5
-    transformed, signed_report, _ = OpenBioSingleCellLog1p.execute(signed).result
+    transformed, signed_report, _ = _log1p(signed).result
     assert science.np.isfinite(transformed.X).all()
     assert any("values in (-1, 0)" in warning for warning in signed_report.summary["warnings"])
 
@@ -359,7 +395,7 @@ def test_normalize_total_clears_stale_log_marker_before_followup_log1p(science):
     adata.X = science.np.log1p(adata.X)
     adata.uns["log1p"] = {"base": None}
 
-    normalized, report, normalize_code = OpenBioSingleCellNormalizeTotal.execute(
+    normalized, report, normalize_code = _normalize_total(
         adata,
         100.0,
         {"source": "layer", "source_layer": "counts"},
@@ -367,7 +403,7 @@ def test_normalize_total_clears_stale_log_marker_before_followup_log1p(science):
 
     assert "log1p" not in normalized.uns
     assert report.summary["key_results"]["stale_log1p_marker_removed"] is True
-    logged, log_report, log_code = OpenBioSingleCellLog1p.execute(normalized).result
+    logged, log_report, log_code = _log1p(normalized).result
     assert log_report.summary["warnings"] == []
 
     with pytest.warns(UserWarning) as generated_warnings:
@@ -381,7 +417,7 @@ def test_normalize_total_clears_stale_log_marker_before_followup_log1p(science):
 
 def test_generated_log1p_reproduces_unknown_normalization_warning(science):
     adata = _adata(science, include_states=False)
-    _, report, code = OpenBioSingleCellLog1p.execute(adata).result
+    _, report, code = _log1p(adata).result
 
     with pytest.warns(UserWarning) as generated_warnings:
         _run_code(code, "log1p_expression", adata)
@@ -394,7 +430,7 @@ def test_normalize_to_layer_builds_one_derived_layer_and_generated_code_matches(
     adata = _adata(science)
     original = adata.copy()
 
-    output, report, code = OpenBioSingleCellNormalizeToLayer.execute(
+    output, report, code = _normalize_to_layer(
         adata,
         {"source": "layer", "source_layer": "counts"},
         100.0,
@@ -445,13 +481,13 @@ def test_normalize_to_layer_rejects_invalid_configuration(science, kwargs, messa
         **kwargs,
     }
     with pytest.raises(ValueError, match=message):
-        OpenBioSingleCellNormalizeToLayer.execute(_adata(science), **values)
+        _normalize_to_layer(_adata(science), **values)
 
 
 def test_normalize_to_layer_rejects_same_source_and_unauthorized_collision(science):
     adata = _adata(science)
     with pytest.raises(ValueError, match="must differ"):
-        OpenBioSingleCellNormalizeToLayer.execute(
+        _normalize_to_layer(
             adata,
             {"source": "layer", "source_layer": "alternate"},
             100.0,
@@ -461,14 +497,14 @@ def test_normalize_to_layer_rejects_same_source_and_unauthorized_collision(scien
 
     adata.layers["derived"] = adata.X.copy()
     with pytest.raises(ValueError, match="already exists"):
-        OpenBioSingleCellNormalizeToLayer.execute(
+        _normalize_to_layer(
             adata,
             {"source": "layer", "source_layer": "counts"},
             100.0,
             "none",
             "derived",
         )
-    output, report, _ = OpenBioSingleCellNormalizeToLayer.execute(
+    output, report, _ = _normalize_to_layer(
         adata,
         {"source": "layer", "source_layer": "counts"},
         100.0,
@@ -484,7 +520,7 @@ def test_normalize_to_layer_warns_for_zero_library_and_derived_count_source(scie
     zero_library = _adata(science, sparse=False)
     zero_library.layers["counts"] = zero_library.layers["counts"].copy()
     zero_library.layers["counts"][0, :] = 0
-    zero_output, zero_report, _ = OpenBioSingleCellNormalizeToLayer.execute(
+    zero_output, zero_report, _ = _normalize_to_layer(
         zero_library,
         {"source": "layer", "source_layer": "counts"},
         100.0,
@@ -494,14 +530,14 @@ def test_normalize_to_layer_warns_for_zero_library_and_derived_count_source(scie
     science.np.testing.assert_array_equal(zero_output.layers["derived"][0], science.np.zeros(zero_library.n_vars))
     assert zero_report.summary["key_results"]["zero_total_cells"] == 1
 
-    derived = OpenBioSingleCellNormalizeToLayer.execute(
+    derived = _normalize_to_layer(
         _adata(science),
         {"source": "layer", "source_layer": "counts"},
         100.0,
         "log1p",
         "derived",
     ).result[0]
-    second, report, _ = OpenBioSingleCellNormalizeToLayer.execute(
+    second, report, _ = _normalize_to_layer(
         derived,
         {"source": "layer", "source_layer": "derived"},
         100.0,
@@ -516,7 +552,7 @@ def test_normalize_to_layer_reports_noninteger_external_count_state(science):
     adata = _adata(science, sparse=False)
     adata.layers["counts"][0, 0] = 1.5
 
-    output, report, code = OpenBioSingleCellNormalizeToLayer.execute(
+    output, report, code = _normalize_to_layer(
         adata,
         {"source": "layer", "source_layer": "counts"},
         100.0,
@@ -534,7 +570,7 @@ def test_normalize_to_layer_reports_noninteger_external_count_state(science):
 
 def test_generated_normalization_code_reproduces_zero_library_warning_and_output(science):
     adata = _adata(science, sparse=False)
-    _, _, code = OpenBioSingleCellNormalizeToLayer.execute(
+    _, _, code = _normalize_to_layer(
         adata,
         {"source": "layer", "source_layer": "counts"},
         100.0,
@@ -554,25 +590,24 @@ def test_generated_normalization_code_reproduces_zero_library_warning_and_output
         _run_code(code, "normalize_expression_to_layer", without_layer)
 
 
-def test_three_basic_preprocessing_nodes_reject_empty_and_backed(science, tmp_path):
+def test_three_basic_preprocessing_nodes_reject_empty_and_accept_backed_at_file_boundary(science, tmp_path):
     empty = science.ad.AnnData(X=science.np.empty((0, 2)))
     with pytest.raises(ValueError, match="at least one cell and one feature"):
-        OpenBioSingleCellNormalizeTotal.execute(empty)
+        _normalize_total(empty)
     with pytest.raises(ValueError, match="at least one cell and one feature"):
-        OpenBioSingleCellLog1p.execute(empty)
+        _log1p(empty)
     with pytest.raises(ValueError, match="at least one cell and one feature"):
-        OpenBioSingleCellNormalizeToLayer.execute(empty)
+        _normalize_to_layer(empty)
 
     path = tmp_path / "backed.h5ad"
     _adata(science).write_h5ad(path)
-    backed = science.ad.read_h5ad(path, backed="r")
-    try:
-        for execute in (
-            lambda: OpenBioSingleCellNormalizeTotal.execute(backed),
-            lambda: OpenBioSingleCellLog1p.execute(backed),
-            lambda: OpenBioSingleCellNormalizeToLayer.execute(backed),
-        ):
-            with pytest.raises(ValueError, match="to_memory"):
-                execute()
-    finally:
-        backed.file.close()
+    for operation in (
+        _normalize_total,
+        _log1p,
+        _normalize_to_layer,
+    ):
+        backed = science.ad.read_h5ad(path, backed="r")
+        try:
+            assert operation(backed).result[0].isbacked is False
+        finally:
+            backed.file.close()

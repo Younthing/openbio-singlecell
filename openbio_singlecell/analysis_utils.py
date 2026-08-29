@@ -25,10 +25,9 @@ def matrix_totals_and_nonzero(matrix: Any, axis: int) -> tuple[Any, Any]:
         # ``getnnz`` counts stored entries, including explicit zeros.  Scanpy's
         # ``n_genes_by_counts`` / ``n_cells_by_counts`` semantics count values
         # that are actually non-zero, so use the value-aware sparse operation.
-        # SciPy canonicalizes duplicate sparse entries in-place inside
-        # ``count_nonzero``.  Count on a copy so read-only/reporting nodes do
-        # not rewrite the caller's sparse storage as a hidden side effect.
-        nonzero = science.np.asarray(matrix.copy().count_nonzero(axis=axis)).ravel()
+        # The one-shot worker owns this matrix, so let SciPy canonicalize
+        # duplicate sparse entries in place instead of allocating a full copy.
+        nonzero = science.np.asarray(matrix.count_nonzero(axis=axis)).ravel()
     else:
         array = science.np.asarray(matrix)
         totals = array.sum(axis=axis)

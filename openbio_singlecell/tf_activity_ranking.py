@@ -205,6 +205,7 @@ def rank_tf_activities(
     decoupler_module: Any | None = None,
     openbio_version: str = PLUGIN_VERSION,
     _portable_artifact: bool = False,
+    _worker_owned: bool = False,
 ) -> tuple[DataFrame, dict[str, Any]]:
     """Characterize one validated TF-activity artifact across annotation groups."""
 
@@ -233,6 +234,7 @@ def rank_tf_activities(
         exact_type=not _portable_artifact,
         numpy=np,
         pandas=pd,
+        copy_result=not _portable_artifact,
     )
     observation_names = []
     for position, value in enumerate(adata.obs_names.tolist()):
@@ -305,11 +307,15 @@ def rank_tf_activities(
         obs=pd.DataFrame({"openbio_annotation": labels}, index=observation_names),
         var=pd.DataFrame(index=["carrier_placeholder"]),
     )
-    carrier.obsm["openbio_tf_activity"] = scores.copy(deep=True)
+    carrier.obsm["openbio_tf_activity"] = scores if _worker_owned else scores.copy(deep=True)
     carrier_x_before = carrier.X.copy()
     carrier_obs_before = carrier.obs.copy(deep=True)
     carrier_var_before = carrier.var.copy(deep=True)
-    carrier_obsm_before = carrier.obsm["openbio_tf_activity"].copy(deep=True)
+    carrier_obsm_before = (
+        None
+        if _worker_owned
+        else carrier.obsm["openbio_tf_activity"].copy(deep=True)
+    )
     carrier_uns_before = copy.deepcopy(dict(carrier.uns))
     carrier_layer_keys_before = list(carrier.layers.keys())
     carrier_obsp_keys_before = list(carrier.obsp.keys())
@@ -324,9 +330,10 @@ def rank_tf_activities(
     try:
         pd.testing.assert_frame_equal(carrier.obs, carrier_obs_before, check_exact=True)
         pd.testing.assert_frame_equal(carrier.var, carrier_var_before, check_exact=True)
-        pd.testing.assert_frame_equal(
-            carrier.obsm["openbio_tf_activity"], carrier_obsm_before, check_exact=True
-        )
+        if carrier_obsm_before is not None:
+            pd.testing.assert_frame_equal(
+                carrier.obsm["openbio_tf_activity"], carrier_obsm_before, check_exact=True
+            )
     except AssertionError as exc:
         raise RuntimeError("decoupler pp.get_obsm modified private carrier annotations or activities.") from exc
     if (
@@ -342,9 +349,9 @@ def rank_tf_activities(
         raise RuntimeError("decoupler pp.get_obsm returned misaligned activity axes.")
     if not np.array_equal(np.asarray(extracted.X, dtype=float), scores.to_numpy(dtype=float)):
         raise RuntimeError("decoupler pp.get_obsm returned activity values that differ from the typed artifact.")
-    score_work = extracted.copy()
+    score_work = extracted if _worker_owned else extracted.copy()
     score_work.obs["openbio_annotation"] = labels
-    work_x_before = np.asarray(score_work.X, dtype=float).copy()
+    work_x_before = None if _worker_owned else np.asarray(score_work.X, dtype=float).copy()
     work_obs_before = score_work.obs.copy(deep=True)
     work_var_before = score_work.var.copy(deep=True)
     work_uns_before = copy.deepcopy(dict(score_work.uns))
@@ -356,7 +363,7 @@ def rank_tf_activities(
     work_obsm_keys_before = list(score_work.obsm.keys())
     work_activity_before = (
         score_work.obsm["openbio_tf_activity"].copy()
-        if "openbio_tf_activity" in score_work.obsm
+        if not _worker_owned and "openbio_tf_activity" in score_work.obsm
         else None
     )
     ranked = decoupler.tl.rankby_group(
@@ -365,16 +372,19 @@ def rank_tf_activities(
         reference=backend_reference,
         method=method,
     )
-    if not np.array_equal(np.asarray(score_work.X, dtype=float), work_x_before):
+    if work_x_before is not None and not np.array_equal(
+        np.asarray(score_work.X, dtype=float), work_x_before
+    ):
         raise RuntimeError("decoupler rankby_group modified the private activity matrix.")
     try:
         pd.testing.assert_frame_equal(score_work.obs, work_obs_before, check_exact=True)
         pd.testing.assert_frame_equal(score_work.var, work_var_before, check_exact=True)
         pd.testing.assert_frame_equal(carrier.obs, carrier_obs_before, check_exact=True)
         pd.testing.assert_frame_equal(carrier.var, carrier_var_before, check_exact=True)
-        pd.testing.assert_frame_equal(
-            carrier.obsm["openbio_tf_activity"], carrier_obsm_before, check_exact=True
-        )
+        if carrier_obsm_before is not None:
+            pd.testing.assert_frame_equal(
+                carrier.obsm["openbio_tf_activity"], carrier_obsm_before, check_exact=True
+            )
     except AssertionError as exc:
         raise RuntimeError("decoupler ranking modified private input annotations or carrier activities.") from exc
     if (
@@ -407,7 +417,7 @@ def rank_tf_activities(
         raise RuntimeError(
             f"decoupler rankby_group output schema changed: observed={ranked.columns.tolist()!r}."
         )
-    backend = ranked.copy(deep=True)
+    backend = ranked if _worker_owned else ranked.copy(deep=True)
     for column in ("group", "reference", "name"):
         backend[column] = backend[column].astype(object)
     if bool(backend.duplicated(["group", "name"]).any()):
@@ -426,7 +436,7 @@ def rank_tf_activities(
     if set(backend["reference"].tolist()) != {expected_reference_display}:
         raise RuntimeError("decoupler rankby_group reference labels differ from the declared comparator.")
     backend_indexed = backend.set_index(["group", "name"])
-    score_values = scores.to_numpy(dtype=float, copy=True)
+    score_values = scores.to_numpy(dtype=float, copy=not _worker_owned)
     regulator_position = {regulator: position for position, regulator in enumerate(regulators)}
     independent_by_group: dict[str, list[dict[str, Any]]] = {}
     for group in backend_groups:

@@ -80,6 +80,8 @@ def _is_widget_input(item: Any) -> bool:
 
 
 def _is_wire_input(item: Any, wired_inputs: frozenset[str]) -> bool:
+    if item.id == "worker" and item.optional and item.id not in wired_inputs:
+        return False
     return not _is_widget_input(item) or item.id in wired_inputs
 
 

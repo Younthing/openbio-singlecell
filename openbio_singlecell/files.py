@@ -227,6 +227,21 @@ def tenx_mtx_provenance(relative_directory: str) -> dict[str, object]:
     }
 
 
+def tenx_study_provenance(relative_directory: str) -> dict[str, object]:
+    directory = resolve_input_path(relative_directory, kind="directory")
+    portable_root = _portable_input_path(directory)
+    children = sorted(
+        (entry for entry in os.scandir(directory) if entry.is_dir(follow_symlinks=False) or entry.is_symlink()),
+        key=lambda entry: entry.name.casefold(),
+    )
+    return {
+        "path": portable_root,
+        "samples": {
+            child.name: tenx_mtx_provenance(f"{portable_root}/{child.name}") for child in children
+        },
+    }
+
+
 def prepare_output_target(
     filename_prefix: str,
     extension: str,

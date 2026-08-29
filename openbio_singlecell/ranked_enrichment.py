@@ -438,8 +438,8 @@ def _standalone_run_ranked_gsea(
         raise RuntimeError(f"{operation} decoupler.mt.gsea is missing required parameters: {missing}.")
 
     backend = gsea(
-        data=ranked_frame.copy(),
-        net=network.copy(),
+        data=ranked_frame,
+        net=network,
         tmin=min_targets,
         raw=False,
         empty=False,

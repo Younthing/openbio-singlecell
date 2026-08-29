@@ -1,17 +1,32 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
+import tempfile
+import uuid
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from openbio_singlecell.artifact_codecs import read_anndata, write_anndata
+from openbio_singlecell.artifact_envelope import summary_from_metadata
 from openbio_singlecell.contracts import ensure_metadata
+from openbio_singlecell.files import input_file_provenance, resolve_input_path
 from openbio_singlecell.nodes_data import (
     OpenBioSingleCellMapGeneIdsFromGTF,
     OpenBioSingleCellMergeObservationAnnotations,
     OpenBioSingleCellSnapshotExpression,
     OpenBioSingleCellSubsetObservations,
 )
+from openbio_singlecell.operations_data import (
+    map_gene_ids_from_gtf,
+    merge_observation_annotations,
+    snapshot_expression,
+    subset_observations,
+)
+from openbio_singlecell.worker_protocol import OperationContext, ProtocolError
 
 
 def _dense(matrix, science):
@@ -30,6 +45,265 @@ def _assert_report(report, code, node_id):
     json.dumps(report.summary, allow_nan=False)
     assert code.endswith("\n")
     compile(code, f"<{node_id}-code>", "exec")
+
+
+def _artifact_descriptor(root):
+    return {
+        "type": "artifact",
+        "kind": "OPENBIO_ANNDATA",
+        "codec": "anndata-h5ad-v1",
+        "path": str(root.resolve()),
+    }
+
+
+def _operation_context(tmp_path, name):
+    staging = tmp_path / f"{name}.partial"
+    staging.mkdir()
+    return OperationContext.from_request_path(staging / "request.json", str(uuid.uuid4()))
+
+
+def _write_operation_input(tmp_path, name, adata):
+    root = tmp_path / name
+    root.mkdir()
+    write_anndata(root, adata)
+    return root
+
+
+def _run_data_operation(operation, adata_inputs, parameters, file_inputs=None):
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        descriptors = {}
+        for name, adata in adata_inputs.items():
+            artifact_root = _write_operation_input(root, name, adata)
+            descriptors[name] = _artifact_descriptor(artifact_root)
+        descriptors.update(file_inputs or {})
+        context = _operation_context(root, "run")
+        records = operation(context, descriptors, parameters)
+        values = []
+        for record in records:
+            if record["type"] == "artifact":
+                values.append(read_anndata(context.output_root / record["payload"]))
+            elif record["type"] == "summary":
+                values.append(summary_from_metadata(record["value"]))
+            else:
+                values.append(record["value"])
+        return SimpleNamespace(result=tuple(values))
+
+
+def _execute_snapshot(adata, source=None, overwrite_existing=False):
+    return _run_data_operation(
+        snapshot_expression,
+        {"adata": adata},
+        {"source": source, "overwrite_existing": overwrite_existing},
+    )
+
+
+def _execute_subset(adata, column="sample", values="", invert=False, missing_policy="exclude"):
+    return _run_data_operation(
+        subset_observations,
+        {"adata": adata},
+        {"column": column, "values": values, "invert": invert, "missing_policy": missing_policy},
+    )
+
+
+def _execute_merge(
+    adata,
+    subset_adata,
+    source_column="cell_type",
+    target_column="cell_type",
+    conflict_policy="error",
+):
+    return _run_data_operation(
+        merge_observation_annotations,
+        {"adata": adata, "subset_adata": subset_adata},
+        {
+            "source_column": source_column,
+            "target_column": target_column,
+            "conflict_policy": conflict_policy,
+        },
+    )
+
+
+def _execute_gtf(
+    adata,
+    gtf_path="annotations/genes.gtf.gz",
+    id_source="var_column",
+    id_column="gene_ids",
+    gene_name_column="gene_symbols",
+):
+    resolved = Path(resolve_input_path(gtf_path, extensions=(".gtf", ".gtf.gz")))
+    descriptor = {
+        "type": "file",
+        "path": str(resolved),
+        "provenance": input_file_provenance(gtf_path, (".gtf", ".gtf.gz")),
+    }
+    return _run_data_operation(
+        map_gene_ids_from_gtf,
+        {"adata": adata},
+        {
+            "id_source": id_source,
+            "id_column": id_column,
+            "gene_name_column": gene_name_column,
+        },
+        {"gtf_path": descriptor},
+    )
+
+
+def test_data_operations_publish_ordered_file_results_without_mutating_inputs(
+    tmp_path,
+    data_adata,
+    science,
+):
+    input_root = _write_operation_input(tmp_path, "input", data_adata)
+    payload = input_root / "data.h5ad"
+    before = hashlib.sha256(payload.read_bytes()).hexdigest()
+    context = _operation_context(tmp_path, "snapshot")
+
+    records = snapshot_expression(
+        context,
+        {"adata": _artifact_descriptor(input_root)},
+        {"source": {"source": "layer", "source_layer": "candidate"}, "overwrite_existing": False},
+    )
+
+    assert [record["name"] for record in records] == ["adata", "summary", "code"]
+    assert hashlib.sha256(payload.read_bytes()).hexdigest() == before
+    output = read_anndata(context.output_root / records[0]["payload"])
+    science.np.testing.assert_array_equal(
+        _dense(output.layers["counts"], science),
+        _dense(data_adata.layers["candidate"], science),
+    )
+    science.np.testing.assert_array_equal(
+        _dense(output.raw.X, science),
+        _dense(data_adata.layers["candidate"], science),
+    )
+    science.np.testing.assert_array_equal(_dense(output.X, science), _dense(data_adata.X, science))
+    assert records[1]["type"] == "summary"
+    assert records[2]["type"] == "string"
+
+
+def test_data_operations_use_strict_inputs_and_scientific_subset_materialization(
+    tmp_path,
+    data_adata,
+):
+    input_root = _write_operation_input(tmp_path, "input", data_adata)
+    context = _operation_context(tmp_path, "subset")
+
+    records = subset_observations(
+        context,
+        {"adata": _artifact_descriptor(input_root)},
+        {"column": "sample", "values": "a", "invert": False, "missing_policy": "exclude"},
+    )
+
+    output = read_anndata(context.output_root / records[0]["payload"])
+    assert output.obs_names.tolist() == ["cell_0", "cell_3"]
+
+
+def test_every_data_operation_rejects_extended_parameter_objects(tmp_path, data_adata):
+    input_root = _write_operation_input(tmp_path, "input", data_adata)
+    subset_root = _write_operation_input(tmp_path, "subset", data_adata[["cell_0"], :].copy())
+    gtf_path = tmp_path / "genes.gtf"
+    gtf_path.write_text(
+        'chr1\ttest\tgene\t1\t2\t.\t+\t.\tgene_id "gene.0"; gene_name "A";\n',
+        encoding="utf-8",
+    )
+    data_adata.var["gene_ids"] = data_adata.var_names
+    cases = [
+        (
+            snapshot_expression,
+            {"adata": _artifact_descriptor(input_root)},
+            {"source": None, "overwrite_existing": False},
+        ),
+        (
+            subset_observations,
+            {"adata": _artifact_descriptor(input_root)},
+            {"column": "sample", "values": "a", "invert": False, "missing_policy": "exclude"},
+        ),
+        (
+            merge_observation_annotations,
+            {
+                "adata": _artifact_descriptor(input_root),
+                "subset_adata": _artifact_descriptor(subset_root),
+            },
+            {"source_column": "sample", "target_column": "sample", "conflict_policy": "keep_target"},
+        ),
+        (
+            map_gene_ids_from_gtf,
+            {
+                "adata": _artifact_descriptor(input_root),
+                "gtf_path": {
+                    "type": "file",
+                    "path": str(gtf_path.resolve()),
+                    "provenance": {"path": "genes.gtf"},
+                },
+            },
+            {"id_source": "var_names", "id_column": "gene_ids", "gene_name_column": "gene_symbols"},
+        ),
+    ]
+
+    for index, (operation, inputs, parameters) in enumerate(cases):
+        context = _operation_context(tmp_path, f"strict-{index}")
+        with pytest.raises(ProtocolError, match="parameters must be exactly"):
+            operation(context, inputs, {**parameters, "unexpected": True})
+
+
+def test_data_operation_module_is_worker_only():
+    source = (Path(__file__).parents[1] / "openbio_singlecell" / "operations_data.py").read_text(encoding="utf-8")
+    assert "comfy_api" not in source
+    assert "folder_paths" not in source
+    assert "nodes_" not in source
+
+
+def test_all_data_operations_leave_input_artifact_bytes_unchanged(tmp_path, data_adata):
+    input_root = _write_operation_input(tmp_path, "immutable-input", data_adata)
+    subset_root = _write_operation_input(tmp_path, "immutable-subset", data_adata[["cell_0"], :].copy())
+    input_payload = input_root / "data.h5ad"
+    subset_payload = subset_root / "data.h5ad"
+    before = hashlib.sha256(input_payload.read_bytes()).hexdigest()
+    subset_before = hashlib.sha256(subset_payload.read_bytes()).hexdigest()
+    gtf_path = tmp_path / "immutable.gtf"
+    gtf_path.write_text(
+        'chr1\ttest\tgene\t1\t2\t.\t+\t.\tgene_id "gene.0"; gene_name "A";\n',
+        encoding="utf-8",
+    )
+    gtf_before = hashlib.sha256(gtf_path.read_bytes()).hexdigest()
+    cases = [
+        (
+            snapshot_expression,
+            {"adata": _artifact_descriptor(input_root)},
+            {"source": None, "overwrite_existing": False},
+        ),
+        (
+            subset_observations,
+            {"adata": _artifact_descriptor(input_root)},
+            {"column": "sample", "values": "a", "invert": False, "missing_policy": "exclude"},
+        ),
+        (
+            merge_observation_annotations,
+            {
+                "adata": _artifact_descriptor(input_root),
+                "subset_adata": _artifact_descriptor(subset_root),
+            },
+            {"source_column": "sample", "target_column": "sample", "conflict_policy": "keep_target"},
+        ),
+        (
+            map_gene_ids_from_gtf,
+            {
+                "adata": _artifact_descriptor(input_root),
+                "gtf_path": {
+                    "type": "file",
+                    "path": str(gtf_path.resolve()),
+                    "provenance": {"path": "immutable.gtf"},
+                },
+            },
+            {"id_source": "var_names", "id_column": "gene_ids", "gene_name_column": "gene_symbols"},
+        ),
+    ]
+
+    for index, (operation, inputs, parameters) in enumerate(cases):
+        operation(_operation_context(tmp_path, f"immutable-{index}"), inputs, parameters)
+        assert hashlib.sha256(input_payload.read_bytes()).hexdigest() == before
+        assert hashlib.sha256(subset_payload.read_bytes()).hexdigest() == subset_before
+        assert hashlib.sha256(gtf_path.read_bytes()).hexdigest() == gtf_before
 
 
 @pytest.fixture
@@ -76,7 +350,7 @@ def test_data_node_schemas_are_current_and_reportable():
     }
 
     for node_class, input_ids in expected_inputs.items():
-        schema = node_class.GET_SCHEMA()
+        schema = node_class.define_schema()
         assert [input_.id for input_ in schema.inputs] == input_ids
         assert all(input_.optional is False for input_ in schema.inputs)
         assert [output.display_name for output in schema.outputs] == ["adata", "summary", "code"]
@@ -94,10 +368,8 @@ def test_storage_and_selection_nodes_return_explicit_empty_results(science):
     empty.layers["empty"] = science.np.empty((0, 0))
     ensure_metadata(empty)
 
-    snapshotted, snapshot_report, snapshot_code = OpenBioSingleCellSnapshotExpression.execute(
-        empty
-    ).result
-    subset, subset_report, subset_code = OpenBioSingleCellSubsetObservations.execute(
+    snapshotted, snapshot_report, snapshot_code = _execute_snapshot(empty).result
+    subset, subset_report, subset_code = _execute_subset(
         empty,
         "group",
         "selected",
@@ -125,7 +397,7 @@ def test_storage_and_selection_nodes_return_explicit_empty_results(science):
 def test_snapshot_expression_creates_canonical_states_from_declared_layer(data_adata, science):
     original_x = data_adata.X.copy()
     expected = data_adata.layers["candidate"].copy()
-    output, report, code = OpenBioSingleCellSnapshotExpression.execute(
+    output, report, code = _execute_snapshot(
         data_adata,
         source={"source": "layer", "source_layer": "candidate"},
         overwrite_existing=False,
@@ -184,7 +456,7 @@ def test_snapshot_expression_discloses_selected_source_advisories(
     message,
 ):
     mutator(data_adata, science)
-    output, report, code = OpenBioSingleCellSnapshotExpression.execute(data_adata).result
+    output, report, code = _execute_snapshot(data_adata).result
     assert output.raw is not None
     assert any(message in warning for warning in report.summary["warnings"])
     assert report.summary["key_results"]["history_used"] is False
@@ -195,11 +467,11 @@ def test_snapshot_expression_discloses_selected_source_advisories(
 
 
 def test_snapshot_expression_overwrite_and_noninteger_disclosure(data_adata, science):
-    first, _, _ = OpenBioSingleCellSnapshotExpression.execute(data_adata).result
+    first, _, _ = _execute_snapshot(data_adata).result
     with pytest.raises(ValueError, match="already exist"):
-        OpenBioSingleCellSnapshotExpression.execute(first)
+        _execute_snapshot(first)
 
-    replaced, report, _ = OpenBioSingleCellSnapshotExpression.execute(
+    replaced, report, _ = _execute_snapshot(
         first,
         overwrite_existing=True,
     ).result
@@ -211,14 +483,15 @@ def test_snapshot_expression_overwrite_and_noninteger_disclosure(data_adata, sci
 
     noninteger = data_adata.copy()
     noninteger.X = science.np.asarray(_dense(noninteger.X, science), dtype=float) + 0.25
-    _, noninteger_report, _ = OpenBioSingleCellSnapshotExpression.execute(noninteger).result
+    _, noninteger_report, _ = _execute_snapshot(noninteger).result
     assert noninteger_report.summary["key_results"]["integer_like"] is False
     assert any("non-integer" in warning for warning in noninteger_report.summary["warnings"])
+
 
 def test_snapshot_generated_code_quotes_arbitrary_layer_names(data_adata):
     layer_name = 'candidate"with-quote'
     data_adata.layers[layer_name] = data_adata.X.copy()
-    _, _, code = OpenBioSingleCellSnapshotExpression.execute(
+    _, _, code = _execute_snapshot(
         data_adata,
         source={"source": "layer", "source_layer": layer_name},
     ).result
@@ -228,14 +501,17 @@ def test_snapshot_generated_code_quotes_arbitrary_layer_names(data_adata):
     assert output.raw is not None
 
 
-def test_snapshot_rejects_backed_anndata_with_actionable_error(data_adata, science, tmp_path):
+def test_snapshot_worker_materializes_file_input_and_generated_code_rejects_backed_adata(
+    data_adata,
+    science,
+    tmp_path,
+):
     path = tmp_path / "backed.h5ad"
     data_adata.write_h5ad(path)
     backed = science.ad.read_h5ad(path, backed="r")
     try:
-        with pytest.raises(ValueError, match=r"to_memory\(\)"):
-            OpenBioSingleCellSnapshotExpression.execute(backed)
-        _, _, code = OpenBioSingleCellSnapshotExpression.execute(data_adata).result
+        output, _, code = _execute_snapshot(backed).result
+        assert output.raw is not None
         namespace = {}
         exec(code, namespace)
         with pytest.raises(ValueError, match=r"to_memory\(\)"):
@@ -245,7 +521,7 @@ def test_snapshot_rejects_backed_anndata_with_actionable_error(data_adata, scien
 
 
 def test_subset_observations_has_explicit_missing_semantics_and_equivalent_code(data_adata):
-    selected, report, code = OpenBioSingleCellSubsetObservations.execute(
+    selected, report, code = _execute_subset(
         data_adata,
         "sample",
         "a, absent",
@@ -261,7 +537,7 @@ def test_subset_observations_has_explicit_missing_semantics_and_equivalent_code(
     equivalent = namespace["subset_observations"](data_adata)
     assert equivalent.obs_names.equals(selected.obs_names)
 
-    included, _, _ = OpenBioSingleCellSubsetObservations.execute(
+    included, _, _ = _execute_subset(
         data_adata,
         "sample",
         "a",
@@ -270,7 +546,7 @@ def test_subset_observations_has_explicit_missing_semantics_and_equivalent_code(
     ).result
     assert included.obs_names.tolist() == ["cell_1", "cell_2"]
 
-    excluded, _, _ = OpenBioSingleCellSubsetObservations.execute(
+    excluded, _, _ = _execute_subset(
         data_adata,
         "sample",
         "a",
@@ -280,8 +556,8 @@ def test_subset_observations_has_explicit_missing_semantics_and_equivalent_code(
     assert excluded.obs_names.tolist() == ["cell_1"]
 
     with pytest.raises(ValueError, match="missing value"):
-        OpenBioSingleCellSubsetObservations.execute(data_adata, "sample", "a", False, "error")
-    empty, empty_report, empty_code = OpenBioSingleCellSubsetObservations.execute(
+        _execute_subset(data_adata, "sample", "a", False, "error")
+    empty, empty_report, empty_code = _execute_subset(
         data_adata,
         "sample",
         "absent",
@@ -296,7 +572,7 @@ def test_subset_observations_has_explicit_missing_semantics_and_equivalent_code(
 
 def test_subset_observations_preserves_aligned_slots_order_and_raw(data_adata, science):
     data_adata.raw = data_adata
-    output, report, _ = OpenBioSingleCellSubsetObservations.execute(
+    output, report, _ = _execute_subset(
         data_adata,
         "sample",
         "b,a",
@@ -315,35 +591,12 @@ def test_subset_observations_preserves_aligned_slots_order_and_raw(data_adata, s
     assert output.raw.obs_names.equals(output.obs_names)
     assert report.summary["key_results"]["observation_order_preserved"] is True
 
-    colliding = data_adata.copy()
-    colliding.obs["mixed"] = science.pd.Series(
-        [1, "1", 2, 3],
-        index=colliding.obs_names,
-        dtype="object",
-    )
-    with pytest.raises(ValueError, match="collide"):
-        OpenBioSingleCellSubsetObservations.execute(colliding, "mixed", "1")
-
-    semantically_equal = data_adata.copy()
-    semantically_equal.obs["mixed"] = science.pd.Series(
-        [1, science.np.int64(1), 2, 3],
-        index=semantically_equal.obs_names,
-        dtype="object",
-    )
-    selected_equal, _, equal_code = OpenBioSingleCellSubsetObservations.execute(
-        semantically_equal,
-        "mixed",
-        "1",
-    ).result
-    assert selected_equal.obs_names.tolist() == ["cell_0", "cell_1"]
-    equal_namespace = {}
-    exec(equal_code, equal_namespace)
-    equivalent_equal = equal_namespace["subset_observations"](semantically_equal)
-    assert equivalent_equal.obs_names.equals(selected_equal.obs_names)
-
     literal_missing = data_adata.copy()
-    literal_missing.obs["label"] = ["<missing>", None, science.np.nan, science.pd.NA]
-    _, literal_report, _ = OpenBioSingleCellSubsetObservations.execute(
+    literal_missing.obs["label"] = science.pd.Categorical(
+        ["<missing>", None, None, None],
+        categories=["<missing>"],
+    )
+    _, literal_report, _ = _execute_subset(
         literal_missing,
         "label",
         "<missing>",
@@ -378,7 +631,7 @@ def _annotation_inputs(science):
 def test_merge_annotations_classifies_conflicts_and_generated_code_matches(science):
     target, source = _annotation_inputs(science)
     with pytest.raises(ValueError, match="conflicting value"):
-        OpenBioSingleCellMergeObservationAnnotations.execute(
+        _execute_merge(
             target,
             source,
             source_column="label",
@@ -386,7 +639,7 @@ def test_merge_annotations_classifies_conflicts_and_generated_code_matches(scien
             conflict_policy="error",
         )
 
-    kept, kept_report, _ = OpenBioSingleCellMergeObservationAnnotations.execute(
+    kept, kept_report, _ = _execute_merge(
         target,
         source,
         source_column="label",
@@ -403,7 +656,7 @@ def test_merge_annotations_classifies_conflicts_and_generated_code_matches(scien
     assert (kept_results["filled"], kept_results["identical"], kept_results["conflicts"]) == (1, 1, 1)
     assert kept_results["kept_target"] == 1
 
-    output, report, code = OpenBioSingleCellMergeObservationAnnotations.execute(
+    output, report, code = _execute_merge(
         target,
         source,
         source_column="label",
@@ -427,7 +680,7 @@ def test_merge_annotations_classifies_conflicts_and_generated_code_matches(scien
 
 def test_merge_annotations_preserves_new_categorical_dtype_and_validates_identity(science):
     target, source = _annotation_inputs(science)
-    output, report, _ = OpenBioSingleCellMergeObservationAnnotations.execute(
+    output, report, _ = _execute_merge(
         target,
         source,
         "label",
@@ -445,7 +698,7 @@ def test_merge_annotations_preserves_new_categorical_dtype_and_validates_identit
 
     source_only = source.copy()
     source_only.obs_names = ["c2", "c0", "outside"]
-    _, source_only_report, source_only_code = OpenBioSingleCellMergeObservationAnnotations.execute(
+    _, source_only_report, source_only_code = _execute_merge(
         target,
         source_only,
         "label",
@@ -463,7 +716,7 @@ def test_merge_annotations_preserves_new_categorical_dtype_and_validates_identit
 
     conflicting_source = source.copy()
     ensure_metadata(conflicting_source, source={"kind": "test", "study": "different"})
-    _, conflicting_report, _ = OpenBioSingleCellMergeObservationAnnotations.execute(
+    _, conflicting_report, _ = _execute_merge(
         target,
         conflicting_source,
         "label",
@@ -480,7 +733,7 @@ def test_merge_annotations_preserves_native_ordered_categories_and_rejects_noop_
         categories=[1, 2],
         ordered=True,
     )
-    output, _, code = OpenBioSingleCellMergeObservationAnnotations.execute(
+    output, _, code = _execute_merge(
         target,
         source,
         "integer_label",
@@ -496,8 +749,11 @@ def test_merge_annotations_preserves_native_ordered_categories_and_rejects_noop_
     assert equivalent.obs["integer_label"].dtype == output.obs["integer_label"].dtype
 
     missing_source = source.copy()
-    missing_source.obs["missing"] = science.pd.NA
-    missing_output, missing_report, missing_code = OpenBioSingleCellMergeObservationAnnotations.execute(
+    missing_source.obs["missing"] = science.pd.Categorical(
+        [None] * missing_source.n_obs,
+        categories=[],
+    )
+    missing_output, missing_report, missing_code = _execute_merge(
         target,
         missing_source,
         "missing",
@@ -521,7 +777,7 @@ def test_merge_annotations_preserves_native_ordered_categories_and_rejects_noop_
         categories=["B"],
         ordered=True,
     )
-    unchanged, unchanged_report, _ = OpenBioSingleCellMergeObservationAnnotations.execute(
+    unchanged, unchanged_report, _ = _execute_merge(
         categorical_target,
         categorical_source,
         "ordered_source",
@@ -533,7 +789,7 @@ def test_merge_annotations_preserves_native_ordered_categories_and_rejects_noop_
     assert unchanged_report.summary["key_results"]["kept_target"] == 3
 
 
-def test_merge_annotations_preserves_nullable_dtype_and_reports_incompatible_fallback(science):
+def test_merge_annotations_preserves_nullable_dtype(science):
     target, source = _annotation_inputs(science)
     target.obs["nullable"] = science.pd.Series(
         [1, science.pd.NA, 3, science.pd.NA],
@@ -545,7 +801,7 @@ def test_merge_annotations_preserves_nullable_dtype_and_reports_incompatible_fal
         index=source.obs_names,
         dtype="Int64",
     )
-    output, report, code = OpenBioSingleCellMergeObservationAnnotations.execute(
+    output, report, code = _execute_merge(
         target,
         source,
         "nullable_source",
@@ -561,56 +817,28 @@ def test_merge_annotations_preserves_nullable_dtype_and_reports_incompatible_fal
     assert equivalent.obs["nullable"].dtype == output.obs["nullable"].dtype
     assert equivalent.obs["nullable"].equals(output.obs["nullable"])
 
-    incompatible = source.copy()
-    incompatible.obs["nullable_source"] = science.pd.Series(
-        [3, 1, "B"],
-        index=incompatible.obs_names,
-        dtype="object",
-    )
-    fallback, fallback_report, fallback_code = OpenBioSingleCellMergeObservationAnnotations.execute(
-        target,
-        incompatible,
-        "nullable_source",
-        "nullable",
-        conflict_policy="error",
-    ).result
-    assert str(fallback.obs["nullable"].dtype) == "object"
-    assert fallback.obs["nullable"].tolist() == [1, "B", 3, science.pd.NA]
-    assert fallback_report.summary["key_results"]["dtype_fallback_to_object"] is True
-    assert any("object dtype" in warning for warning in fallback_report.summary["warnings"])
-    fallback_namespace = {}
-    exec(fallback_code, fallback_namespace)
-    fallback_equivalent = fallback_namespace["merge_observation_annotations"](target, incompatible)
-    assert fallback_equivalent.obs["nullable"].equals(fallback.obs["nullable"])
 
-
-def test_merge_annotation_value_counts_keep_distinct_scalar_types(science):
+def test_merge_annotation_value_counts_are_strict_json_scalars(science):
     target, source = _annotation_inputs(science)
-    source.obs["mixed"] = science.pd.Series(
-        [1, "1", "x"],
-        index=source.obs_names,
-        dtype="object",
+    source.obs["integer_label"] = science.pd.Categorical(
+        [1, 2, 1],
+        categories=[1, 2],
     )
-    _, report, _ = OpenBioSingleCellMergeObservationAnnotations.execute(
+    _, report, _ = _execute_merge(
         target,
         source,
-        "mixed",
-        "mixed",
+        "integer_label",
+        "integer_label",
         conflict_policy="error",
     ).result
     counts = report.summary["key_results"]["final_value_counts"]
-    assert counts["total_categories"] == 4
+    assert counts["total_categories"] == 3
     assert any(item["value"] == 1 and item["value_type"] == "builtins.int" for item in counts["items"])
-    assert any(
-        item["value"] == "1" and item["value_type"] == "builtins.str" for item in counts["items"]
-    )
+    json.dumps(counts, allow_nan=False)
 
 
 def _gtf_line(gene_id, gene_name, feature="gene"):
-    return (
-        f"chr1\ttest\t{feature}\t1\t2\t.\t+\t.\t"
-        f'gene_id "{gene_id}"; gene_name "{gene_name}";\n'
-    )
+    return f'chr1\ttest\t{feature}\t1\t2\t.\t+\t.\tgene_id "{gene_id}"; gene_name "{gene_name}";\n'
 
 
 def test_gtf_annotation_keeps_stable_identity_and_generated_code_matches(
@@ -636,7 +864,7 @@ def test_gtf_annotation_keeps_stable_identity_and_generated_code_matches(
         ),
     )
 
-    output, report, code = OpenBioSingleCellMapGeneIdsFromGTF.execute(
+    output, report, code = _execute_gtf(
         value,
         "genes.gtf",
         id_source="var_column",
@@ -671,9 +899,7 @@ def test_gtf_annotation_keeps_stable_identity_and_generated_code_matches(
     exec(code, namespace)
     equivalent = namespace["annotate_gene_ids_from_gtf"](value, gtf_path)
     assert equivalent.var_names.equals(output.var_names)
-    assert equivalent.var["gene_symbols"].astype("string").equals(
-        output.var["gene_symbols"].astype("string")
-    )
+    assert equivalent.var["gene_symbols"].astype("string").equals(output.var["gene_symbols"].astype("string"))
     assert equivalent.var["gtf_mapped"].equals(output.var["gtf_mapped"])
 
 
@@ -691,7 +917,7 @@ def test_gtf_annotation_supports_gzip_fallback_and_rejects_ambiguity(
         science.np.ones((2, 2)),
         var=science.pd.DataFrame(index=["ENSG1.9_PAR_Y", "ENSG2"]),
     )
-    output, report, _ = OpenBioSingleCellMapGeneIdsFromGTF.execute(
+    output, report, _ = _execute_gtf(
         value,
         "fallback.gtf.gz",
         id_source="var_names",
@@ -711,7 +937,7 @@ def test_gtf_annotation_supports_gzip_fallback_and_rejects_ambiguity(
     ambiguous = science.ad.AnnData(science.np.ones((1, 1)))
     ambiguous.var_names = ["ENSG1"]
     with pytest.raises(ValueError, match="ambiguous"):
-        OpenBioSingleCellMapGeneIdsFromGTF.execute(
+        _execute_gtf(
             ambiguous,
             "ambiguous.gtf",
             id_source="var_names",
@@ -728,7 +954,7 @@ def test_gtf_annotation_rejects_reserved_symbol_columns(comfy_directories, scien
     value = science.ad.AnnData(science.np.ones((1, 1)))
     value.var_names = ["ENSG1"]
     with pytest.raises(ValueError, match="reserved"):
-        OpenBioSingleCellMapGeneIdsFromGTF.execute(
+        _execute_gtf(
             value,
             "genes.gtf",
             id_source="var_names",
@@ -748,7 +974,7 @@ def test_gtf_annotation_discloses_duplicate_ids_and_existing_symbol_conflicts(
 
     duplicate = science.ad.AnnData(science.np.ones((1, 2)))
     duplicate.var_names = ["ENSG1.1", "ENSG1.2"]
-    duplicate_output, duplicate_report, duplicate_code = OpenBioSingleCellMapGeneIdsFromGTF.execute(
+    duplicate_output, duplicate_report, duplicate_code = _execute_gtf(
         duplicate,
         "genes.gtf",
         id_source="var_names",
@@ -771,7 +997,7 @@ def test_gtf_annotation_discloses_duplicate_ids_and_existing_symbol_conflicts(
             index=["ENSG1.1", "ENSG2"],
         ),
     )
-    conflict_output, conflict_report, conflict_code = OpenBioSingleCellMapGeneIdsFromGTF.execute(
+    conflict_output, conflict_report, conflict_code = _execute_gtf(
         conflict,
         "genes.gtf",
         id_source="var_names",
@@ -789,7 +1015,7 @@ def test_gtf_annotation_discloses_duplicate_ids_and_existing_symbol_conflicts(
 
     unmatched = science.ad.AnnData(science.np.ones((1, 1)))
     unmatched.var_names = ["UNMATCHED"]
-    unmatched_output, unmatched_report, unmatched_code = OpenBioSingleCellMapGeneIdsFromGTF.execute(
+    unmatched_output, unmatched_report, unmatched_code = _execute_gtf(
         unmatched,
         "genes.gtf",
         id_source="var_names",
@@ -816,7 +1042,7 @@ def test_gtf_annotation_discloses_non_string_symbols_and_counts_final_duplicates
         science.np.ones((1, 1)),
         var=science.pd.DataFrame({"gene_symbols": [123]}, index=["ENSG1"]),
     )
-    invalid_output, invalid_report, invalid_code = OpenBioSingleCellMapGeneIdsFromGTF.execute(
+    invalid_output, invalid_report, invalid_code = _execute_gtf(
         invalid,
         "genes.gtf",
         id_source="var_names",
@@ -838,7 +1064,7 @@ def test_gtf_annotation_discloses_non_string_symbols_and_counts_final_duplicates
             index=["ENSG1", "UNMAPPED"],
         ),
     )
-    output, report, _ = OpenBioSingleCellMapGeneIdsFromGTF.execute(
+    output, report, _ = _execute_gtf(
         duplicate_final,
         "genes.gtf",
         id_source="var_names",

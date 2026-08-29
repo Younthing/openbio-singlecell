@@ -870,8 +870,10 @@ def _materialize_source_adata(adata: Any, source_kind: str) -> Any:
     if source_kind == "raw":
         if adata.raw is None:
             raise ValueError("cNMF source 'raw' was selected, but adata.raw is unavailable.")
+        # Raw may have a wider feature axis; materializing that axis is part of the requested result semantics.
         return adata.raw.to_adata()
-    return adata.copy()
+    # The caller is a one-shot worker and transfers ownership, so no upstream-protection copy is needed.
+    return adata
 
 
 def _matrix_values(matrix: Any) -> np.ndarray:
@@ -1519,7 +1521,8 @@ def _verify_artifact_hashes(root: Path, entries: Sequence[tuple[str, str]]) -> s
 def _write_private_counts(root: Path, matrix: Any, obs_names: Any, var_names: Any, fingerprint: str) -> Path:
     counts_path = root / "input_counts.h5ad"
     private = ad.AnnData(
-        X=matrix.copy(),
+        # The matrix is worker-owned and only serialized here; sharing avoids a full defensive copy.
+        X=matrix,
         obs=pd.DataFrame(index=pd.Index([str(value) for value in obs_names])),
         var=pd.DataFrame(index=pd.Index([str(value) for value in var_names])),
     )

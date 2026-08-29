@@ -399,13 +399,13 @@ class AugurResult:
         return {view: self._tables[view].copy(deep=True) for view in AUGUR_VIEWS}
 
 
-def _build_augur_result(
+def _build_augur_artifact(
     *,
     tables: Mapping[str, Any],
     summary: Mapping[str, Any],
     numpy: Any,
     pandas: Any,
-) -> AugurResult:
+) -> tuple[dict[str, DataFrame], dict[str, Any], dict[str, Any]]:
     summary_copy = copy.deepcopy(dict(summary))
     parameters = summary_copy.get("parameters")
     if not isinstance(parameters, Mapping):
@@ -440,20 +440,42 @@ def _build_augur_result(
         "summary_fingerprint_sha256": summary_fingerprint,
     }
     metadata["artifact_fingerprint_sha256"] = _canonical_json_sha256(metadata)
-    result = AugurResult(tables=tables, summary=summary_copy, metadata=metadata)
+    return validate_augur_portable(dict(tables), summary_copy, metadata)
+
+
+def _build_augur_result(
+    *,
+    tables: Mapping[str, Any],
+    summary: Mapping[str, Any],
+    numpy: Any,
+    pandas: Any,
+) -> AugurResult:
+    owned_tables, owned_summary, metadata = _build_augur_artifact(
+        tables=tables,
+        summary=summary,
+        numpy=numpy,
+        pandas=pandas,
+    )
+    result = AugurResult(tables=owned_tables, summary=owned_summary, metadata=metadata)
     validate_augur_result(result)
     return result
 
 
-def validate_augur_result(result: Any) -> tuple[dict[str, DataFrame], dict[str, Any], dict[str, Any]]:
-    """Validate class, producer schema, strict summary, tables, and all current-content fingerprints."""
+def validate_augur_portable(
+    tables: Mapping[str, DataFrame],
+    summary: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> tuple[dict[str, DataFrame], dict[str, Any], dict[str, Any]]:
+    """Validate a decoded portable Augur table family without constructing a live result object."""
 
     import numpy as np
     import pandas as pd
 
-    if type(result) is not AugurResult:
-        raise TypeError("Augur Results requires an exact OPENBIO_AUGUR_RESULT artifact from OpenBio Augur.")
-    metadata = result.metadata
+    if not isinstance(tables, Mapping) or not isinstance(summary, Mapping) or not isinstance(metadata, Mapping):
+        raise TypeError("Augur portable artifact requires table, summary, and metadata mappings.")
+    tables = dict(tables)
+    summary = dict(summary)
+    metadata = dict(metadata)
     expected_metadata = {
         "schema_version",
         "artifact_type",
@@ -471,7 +493,7 @@ def validate_augur_result(result: Any) -> tuple[dict[str, DataFrame], dict[str, 
         )
     if metadata["schema_version"] != AUGUR_ARTIFACT_SCHEMA_VERSION:
         raise ValueError("Augur artifact has an unsupported schema version.")
-    if metadata["artifact_type"] != AUGUR_ARTIFACT_TYPE or result.artifact_type != AUGUR_ARTIFACT_TYPE:
+    if metadata["artifact_type"] != AUGUR_ARTIFACT_TYPE:
         raise ValueError("Augur artifact type identity is invalid.")
     if metadata["producer_node_id"] != AUGUR_PRODUCER_NODE_ID:
         raise ValueError("Augur artifact has the wrong producer node.")
@@ -482,11 +504,9 @@ def validate_augur_result(result: Any) -> tuple[dict[str, DataFrame], dict[str, 
         isinstance(fingerprint, str)
         and len(fingerprint) == 64
         and all(character in "0123456789abcdef" for character in fingerprint)
-        and result.fingerprint == fingerprint
     ):
         raise ValueError("Augur artifact fingerprint identity is invalid.")
 
-    summary = result.summary
     expected_summary = {
         "schema_version",
         "node_id",
@@ -515,7 +535,6 @@ def validate_augur_result(result: Any) -> tuple[dict[str, DataFrame], dict[str, 
     if metadata["summary_fingerprint_sha256"] != _canonical_json_sha256(summary):
         raise ValueError("Augur artifact summary failed its current-content fingerprint check.")
 
-    tables = result.portable_tables()
     parameters = summary["parameters"]
     table_fingerprints = _validate_canonical_tables(
         tables, parameters=parameters, numpy=np, pandas=pd
@@ -544,6 +563,17 @@ def validate_augur_result(result: Any) -> tuple[dict[str, DataFrame], dict[str, 
     if fingerprint != _canonical_json_sha256(fingerprint_payload):
         raise ValueError("Augur artifact metadata failed its provenance fingerprint check.")
     return tables, summary, metadata
+
+
+def validate_augur_result(result: Any) -> tuple[dict[str, DataFrame], dict[str, Any], dict[str, Any]]:
+    """Validate class, producer schema, strict summary, tables, and all current-content fingerprints."""
+
+    if type(result) is not AugurResult:
+        raise TypeError("Augur Results requires an exact OPENBIO_AUGUR_RESULT artifact from OpenBio Augur.")
+    metadata = result.metadata
+    if result.fingerprint != metadata.get("artifact_fingerprint_sha256"):
+        raise ValueError("Augur artifact fingerprint identity is invalid.")
+    return validate_augur_portable(result.portable_tables(), result.summary, metadata)
 
 
 def _require_pertpy() -> Any:
@@ -830,7 +860,7 @@ def _canonicalize_backend_results(
     return tables
 
 
-def run_augur_analysis(
+def _run_augur_artifact_owned(
     adata: AnnData,
     *,
     sample_key: str = "sample",
@@ -851,8 +881,8 @@ def run_augur_analysis(
     max_result_rows: int = 10_000_000,
     max_result_mib: float = 1024.0,
     pertpy_module: Any | None = None,
-) -> AugurResult:
-    """Run one audited two-condition classifier prioritization without mutating caller AnnData."""
+) -> tuple[dict[str, DataFrame], dict[str, Any], dict[str, Any]]:
+    """Run one audited two-condition classifier prioritization into an owned portable payload."""
 
     import numpy as np
     import pandas as pd
@@ -1177,6 +1207,7 @@ def run_augur_analysis(
     analysis_positions = [
         index for index in selected_positions if population_labels[index] in set(eligible)
     ]
+    # Pertpy owns and mutates this scientifically selected cell subset during classifier preparation.
     analysis_counts = counts[analysis_positions].copy()
     analysis_obs_names = [str(adata.obs_names[index]) for index in analysis_positions]
     analysis_samples = [sample_labels[index] for index in analysis_positions]
@@ -1548,14 +1579,31 @@ def run_augur_analysis(
             "completeness remain a user-declared study contract.",
         ],
     }
-    return _build_augur_result(tables=tables, summary=summary, numpy=np, pandas=pd)
+    return _build_augur_artifact(tables=tables, summary=summary, numpy=np, pandas=pd)
+
+
+def run_augur_artifact(
+    adata: AnnData,
+    **kwargs: Any,
+) -> tuple[dict[str, DataFrame], dict[str, Any], dict[str, Any]]:
+    """Return worker-owned canonical tables, strict summary, and artifact metadata."""
+
+    return _run_augur_artifact_owned(adata, **kwargs)
+
+
+def run_augur_analysis(adata: AnnData, **kwargs: Any) -> AugurResult:
+    """Build the legacy in-process value for direct Python consumers."""
+
+    tables, summary, metadata = _run_augur_artifact_owned(adata, **kwargs)
+    result = AugurResult(tables=tables, summary=summary, metadata=metadata)
+    validate_augur_result(result)
+    return result
 
 
 def run_augur_portable(adata: AnnData, **kwargs: Any) -> tuple[dict[str, DataFrame], dict[str, Any]]:
-    """Portable equivalent returning defensive canonical DataFrames plus the strict summary."""
+    """Portable equivalent returning the owned canonical DataFrames plus the strict summary."""
 
-    result = run_augur_analysis(adata, **kwargs)
-    tables, summary, _ = validate_augur_result(result)
+    tables, summary, _ = _run_augur_artifact_owned(adata, **kwargs)
     return tables, summary
 
 
@@ -1607,7 +1655,9 @@ def augur_code(**parameters: Any) -> str:
         _frame_fingerprint,
         _validate_canonical_tables,
         AugurResult,
+        _build_augur_artifact,
         _build_augur_result,
+        validate_augur_portable,
         validate_augur_result,
         _require_pertpy,
         _pertpy_version,
@@ -1617,6 +1667,8 @@ def augur_code(**parameters: Any) -> str:
         _backend_float_column,
         _backend_integer_column,
         _canonicalize_backend_results,
+        _run_augur_artifact_owned,
+        run_augur_artifact,
         run_augur_analysis,
         run_augur_portable,
     )
@@ -1710,7 +1762,9 @@ __all__ = [
     "augur_code",
     "augur_results_code",
     "run_augur_analysis",
+    "run_augur_artifact",
     "run_augur_portable",
     "select_augur_view",
+    "validate_augur_portable",
     "validate_augur_result",
 ]

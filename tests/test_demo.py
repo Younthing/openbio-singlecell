@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+import gc
+import inspect
 import json
+import sys
 from pathlib import Path
 
 from install import main as manager_install
+from openbio_singlecell.artifact_codecs import read_anndata, read_plot, read_table
+from openbio_singlecell.artifact_service import (
+    current_artifact_runtime,
+    initialize_artifact_service,
+)
 from openbio_singlecell.extension import NODE_CLASSES
 from scripts.generate_demo import KNOWN_MARKERS, build_demo, validate_existing
 from tests.workflow_helpers import workflow_execute_kwargs
@@ -11,7 +20,9 @@ from tests.workflow_helpers import workflow_execute_kwargs
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
 
-def template_runner(template_name):
+def template_runner(template_name, temp_dir):
+    gc.collect()
+    asyncio.run(initialize_artifact_service(temp_dir, sys.executable))
     workflow_path = PLUGIN_ROOT / "example_workflows" / f"{template_name}.json"
     workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
     workflow_nodes = {node["type"]: node for node in workflow["nodes"]}
@@ -19,8 +30,16 @@ def template_runner(template_name):
 
     def run(node_type, *input_values, _all_outputs=False):
         node_class = node_classes[node_type]
-        kwargs = workflow_execute_kwargs(node_class, workflow_nodes[node_type])
-        result = node_class.execute(*input_values, **kwargs).result
+        workflow_node = workflow_nodes[node_type]
+        kwargs = workflow_execute_kwargs(node_class, workflow_node)
+        wired_names = [item["name"] for item in workflow_node.get("inputs", [])]
+        if len(wired_names) != len(input_values):
+            raise ValueError(f"{node_type} expected {len(wired_names)} wired inputs")
+        kwargs.update(zip(wired_names, input_values, strict=True))
+        result = node_class.execute(**kwargs)
+        if inspect.isawaitable(result):
+            result = asyncio.run(result)
+        result = result.result
         if node_type == "OpenBioSingleCellCoreStudyParameters" or _all_outputs:
             return result
         return result[0]
@@ -121,15 +140,16 @@ def test_demo_validation_rejects_forged_same_shape_anndata(tmp_path, science):
 
 
 def test_clustering_template_completes_demo_analysis(comfy_directories, science):
-    input_dir, _, _ = comfy_directories
+    input_dir, _, temp_dir = comfy_directories
     write_demo(input_dir, science)
-    run = template_runner("Cell Clustering and Marker Discovery")
+    run = template_runner("Cell Clustering and Marker Discovery", temp_dir)
 
     loaded = run("OpenBioSingleCellLoadH5AD")
     normalized = run("OpenBioSingleCellNormalizeToLayer", loaded)
     variable = run("OpenBioSingleCellHighlyVariableGenes", normalized)
-    highly_variable = int(variable.var["highly_variable"].sum())
-    assert 0 < highly_variable < variable.n_vars
+    variable_adata = read_anndata(current_artifact_runtime().resolve(variable))
+    highly_variable = int(variable_adata.var["highly_variable"].sum())
+    assert 0 < highly_variable < variable_adata.n_vars
 
     pca = run("OpenBioSingleCellPCA", variable)
     neighbors = run("OpenBioSingleCellNeighbors", pca)
@@ -140,18 +160,25 @@ def test_clustering_template_completes_demo_analysis(comfy_directories, science)
     plot = run("OpenBioSingleCellUMAPPlot", clustered)
     summary = run("OpenBioSingleCellAnnDataSummary", clustered)
 
-    assert markers.kind == "table" and not markers.table.empty
-    assert science.np.isfinite(markers.table["log2_fold_change_approx"].to_numpy(dtype=float)).all()
-    assert filtered_markers.kind == "table" and not filtered_markers.table.empty
-    assert plot.kind == "plot" and plot.png
+    marker_table, _ = read_table(current_artifact_runtime().resolve(markers))
+    filtered_table, _ = read_table(current_artifact_runtime().resolve(filtered_markers))
+    plot_png, _ = read_plot(current_artifact_runtime().resolve(plot))
+    clustered_adata = read_anndata(current_artifact_runtime().resolve(clustered))
+    assert not marker_table.empty
+    assert science.np.isfinite(marker_table["log2_fold_change_approx"].to_numpy(dtype=float)).all()
+    assert not filtered_table.empty
+    assert plot_png
     assert summary.kind == "summary"
-    assert summary.summary["key_results"]["shape"] == [clustered.n_obs, clustered.n_vars]
+    assert summary.summary["key_results"]["shape"] == [
+        clustered_adata.n_obs,
+        clustered_adata.n_vars,
+    ]
 
 
 def test_quality_control_template_filters_demo_and_produces_consistent_plots(comfy_directories, science):
-    input_dir, _, _ = comfy_directories
+    input_dir, _, temp_dir = comfy_directories
     write_demo(input_dir, science)
-    run = template_runner("Quality Control and Clean Counts")
+    run = template_runner("Quality Control and Clean Counts", temp_dir)
 
     loaded = run("OpenBioSingleCellLoadH5AD")
     qc = run("OpenBioSingleCellCalculateQC", loaded)
@@ -161,16 +188,19 @@ def test_quality_control_template_filters_demo_and_produces_consistent_plots(com
     filtered = run("OpenBioSingleCellFilterGenes", filtered_cells)
     summary = run("OpenBioSingleCellAnnDataSummary", filtered)
 
-    assert (filtered.n_obs, filtered.n_vars) == (577, 500)
-    assert before_plot.kind == "plot" and before_plot.png
-    assert retained_plot.kind == "plot" and retained_plot.png
+    filtered_adata = read_anndata(current_artifact_runtime().resolve(filtered))
+    before_png, _ = read_plot(current_artifact_runtime().resolve(before_plot))
+    retained_png, _ = read_plot(current_artifact_runtime().resolve(retained_plot))
+    assert (filtered_adata.n_obs, filtered_adata.n_vars) == (577, 500)
+    assert before_png
+    assert retained_png
     assert summary.summary["key_results"]["shape"] == [577, 500]
 
 
 def test_composition_template_produces_sample_level_tables(comfy_directories, science):
-    input_dir, _, _ = comfy_directories
+    input_dir, _, temp_dir = comfy_directories
     write_demo(input_dir, science)
-    run = template_runner("Sample Composition Comparison")
+    run = template_runner("Sample Composition Comparison", temp_dir)
 
     sample_column, condition_column, batch_column, annotation_column, reference, comparison = run(
         "OpenBioSingleCellCoreStudyParameters"
@@ -185,13 +215,15 @@ def test_composition_template_produces_sample_level_tables(comfy_directories, sc
         _all_outputs=True,
     )
 
-    assert set(loaded.obs["condition"].astype(str)) == {"control", "treated"}
+    loaded_adata = read_anndata(current_artifact_runtime().resolve(loaded))
+    composition_table, _ = read_table(current_artifact_runtime().resolve(composition))
+    assert set(loaded_adata.obs["condition"].astype(str)) == {"control", "treated"}
     assert batch_column == "batch"
     assert condition_column == "condition"
     assert reference == "control"
     assert comparison == "treated"
-    assert composition.kind == "table" and len(composition.table) == 12
-    assert list(composition.table.columns) == [
+    assert len(composition_table) == 12
+    assert list(composition_table.columns) == [
         "sample",
         "condition",
         "annotation",

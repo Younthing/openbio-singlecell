@@ -275,7 +275,7 @@ def _standalone_prepare_pseudobulk_design(
             raise ValueError(f"{operation} {description} cannot be empty.")
         return value.strip()
 
-    adata, metadata = _standalone_validate_pseudobulk_artifact(artifact)
+    adata, metadata = _standalone_validate_pseudobulk_artifact(artifact, copy_result=False)
     roles = metadata["role_keys"]
     sample_key = roles["sample"]
     population_key = roles["population"]
@@ -306,8 +306,8 @@ def _standalone_prepare_pseudobulk_design(
     if population not in available_populations:
         raise ValueError(f"{operation} population {population!r} is absent; available={available_populations[:30]}.")
     population_mask = adata.obs[population_key].to_numpy(dtype=object) == population
-    population_data = adata[population_mask].copy()
-    available_conditions = list(dict.fromkeys(population_data.obs[condition_key].tolist()))
+    population_profile_count = int(population_mask.sum())
+    available_conditions = list(dict.fromkeys(adata.obs.loc[population_mask, condition_key].tolist()))
     missing_conditions = [
         condition for condition in (reference_condition, comparison_condition) if condition not in available_conditions
     ]
@@ -316,8 +316,10 @@ def _standalone_prepare_pseudobulk_design(
             f"{operation} requested Conditions are absent after population selection: {missing_conditions}; "
             f"available={available_conditions}."
         )
-    condition_mask = population_data.obs[condition_key].isin([reference_condition, comparison_condition]).to_numpy()
-    model_data = population_data[condition_mask].copy()
+    condition_mask = adata.obs[condition_key].isin([reference_condition, comparison_condition]).to_numpy()
+    # This single materialization is the scientific model workspace: one population and the two
+    # requested Conditions. It replaces the former population copy followed by another Condition copy.
+    model_data = adata[population_mask & condition_mask].copy()
     if bool(model_data.obs.duplicated(subset=[sample_key]).any()):
         duplicated = model_data.obs.loc[model_data.obs.duplicated(subset=[sample_key], keep=False), sample_key]
         raise ValueError(
@@ -454,7 +456,11 @@ def _standalone_prepare_pseudobulk_design(
     retained_indices = np.flatnonzero(keep)
     if retained_indices.size == 0:
         raise ValueError(f"{operation} weak-expression filtering removed every gene.")
-    filtered = model_data[:, retained_indices].copy()
+    genes_before = int(model_data.n_vars)
+    removed_genes_preview = model_data.var_names[~keep].tolist()[:100]
+    # model_data is already a private scientific subset, so feature filtering can happen in place.
+    model_data._inplace_subset_var(retained_indices)
+    filtered = model_data
     if filtered.n_vars != retained_indices.size or not filtered.var_names.is_unique:
         raise RuntimeError(f"{operation} failed to retain a unique deterministic tested-gene universe.")
     filter_diagnostics = {
@@ -467,11 +473,11 @@ def _standalone_prepare_pseudobulk_design(
         "median_library_size": median_library_size,
         "cpm_cutoff": cpm_cutoff,
         "effective_min_sample_size": min_sample_size,
-        "genes_before": int(model_data.n_vars),
+        "genes_before": genes_before,
         "genes_retained": int(filtered.n_vars),
-        "genes_removed": int(model_data.n_vars - filtered.n_vars),
+        "genes_removed": int(genes_before - filtered.n_vars),
         "retained_genes": filtered.var_names.tolist(),
-        "removed_genes_preview": model_data.var_names[~keep].tolist()[:100],
+        "removed_genes_preview": removed_genes_preview,
         "removed_genes_preview_truncated": int((~keep).sum()) > 100,
     }
     diagnostics = {
@@ -490,7 +496,7 @@ def _standalone_prepare_pseudobulk_design(
         "condition_counts": condition_counts,
         "modeled_samples": int(model_data.n_obs),
         "modeled_sample_ids": model_data.obs[sample_key].tolist(),
-        "excluded_other_condition_profiles": int(population_data.n_obs - model_data.n_obs),
+        "excluded_other_condition_profiles": int(population_profile_count - model_data.n_obs),
         "design": {
             "requested_formula_like": "~ " + " + ".join([*nuisance_categorical, *continuous_keys, condition_key]),
             "formula_like": "~ "
@@ -889,7 +895,8 @@ def _standalone_run_edger(
         engine="edgeR",
     )
     model_data = prepared["adata"]
-    backend_data = model_data.copy()
+    # The prepared subset is an engine-specific worker-owned workspace; the backend may consume it directly.
+    backend_data = model_data
     backend_design = prepared["design"].copy()
     backend_contrast = np.asarray(prepared["contrast"], dtype=float).copy()
     backend_snapshot = _standalone_backend_input_snapshot(backend_data, backend_design, backend_contrast)
@@ -1073,7 +1080,7 @@ def _standalone_run_edger(
         "software_versions": software_versions,
     }
     json.dumps(_standalone_plain_json(diagnostics), ensure_ascii=False, allow_nan=False)
-    _standalone_validate_pseudobulk_artifact(artifact)
+    _standalone_validate_pseudobulk_artifact(artifact, copy_result=False)
     return table, diagnostics
 
 
@@ -1148,8 +1155,9 @@ def _standalone_run_pydeseq2(
         pertpy_module,
         engine="PyDESeq2",
     )
+    # PyDESeq2 requires its own minimal AnnData schema, but the worker-owned count matrix need not be duplicated.
     backend_data = AnnData(
-        X=model_data.X.copy(),
+        X=model_data.X,
         obs=pd.DataFrame(
             {"__openbio_sample_identity__": model_data.obs_names.to_numpy(dtype=object)},
             index=model_data.obs_names.copy(),
@@ -1483,7 +1491,7 @@ def _standalone_run_pydeseq2(
         "software_versions": software_versions,
     }
     json.dumps(_standalone_plain_json(diagnostics), ensure_ascii=False, allow_nan=False)
-    _standalone_validate_pseudobulk_artifact(artifact)
+    _standalone_validate_pseudobulk_artifact(artifact, copy_result=False)
     return table, diagnostics
 
 

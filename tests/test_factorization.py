@@ -7,6 +7,7 @@ import os
 import pickle
 import sys
 import tempfile
+import uuid
 import warnings
 import weakref
 from dataclasses import replace
@@ -21,9 +22,30 @@ import pytest
 import yaml
 
 import openbio_singlecell.cnmf_standalone as standalone
-import openbio_singlecell.nodes_factorization as nodes_factorization
+import openbio_singlecell.operations_factorization as operations_factorization
+from openbio_singlecell.artifact_codecs import (
+    ANNDATA_PAYLOAD,
+    read_anndata,
+    read_table,
+    write_anndata,
+)
+from openbio_singlecell.artifact_envelope import summary_from_metadata, table_from_metadata
+from openbio_singlecell.artifact_runtime import NATIVE_AFFINITY_CODECS
+from openbio_singlecell.cnmf_native_codec import (
+    CNMF_NATIVE_CODEC,
+    checkout_cnmf_run,
+    write_cnmf_run,
+)
 from openbio_singlecell.cnmf_run import CNMFRun
-from openbio_singlecell.nodes_factorization import OpenBioSingleCellCNMF, OpenBioSingleCellCNMFRankSurvey
+from openbio_singlecell.nodes_factorization import (
+    OpenBioSingleCellCNMF as CNMFNode,
+)
+from openbio_singlecell.nodes_factorization import (
+    OpenBioSingleCellCNMFRankSurvey as CNMFRankSurveyNode,
+)
+from openbio_singlecell.operations_factorization import cnmf, cnmf_rank_survey
+from openbio_singlecell.operations_input import ANNDATA_CODEC, ANNDATA_KIND
+from openbio_singlecell.worker_protocol import OperationContext, ProtocolError, registered_operation_ids
 
 
 def _save_frame(frame: pd.DataFrame, filename: str | os.PathLike[str]) -> None:
@@ -74,6 +96,13 @@ class FakeCNMF:
         self.paths = standalone._expected_paths(Path(output_dir), str(name))
         self.calls: list[tuple[str, dict[str, object]]] = []
         self.results: dict[tuple[int, float], tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]] = {}
+        replicate_path = Path(self.paths["nmf_replicate_parameters"])
+        genes_path = Path(self.paths["nmf_genes_list"])
+        if replicate_path.is_file() and genes_path.is_file():
+            replicate = _load_frame(replicate_path)
+            self.components = tuple(int(value) for value in replicate["n_components"].drop_duplicates())
+            self.n_iter = int(replicate.groupby("n_components").size().iloc[0])
+            self.genes = genes_path.read_text(encoding="utf-8").splitlines()
         type(self).instances.append(self)
 
     def prepare(
@@ -325,14 +354,21 @@ class FakeCNMF:
 
 
 @pytest.fixture(autouse=True)
-def fake_cnmf_module(monkeypatch):
+def fake_cnmf_module(monkeypatch, tmp_path):
+    global _TEST_ROOT
     FakeCNMF.reset()
+    _TEST_ROOT = tmp_path
+    _ACTIVE_CHECKOUTS.clear()
+    _RUN_ARTIFACTS.clear()
     module = ModuleType("cnmf")
     module.__version__ = "1.7.1"
     module.cNMF = FakeCNMF
     module.load_df_from_npz = _load_frame
     monkeypatch.setitem(sys.modules, "cnmf", module)
     yield module
+    while _ACTIVE_CHECKOUTS:
+        _ACTIVE_CHECKOUTS.pop().__exit__(None, None, None)
+    _RUN_ARTIFACTS.clear()
     for instance in FakeCNMF.instances:
         del instance
     gc.collect()
@@ -351,10 +387,52 @@ def _adata(*, cells: int = 16, genes: int = 8, noninteger: bool = False) -> ad.A
     return result
 
 
+_TEST_ROOT: Path
+_ACTIVE_CHECKOUTS: list[object] = []
+_RUN_ARTIFACTS: dict[int, Path] = {}
+
+
+def _operation_staging(prefix: str) -> Path:
+    root = Path(tempfile.mkdtemp(prefix=prefix, dir=_TEST_ROOT))
+    staging = root / "run.partial"
+    staging.mkdir()
+    return staging
+
+
 def _run_survey(adata: ad.AnnData | None = None, **kwargs):
     if adata is None:
         adata = _adata()
+    arguments = _survey_parameters()
+    arguments.update(kwargs)
+    staging = _operation_staging("survey-")
+    input_root = staging.parent / "input"
+    input_root.mkdir()
+    write_anndata(input_root, adata)
+    records = cnmf_rank_survey(
+        OperationContext(staging, str(uuid.uuid4())),
+        {"adata": _artifact_descriptor(input_root, kind=ANNDATA_KIND, codec=ANNDATA_CODEC)},
+        arguments,
+    )
+    by_name = {record["name"]: record for record in records}
+    run_root = staging / by_name["run"]["payload"]
+    checkout = checkout_cnmf_run(run_root, checkout_parent=staging.parent)
+    run = checkout.__enter__()
+    _ACTIVE_CHECKOUTS.append(checkout)
+    _RUN_ARTIFACTS[id(run)] = run_root
+    table, table_metadata = read_table(staging / by_name["k_metrics"]["payload"])
+    return (
+        run,
+        table_from_metadata(table_metadata, table),
+        summary_from_metadata(by_name["summary"]["value"]),
+        by_name["code"]["value"],
+    )
+
+
+def _run_live_survey(adata: ad.AnnData | None = None, **kwargs):
+    if adata is None:
+        adata = _adata()
     arguments = {
+        "source": "layer:counts",
         "components_min": 2,
         "components_max": 3,
         "n_iter": 4,
@@ -362,12 +440,242 @@ def _run_survey(adata: ad.AnnData | None = None, **kwargs):
         "random_seed": 17,
     }
     arguments.update(kwargs)
-    return OpenBioSingleCellCNMFRankSurvey.execute(adata, **arguments).result
+    return standalone.cnmf_rank_survey(adata, **arguments)
+
+
+def _run_consensus(run: CNMFRun, **kwargs):
+    parameters = {
+        "selected_k": 2,
+        "density_threshold": 2.0,
+        "local_neighborhood_size": 0.3,
+        "n_top_genes": 3,
+        "overwrite_existing": False,
+    }
+    parameters.update(kwargs)
+    staging = _operation_staging("consensus-")
+    records = cnmf(
+        OperationContext(staging, str(uuid.uuid4())),
+        {
+            "run": _artifact_descriptor(
+                _RUN_ARTIFACTS[id(run)],
+                kind="OPENBIO_CNMF_RUN",
+                codec=CNMF_NATIVE_CODEC,
+            )
+        },
+        parameters,
+    )
+    by_name = {record["name"]: record for record in records}
+    return (
+        read_anndata(staging / by_name["adata"]["payload"]),
+        summary_from_metadata(by_name["summary"]["value"]),
+        by_name["code"]["value"],
+    )
+
+
+def _artifact_descriptor(root: Path, *, kind: str, codec: str) -> dict[str, str]:
+    return {
+        "type": "artifact",
+        "kind": kind,
+        "codec": codec,
+        "path": str(root.resolve()),
+    }
+
+
+def _survey_parameters() -> dict[str, object]:
+    return {
+        "source": {"source": "layer", "layer_name": "counts"},
+        "components_min": 2,
+        "components_max": 3,
+        "n_iter": 4,
+        "num_highvar_genes": 6,
+        "random_seed": 17,
+    }
+
+
+def test_rank_survey_takes_ownership_of_worker_private_anndata():
+    owned = _adata()
+
+    run, _ = _run_live_survey(owned)
+
+    assert object.__getattribute__(run, "_base_adata") is owned
+    run.close()
+
+
+def test_private_count_h5ad_writer_reuses_worker_owned_matrix(tmp_path, monkeypatch):
+    standalone._load_science()
+    matrix = np.arange(12, dtype=float).reshape(4, 3)
+    obs_names = pd.Index([f"cell_{index}" for index in range(4)])
+    var_names = pd.Index([f"gene_{index}" for index in range(3)])
+    fingerprint = standalone._matrix_fingerprint(matrix, obs_names, var_names)
+    original = standalone.ad.AnnData
+    captured: dict[str, object] = {}
+
+    def capture_anndata(*, X, obs, var):
+        captured["X"] = X
+        return original(X=X, obs=obs, var=var)
+
+    monkeypatch.setattr(standalone.ad, "AnnData", capture_anndata)
+
+    standalone._write_private_counts(tmp_path, matrix, obs_names, var_names, fingerprint)
+
+    assert captured["X"] is matrix
+
+
+def test_rank_survey_operation_publishes_closed_native_run_and_jsonl_metrics(tmp_path):
+    adata = _adata()
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    write_anndata(input_root, adata)
+    input_payload = input_root / ANNDATA_PAYLOAD
+    before = input_payload.read_bytes()
+    staging = tmp_path / "survey.partial"
+    staging.mkdir()
+    context = OperationContext(staging, "00000000-0000-4000-8000-000000000010")
+
+    records = cnmf_rank_survey(
+        context,
+        {"adata": _artifact_descriptor(input_root, kind=ANNDATA_KIND, codec=ANNDATA_CODEC)},
+        _survey_parameters(),
+    )
+
+    assert [(record["type"], record["name"]) for record in records] == [
+        ("artifact", "run"),
+        ("artifact", "k_metrics"),
+        ("summary", "summary"),
+        ("string", "code"),
+    ]
+    assert records[0] == {
+        "type": "artifact",
+        "name": "run",
+        "kind": "OPENBIO_CNMF_RUN",
+        "codec": CNMF_NATIVE_CODEC,
+        "payload": "outputs/run",
+    }
+    assert records[1] == {
+        "type": "artifact",
+        "name": "k_metrics",
+        "kind": "OPENBIO_SINGLE_CELL_TABLE",
+        "codec": "table-jsonl-v1",
+        "payload": "outputs/k_metrics",
+    }
+    table, metadata = read_table(staging / records[1]["payload"])
+    assert table["k"].tolist() == [2, 3]
+    assert metadata["kind"] == "table"
+    assert input_payload.read_bytes() == before
+    assert not Path(FakeCNMF.instances[-1].output_dir).exists()
+    assert CNMF_NATIVE_CODEC in NATIVE_AFFINITY_CODECS
+    json.dumps(records, allow_nan=False)
+
+    with pytest.raises(ProtocolError, match="parameters"):
+        cnmf_rank_survey(
+            context,
+            {"adata": _artifact_descriptor(input_root, kind=ANNDATA_KIND, codec=ANNDATA_CODEC)},
+            _survey_parameters() | {"unexpected": True},
+        )
+
+
+def test_consensus_operation_uses_private_checkout_and_preserves_native_input(tmp_path):
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    write_anndata(input_root, _adata())
+    survey_staging = tmp_path / "survey.partial"
+    survey_staging.mkdir()
+    survey_records = cnmf_rank_survey(
+        OperationContext(survey_staging, "00000000-0000-4000-8000-000000000011"),
+        {"adata": _artifact_descriptor(input_root, kind=ANNDATA_KIND, codec=ANNDATA_CODEC)},
+        _survey_parameters(),
+    )
+    run_root = survey_staging / survey_records[0]["payload"]
+    inventory = {
+        path.relative_to(run_root).as_posix(): path.read_bytes() for path in run_root.rglob("*") if path.is_file()
+    }
+    consensus_staging = tmp_path / "consensus.partial"
+    consensus_staging.mkdir()
+
+    records = cnmf(
+        OperationContext(consensus_staging, "00000000-0000-4000-8000-000000000012"),
+        {"run": _artifact_descriptor(run_root, kind="OPENBIO_CNMF_RUN", codec=CNMF_NATIVE_CODEC)},
+        {
+            "selected_k": 2,
+            "density_threshold": 2.0,
+            "local_neighborhood_size": 0.5,
+            "n_top_genes": 3,
+            "overwrite_existing": False,
+        },
+    )
+
+    assert [(record["type"], record["name"]) for record in records] == [
+        ("artifact", "adata"),
+        ("summary", "summary"),
+        ("string", "code"),
+    ]
+    output = read_anndata(consensus_staging / records[0]["payload"])
+    assert output.obsm["X_cnmf_usage"].shape == (16, 2)
+    assert {
+        path.relative_to(run_root).as_posix(): path.read_bytes() for path in run_root.rglob("*") if path.is_file()
+    } == inventory
+    checkout_root = Path(FakeCNMF.instances[-1].output_dir)
+    assert checkout_root != run_root
+    assert not checkout_root.exists()
+    json.dumps(records, allow_nan=False)
+
+
+def test_native_cnmf_artifact_uses_a_private_writable_checkout(tmp_path):
+    run, _ = _run_live_survey()
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    write_cnmf_run(artifact, run)
+    source_inventory = {
+        path.relative_to(artifact).as_posix(): path.read_bytes() for path in artifact.rglob("*") if path.is_file()
+    }
+
+    with checkout_cnmf_run(artifact, checkout_parent=tmp_path) as checkout:
+        checkout_root = Path(checkout.private_root)
+        assert (
+            replace(
+                checkout.metadata,
+                backend_paths_fingerprint=run.metadata.backend_paths_fingerprint,
+            )
+            == run.metadata
+        )
+        assert checkout.metadata.backend_paths_fingerprint != run.metadata.backend_paths_fingerprint
+        assert checkout.metrics == run.metrics
+        assert checkout_root != artifact
+        assert checkout_root.is_dir()
+        (checkout_root / "consumer-owned.tmp").write_text("mutable", encoding="utf-8")
+
+    assert not checkout_root.exists()
+    assert {
+        path.relative_to(artifact).as_posix(): path.read_bytes() for path in artifact.rglob("*") if path.is_file()
+    } == source_inventory
+    run.close()
+
+
+def test_native_cnmf_codec_rejects_linked_members(tmp_path):
+    run, _ = _run_live_survey()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    linked = Path(run.private_root) / "linked.txt"
+    try:
+        linked.symlink_to(outside)
+    except OSError as error:
+        run.close()
+        pytest.skip(f"symlink creation unavailable: {error}")
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+
+    with pytest.raises(RuntimeError, match="link or reparse point"):
+        write_cnmf_run(artifact, run)
+
+    run.close()
 
 
 def test_public_schemas_and_typed_staged_outputs_are_preserved():
-    survey = OpenBioSingleCellCNMFRankSurvey.GET_SCHEMA()
-    consensus = OpenBioSingleCellCNMF.GET_SCHEMA()
+    survey = CNMFRankSurveyNode.define_schema()
+    consensus = CNMFNode.define_schema()
+    assert "execute" not in vars(CNMFRankSurveyNode)
+    assert "execute" not in vars(CNMFNode)
+    assert {"openbio.node.cnmfranksurvey", "openbio.node.cnmf"}.issubset(registered_operation_ids())
     assert [item.id for item in survey.inputs] == [
         "adata",
         "source",
@@ -410,7 +718,7 @@ def test_public_raw_source_uses_full_raw_axis_and_generated_code_has_parity():
     full.raw = full
     adata = full[:, full.var_names[:5]].copy()
     raw_names = list(adata.raw.var_names)
-    source_input = next(item for item in OpenBioSingleCellCNMFRankSurvey.GET_SCHEMA().inputs if item.id == "source")
+    source_input = next(item for item in CNMFRankSurveyNode.define_schema().inputs if item.id == "source")
     assert [option.key for option in source_input.options] == ["layer", "X", "raw"]
 
     run, table_result, report, survey_code = _run_survey(
@@ -425,14 +733,17 @@ def test_public_raw_source_uses_full_raw_axis_and_generated_code_has_parity():
     assert report.summary["key_results"]["source_features"] == 10
     assert report.summary["key_results"]["current_features"] == 5
     assert table_result.table["k"].tolist() == [2, 3]
-    private_counts = ad.read_h5ad(FakeCNMF.instances[-1].calls[0][1]["counts_fn"])
+    producer = FakeCNMF.instances[-2]
+    private_counts = ad.read_h5ad(
+        _RUN_ARTIFACTS[id(run)] / Path(producer.calls[0][1]["counts_fn"]).relative_to(producer.output_dir)
+    )
     assert list(private_counts.var_names) == raw_names
 
-    runtime_output, runtime_report, consensus_code = OpenBioSingleCellCNMF.execute(
+    runtime_output, runtime_report, consensus_code = _run_consensus(
         run,
         selected_k=2,
         n_top_genes=3,
-    ).result
+    )
     assert list(runtime_output.var_names) == raw_names
     assert runtime_output.varm["cnmf_gep_scores"].shape == (10, 2)
     assert runtime_output.uns["cnmf"]["survey"]["source_features"] == 10
@@ -474,10 +785,11 @@ def test_rank_survey_uses_exact_file_backed_official_chain_and_reports_integrity
     legacy_rng_before = np.random.get_state()
     run, table_result, report, code = _run_survey(adata)
     legacy_rng_after = np.random.get_state()
-    model = FakeCNMF.instances[-1]
+    model = FakeCNMF.instances[-2]
     assert isinstance(run, CNMFRun)
     assert Path(run.private_root).is_dir()
-    assert model.output_dir == run.private_root
+    assert Path(model.output_dir) != Path(run.private_root)
+    assert not Path(model.output_dir).exists()
     assert [name for name, _ in model.calls] == [
         "prepare",
         "factorize",
@@ -486,7 +798,7 @@ def test_rank_survey_uses_exact_file_backed_official_chain_and_reports_integrity
         "consensus",
     ]
     prepare = model.calls[0][1]
-    assert Path(str(prepare["counts_fn"])).parent == Path(run.private_root)
+    assert Path(str(prepare["counts_fn"])).parent == Path(model.output_dir)
     assert prepare == {
         "counts_fn": prepare["counts_fn"],
         "components": (2, 3),
@@ -514,7 +826,8 @@ def test_rank_survey_uses_exact_file_backed_official_chain_and_reports_integrity
     key_results = report.summary["key_results"]
     assert key_results["artifact_manifest_sha256"].startswith("sha256:")
     assert key_results["execution_mode"] == "CPU, single-worker, owned private file-backed run"
-    assert key_results["cleanup_ownership"]["explicit_python"].startswith("run.close()")
+    assert key_results["cleanup_ownership"]["live_run"] == "closed after native artifact encoding"
+    assert "Classic cache" in key_results["cleanup_ownership"]["node_graph"]
     assert key_results["cleanup_ownership"]["cached_directory_may_persist"] is True
     assert "declared UMI count source" not in report.summary["methods"]
     assert report.summary["software_versions"]["cnmf"] == "1.7.1"
@@ -533,7 +846,7 @@ def test_rank_survey_uses_exact_file_backed_official_chain_and_reports_integrity
 
 
 def test_owned_directory_lives_until_explicit_idempotent_close():
-    run, _, _, _ = _run_survey()
+    run, _ = _run_live_survey()
     root = Path(run.private_root)
     assert root.exists()
     run.close()
@@ -543,11 +856,11 @@ def test_owned_directory_lives_until_explicit_idempotent_close():
     with pytest.raises(RuntimeError, match="closed"):
         run.copy_base_adata()
     with pytest.raises(RuntimeError, match="closed"):
-        OpenBioSingleCellCNMF.execute(run, selected_k=2, n_top_genes=3)
+        standalone.cnmf_consensus_programs(run, selected_k=2, n_top_genes=3)
 
 
 def test_owned_directory_finalizer_is_cleanup_fallback():
-    run, _, _, _ = _run_survey()
+    run, _ = _run_live_survey()
     root = Path(run.private_root)
     reference = weakref.ref(run)
     del run
@@ -557,7 +870,7 @@ def test_owned_directory_finalizer_is_cleanup_fallback():
 
 
 def test_cleanup_failure_keeps_retry_and_finalizer_paths_reachable(monkeypatch):
-    run, _, _, _ = _run_survey()
+    run, _ = _run_live_survey()
     root = Path(run.private_root)
     original_cleanup = tempfile.TemporaryDirectory.cleanup
     attempts = 0
@@ -612,7 +925,7 @@ def test_construction_cleanup_failure_cannot_mask_primary_analysis_error(monkeyp
 
 
 def test_context_body_error_remains_primary_when_close_cleanup_fails(monkeypatch):
-    run, _, _, _ = _run_survey()
+    run, _ = _run_live_survey()
     root = Path(run.private_root)
     original_cleanup = tempfile.TemporaryDirectory.cleanup
     attempts = 0
@@ -650,7 +963,7 @@ def test_node_report_error_remains_primary_when_close_cleanup_fails(monkeypatch)
         raise LookupError("summary construction failed")
 
     monkeypatch.setattr(tempfile.TemporaryDirectory, "cleanup", fail_once)
-    monkeypatch.setattr(nodes_factorization, "make_analysis_report", fail_report)
+    monkeypatch.setattr(operations_factorization, "make_analysis_report", fail_report)
     with pytest.raises(LookupError, match="summary construction failed") as captured:
         _run_survey()
     notes = tuple(captured.value.__notes__)
@@ -710,10 +1023,10 @@ def test_noninteger_and_logged_expert_source_is_advisory_not_gate():
     assert len(run.metadata.input_advisories) == 2
     assert any("not integer-like" in warning for warning in report.summary["warnings"])
     assert any("proven to be logged" in warning for warning in report.summary["warnings"])
-    output, final_report, _ = OpenBioSingleCellCNMF.execute(run, selected_k=2, n_top_genes=3).result
+    output, final_report, _ = _run_consensus(run, selected_k=2, n_top_genes=3)
     assert output.uns["cnmf"]["survey"]["source_state"] == "logged"
     assert output.uns["cnmf"]["survey"]["source_state_evidence"] == "AnnData uns['log1p'] marker"
-    assert output.uns["cnmf"]["survey"]["input_advisories"] == list(run.metadata.input_advisories)
+    assert list(output.uns["cnmf"]["survey"]["input_advisories"]) == list(run.metadata.input_advisories)
     assert final_report.summary["key_results"]["input_advisories"] == list(run.metadata.input_advisories)
     assert any("not integer-like" in warning for warning in final_report.summary["warnings"])
     assert any("proven to be logged" in warning for warning in final_report.summary["warnings"])
@@ -822,13 +1135,13 @@ def test_zero_total_genes_are_advisory_when_backend_can_exclude_them():
 def test_consensus_loads_official_tuple_and_writes_only_canonical_continuous_state(tmp_path):
     adata = _adata()
     run, _, _, _ = _run_survey(adata)
-    output, report, code = OpenBioSingleCellCNMF.execute(
+    output, report, code = _run_consensus(
         run,
         selected_k=2,
         density_threshold=2.0,
         local_neighborhood_size=0.5,
         n_top_genes=3,
-    ).result
+    )
     assert run.closed is False
     assert Path(run.private_root).exists()
     assert output is not adata
@@ -850,7 +1163,7 @@ def test_consensus_loads_official_tuple_and_writes_only_canonical_continuous_sta
     assert report.summary["key_results"]["source_state"] == "unknown"
     assert report.summary["key_results"]["cleanup_ownership"]["cached_directory_may_persist"] is True
     assert "tamper-evident" not in report.summary["methods"]
-    assert any("cached references" in warning for warning in report.summary["warnings"])
+    assert any("private checkout" in warning for warning in report.summary["warnings"])
     assert "load_results" in code and "build_ref=False" in code
     assert "from openbio_singlecell" not in code
     compile(code, "<generated-cnmf-consensus>", "exec")
@@ -864,16 +1177,21 @@ def test_consensus_loads_official_tuple_and_writes_only_canonical_continuous_sta
 
 def test_repeated_consensus_recomputes_density_cache_for_each_neighborhood():
     run, _, _, _ = _run_survey()
-    first, _, _ = OpenBioSingleCellCNMF.execute(
+    first, _, _ = _run_consensus(
         run, selected_k=2, density_threshold=2.0, local_neighborhood_size=0.25, n_top_genes=3
-    ).result
-    second, _, _ = OpenBioSingleCellCNMF.execute(
+    )
+    second, _, _ = _run_consensus(
         run, selected_k=2, density_threshold=2.0, local_neighborhood_size=0.5, n_top_genes=3
-    ).result
+    )
     assert first.uns["cnmf"]["density_neighbors"] == 1
     assert second.uns["cnmf"]["density_neighbors"] == 2
     assert first.uns["cnmf"]["local_density_summary"] != second.uns["cnmf"]["local_density_summary"]
-    final_calls = [call for call in FakeCNMF.instances[-1].calls if call[0] == "consensus"][-2:]
+    final_calls = [
+        call
+        for model in FakeCNMF.instances[-2:]
+        for call in model.calls
+        if call[0] == "consensus"
+    ]
     assert [call[1]["local_neighborhood_size"] for call in final_calls] == [0.25, 0.5]
     run.close()
 
@@ -882,11 +1200,11 @@ def test_result_axis_loss_and_density_mismatch_fail_before_annotation():
     run, _, _, _ = _run_survey()
     FakeCNMF.bad_result_axis = True
     with pytest.raises(RuntimeError, match="axis does not exactly match"):
-        OpenBioSingleCellCNMF.execute(run, selected_k=2, n_top_genes=3)
+        _run_consensus(run, selected_k=2, n_top_genes=3)
     FakeCNMF.bad_result_axis = False
     FakeCNMF.bad_density_cache = True
     with pytest.raises(RuntimeError, match="disagrees with the independent"):
-        OpenBioSingleCellCNMF.execute(run, selected_k=2, n_top_genes=3)
+        _run_consensus(run, selected_k=2, n_top_genes=3)
     run.close()
 
 
@@ -894,11 +1212,11 @@ def test_noncanonical_program_labels_and_missing_result_file_fail_closed():
     run, _, _, _ = _run_survey()
     FakeCNMF.bad_program_labels = True
     with pytest.raises(RuntimeError, match="invalid program label"):
-        OpenBioSingleCellCNMF.execute(run, selected_k=2, n_top_genes=3)
+        _run_consensus(run, selected_k=2, n_top_genes=3)
     FakeCNMF.bad_program_labels = False
     FakeCNMF.omit_result_file = True
     with pytest.raises(RuntimeError, match="gene_spectra_tpm__txt.*missing"):
-        OpenBioSingleCellCNMF.execute(run, selected_k=2, n_top_genes=3)
+        _run_consensus(run, selected_k=2, n_top_genes=3)
     run.close()
 
 
@@ -907,8 +1225,8 @@ def test_collision_policy_is_transactional_and_overwrite_is_explicit():
     adata.uns["cnmf"] = {"old": True}
     run, _, _, _ = _run_survey(adata)
     with pytest.raises(ValueError, match="result keys already exist"):
-        OpenBioSingleCellCNMF.execute(run, selected_k=2, n_top_genes=3)
-    output, report, _ = OpenBioSingleCellCNMF.execute(run, selected_k=2, n_top_genes=3, overwrite_existing=True).result
+        _run_consensus(run, selected_k=2, n_top_genes=3)
+    output, report, _ = _run_consensus(run, selected_k=2, n_top_genes=3, overwrite_existing=True)
     assert output.uns["cnmf"]["overwrote_existing"] is True
     assert report.summary["key_results"]["overwrote_existing"] is True
     assert adata.uns["cnmf"] == {"old": True}
@@ -918,33 +1236,33 @@ def test_collision_policy_is_transactional_and_overwrite_is_explicit():
 def test_artifact_tamper_and_backend_path_escape_are_rejected(tmp_path):
     run, _, _, _ = _run_survey()
     model = FakeCNMF.instances[-1]
-    merged = Path(model.paths["merged_spectra"] % 2)
+    merged = _RUN_ARTIFACTS[id(run)] / Path(model.paths["merged_spectra"] % 2).relative_to(run.private_root)
     with merged.open("ab") as handle:
         handle.write(b"tamper")
     with pytest.raises(RuntimeError, match="immutable SHA-256"):
-        OpenBioSingleCellCNMF.execute(run, selected_k=2, n_top_genes=3)
+        _run_consensus(run, selected_k=2, n_top_genes=3)
     run.close()
 
-    run, _, _, _ = _run_survey()
+    run, _ = _run_live_survey()
     model = FakeCNMF.instances[-1]
     model.paths["merged_spectra"] = str(tmp_path / "escape-k_%d.npz")
     with pytest.raises(RuntimeError, match="escaped or changed"):
-        OpenBioSingleCellCNMF.execute(run, selected_k=2, n_top_genes=3)
+        standalone.cnmf_consensus_programs(run, selected_k=2, n_top_genes=3)
     run.close()
 
-    run, _, _, _ = _run_survey()
+    run, _ = _run_live_survey()
     model = FakeCNMF.instances[-1]
     canonical = Path(model.paths["merged_spectra"])
     model.paths["merged_spectra"] = str(canonical.parent / "nested" / ".." / canonical.name)
     with pytest.raises(RuntimeError, match="escaped or changed|unsafe component"):
-        OpenBioSingleCellCNMF.execute(run, selected_k=2, n_top_genes=3)
+        standalone.cnmf_consensus_programs(run, selected_k=2, n_top_genes=3)
     run.close()
 
 
 def test_symlinked_artifact_is_rejected_when_platform_allows_symlinks(tmp_path):
     run, _, _, _ = _run_survey()
     model = FakeCNMF.instances[-1]
-    target = Path(model.paths["merged_spectra"] % 2)
+    target = _RUN_ARTIFACTS[id(run)] / Path(model.paths["merged_spectra"] % 2).relative_to(run.private_root)
     outside = tmp_path / "outside.npz"
     outside.write_bytes(target.read_bytes())
     target.unlink()
@@ -954,20 +1272,20 @@ def test_symlinked_artifact_is_rejected_when_platform_allows_symlinks(tmp_path):
         run.close()
         pytest.skip(f"symlink creation unavailable: {exc}")
     with pytest.raises(RuntimeError, match="link or reparse point"):
-        OpenBioSingleCellCNMF.execute(run, selected_k=2, n_top_genes=3)
+        _run_consensus(run, selected_k=2, n_top_genes=3)
     run.close()
     assert outside.exists()
 
 
 def test_run_cannot_be_pickled():
-    run, _, _, _ = _run_survey()
+    run, _ = _run_live_survey()
     with pytest.raises(TypeError, match="process-local"):
         pickle.dumps(run)
     run.close()
 
 
 def test_metadata_rebinding_and_low_level_content_change_are_rejected():
-    run, _, _, _ = _run_survey()
+    run, _ = _run_live_survey()
     original = run.metadata
     with pytest.raises(AttributeError):
         run.metadata = replace(original, source_state="counts")
@@ -985,7 +1303,7 @@ def test_metadata_rebinding_and_low_level_content_change_are_rejected():
 
 
 def test_metrics_rebinding_and_forged_stability_are_rejected():
-    run, _, _, _ = _run_survey()
+    run, _ = _run_live_survey()
     original = run.metrics
     forged = (replace(original[0], stability=0.123456), *original[1:])
     with pytest.raises(AttributeError):
@@ -999,7 +1317,7 @@ def test_metrics_rebinding_and_forged_stability_are_rejected():
 
 def test_runtime_and_generated_consensus_reject_duck_and_instance_marker_proxies():
     run, _, _, _ = _run_survey()
-    _, _, consensus_code = OpenBioSingleCellCNMF.execute(run, selected_k=2, n_top_genes=3).result
+    _, _, consensus_code = _run_consensus(run, selected_k=2, n_top_genes=3)
 
     class DuckProxy:
         def __init__(self, target):
@@ -1055,7 +1373,7 @@ def test_exact_version_and_explicit_signature_guards(monkeypatch):
 
 
 def _normalized_cnmf_state(state: dict[str, object]) -> dict[str, object]:
-    copied = json.loads(json.dumps(state, allow_nan=False))
+    copied = json.loads(json.dumps(state, allow_nan=False, default=lambda value: value.tolist()))
     survey = copied["survey"]
     for key in (
         "backend_paths_fingerprint",
@@ -1072,9 +1390,9 @@ def _normalized_cnmf_state(state: dict[str, object]) -> dict[str, object]:
 def test_generated_staged_code_is_standalone_and_scientifically_equivalent():
     adata = _adata()
     runtime_run, _, _, survey_code = _run_survey(adata)
-    runtime_output, _, consensus_code = OpenBioSingleCellCNMF.execute(
+    runtime_output, _, consensus_code = _run_consensus(
         runtime_run, selected_k=2, density_threshold=2.0, local_neighborhood_size=0.5, n_top_genes=3
-    ).result
+    )
     survey_namespace: dict[str, object] = {}
     exec(survey_code, survey_namespace)
     generated_run, generated_metrics = survey_namespace["cnmf_rank_survey"](adata)

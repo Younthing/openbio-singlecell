@@ -10,6 +10,7 @@ from openbio_singlecell.nodes_results import (
     OpenBioSingleCellMarkerExpressionPlot,
     OpenBioSingleCellUMAPPlot,
 )
+from openbio_singlecell.operations_results import marker_expression_plot_owned, umap_plot_owned
 from openbio_singlecell.result_plotting import _marker_expression_plot_impl, _plot_umap_impl
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -155,7 +156,7 @@ def test_umap_categorical_missing_order_summary_code_and_immutability(plot_adata
     )
     snapshot = plot_adata.copy()
 
-    plotted, summary, code = OpenBioSingleCellUMAPPlot.execute(
+    plotted, summary, code = umap_plot_owned(
         plot_adata,
         embedding_key="custom_umap",
         color="label",
@@ -166,7 +167,7 @@ def test_umap_categorical_missing_order_summary_code_and_immutability(plot_adata
         sort_order=True,
         missing_color="#cccccc",
         legend_policy="show",
-    ).result
+    )
 
     assert plotted.png.startswith(PNG_SIGNATURE)
     assert summary.summary["key_results"]["color"]["category_order"] == ["beta", "alpha"]
@@ -186,13 +187,13 @@ def test_umap_categorical_missing_order_summary_code_and_immutability(plot_adata
 
 def test_umap_continuous_missing_sorting_range_and_constant_disclosure(plot_adata, science):
     plot_adata.obs["score"] = [3.0, 1.0, science.np.nan, 2.0, 4.0, 5.0, 8.0, 7.0, 6.0, 0.0, 9.0, 10.0]
-    _, summary, _ = OpenBioSingleCellUMAPPlot.execute(
+    _, summary, _ = umap_plot_owned(
         plot_adata,
         embedding_key="custom_umap",
         color="score",
         color_mode="continuous",
         sort_order=True,
-    ).result
+    )
     color = summary.summary["key_results"]["color"]
     assert color["missing_count"] == 1
     assert color["finite_count"] == 11
@@ -201,12 +202,12 @@ def test_umap_continuous_missing_sorting_range_and_constant_disclosure(plot_adat
     assert any("special color" in warning for warning in summary.summary["warnings"])
 
     plot_adata.obs["score"] = 2.0
-    _, constant, _ = OpenBioSingleCellUMAPPlot.execute(
+    _, constant, _ = umap_plot_owned(
         plot_adata,
         embedding_key="custom_umap",
         color="score",
         color_mode="continuous",
-    ).result
+    )
     normalization = constant.summary["key_results"]["color"]["normalization"]
     assert normalization["vmin"] < 2.0 < normalization["vmax"]
     assert any("constant" in warning for warning in constant.summary["warnings"])
@@ -267,11 +268,11 @@ def test_umap_uses_first_two_of_three_dimensions_and_discloses_uncolored_style(p
             science.np.linspace(100.0, 200.0, plot_adata.n_obs),
         ]
     )
-    plotted, summary, code = OpenBioSingleCellUMAPPlot.execute(
+    plotted, summary, code = umap_plot_owned(
         plot_adata,
         embedding_key="X_umap_3d",
         color="",
-    ).result
+    )
     details = summary.summary["key_results"]
     assert details["available_coordinate_dimensions"] == 3
     assert details["used_coordinate_dimensions"] == [1, 2]
@@ -633,13 +634,13 @@ def test_marker_dotplot_statistics_use_strict_cutoff_and_null_undefined_means(pl
 
 
 def test_marker_raw_expression_state_requires_evidence(plot_adata, science):
-    _, unknown, _ = OpenBioSingleCellMarkerExpressionPlot.execute(
+    _, unknown, _ = marker_expression_plot_owned(
         plot_adata,
         genes="G1,G2",
         groupby="cluster",
         plot={"plot": "matrixplot", "standard_scale": "none"},
         source={"source": "raw"},
-    ).result
+    )
     assert unknown.summary["key_results"]["expression_state"] == "unknown"
     assert unknown.summary["key_results"]["expression_evidence"] is None
     assert any("without assuming counts" in warning for warning in unknown.summary["warnings"])
@@ -650,13 +651,13 @@ def test_marker_raw_expression_state_requires_evidence(plot_adata, science):
         "operation": "snapshot_expression",
         "parameters": {"destination": "layer_and_raw", "layer_name": "counts", "source": "X"},
     }
-    _, counts, counts_code = OpenBioSingleCellMarkerExpressionPlot.execute(
+    _, counts, counts_code = marker_expression_plot_owned(
         snapshot,
         genes="G1,RAW_ONLY",
         groupby="cluster",
         plot={"plot": "matrixplot", "standard_scale": "none"},
         source={"source": "raw"},
-    ).result
+    )
     assert counts.summary["key_results"]["expression_state"] == "counts"
     assert "Snapshot Expression" in counts.summary["key_results"]["expression_evidence"]
     assert any("proven count-scale" in warning for warning in counts.summary["warnings"])
@@ -673,13 +674,13 @@ def test_marker_raw_expression_state_requires_evidence(plot_adata, science):
         var=external_logged.var.copy(),
     )
     external_logged.uns["log1p"] = {"base": None}
-    _, logged_summary, _ = OpenBioSingleCellMarkerExpressionPlot.execute(
+    _, logged_summary, _ = marker_expression_plot_owned(
         external_logged,
         genes="G1,G2",
         groupby="cluster",
         plot={"plot": "matrixplot", "standard_scale": "none"},
         source={"source": "raw"},
-    ).result
+    )
     assert logged_summary.summary["key_results"]["expression_state"] == "logged"
     assert "Raw values equal proven current X" in logged_summary.summary["key_results"]["expression_evidence"]
     assert not any("count-scale" in warning for warning in logged_summary.summary["warnings"])
@@ -690,7 +691,7 @@ def test_marker_violin_seed_is_deterministic_and_restores_numpy_rng(plot_adata, 
     try:
         science.np.random.seed(20260828)
         before = science.np.random.get_state()
-        first_plot, first_summary, first_code = OpenBioSingleCellMarkerExpressionPlot.execute(
+        first_plot, first_summary, first_code = marker_expression_plot_owned(
             plot_adata,
             genes="G1,G2",
             groupby="cluster",
@@ -698,9 +699,9 @@ def test_marker_violin_seed_is_deterministic_and_restores_numpy_rng(plot_adata, 
             source={"source": "layer", "layer_name": "log1p_norm"},
             group_order="observed",
             random_seed=17,
-        ).result
+        )
         _assert_rng_state_equal(science.np.random.get_state(), before, science)
-        second_plot, second_summary, second_code = OpenBioSingleCellMarkerExpressionPlot.execute(
+        second_plot, second_summary, second_code = marker_expression_plot_owned(
             plot_adata,
             genes="G1,G2",
             groupby="cluster",
@@ -708,7 +709,7 @@ def test_marker_violin_seed_is_deterministic_and_restores_numpy_rng(plot_adata, 
             source={"source": "layer", "layer_name": "log1p_norm"},
             group_order="observed",
             random_seed=17,
-        ).result
+        )
         _assert_rng_state_equal(science.np.random.get_state(), before, science)
         assert first_plot.png == second_plot.png
         assert first_code == second_code
@@ -729,14 +730,14 @@ def test_marker_violin_seed_is_deterministic_and_restores_numpy_rng(plot_adata, 
 
 def test_marker_real_runtime_summary_code_and_immutability(plot_adata, science):
     snapshot = plot_adata.copy()
-    plotted, summary, code = OpenBioSingleCellMarkerExpressionPlot.execute(
+    plotted, summary, code = marker_expression_plot_owned(
         plot_adata,
         genes="G1,G2,G1",
         groupby="cluster",
         plot={"plot": "matrixplot", "standard_scale": "none"},
         source={"source": "layer", "layer_name": "log1p_norm"},
         group_order="observed",
-    ).result
+    )
     assert plotted.png.startswith(PNG_SIGNATURE)
     assert summary.summary["key_results"]["genes"] == ["G1", "G2"]
     assert summary.summary["key_results"]["resolved_group_order"] == ["C", "A", "B"]

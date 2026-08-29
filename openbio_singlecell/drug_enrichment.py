@@ -202,6 +202,7 @@ def _standalone_run_drug_ora(
             resource_metadata,
             resource_accounting,
             resource_artifact_metadata,
+            copy_table=False,
         )
     )
     artifact_fingerprint = resource_artifact_metadata["artifact_fingerprint_sha256"]
@@ -271,6 +272,7 @@ def _standalone_run_drug_ora(
         resource_metadata,
         resource_accounting,
         resource_artifact_metadata,
+        copy_table=False,
     )
     if resource_after["artifact_fingerprint_sha256"] != artifact_fingerprint:
         raise RuntimeError("Drug Hypergeometric DGIdb artifact changed during backend execution.")
@@ -509,6 +511,7 @@ def _standalone_run_drug_gsea(
             resource_metadata,
             resource_accounting,
             resource_artifact_metadata,
+            copy_table=False,
         )
     )
     artifact_fingerprint = resource_artifact_metadata["artifact_fingerprint_sha256"]
@@ -580,6 +583,7 @@ def _standalone_run_drug_gsea(
         resource_metadata,
         resource_accounting,
         resource_artifact_metadata,
+        copy_table=False,
     )
     if resource_after["artifact_fingerprint_sha256"] != artifact_fingerprint:
         raise RuntimeError("Drug GSEA DGIdb artifact changed during backend execution.")
@@ -798,9 +802,13 @@ def run_drug_ora(
     table: Any,
     universe: Any,
     resource: DGIdbResource,
+    *,
+    copy_resource: bool = True,
     **parameters: Any,
 ) -> tuple[DataFrame, dict[str, Any]]:
-    resource_table, metadata, accounting, artifact = validate_dgidb_resource(resource)
+    resource_table, metadata, accounting, artifact = validate_dgidb_resource(
+        resource, copy_payload=copy_resource
+    )
     evidence, diagnostics = _standalone_run_drug_ora(
         table,
         universe,
@@ -818,9 +826,13 @@ def run_drug_gsea(
     table: Any,
     universe: Any,
     resource: DGIdbResource,
+    *,
+    copy_resource: bool = True,
     **parameters: Any,
 ) -> tuple[DataFrame, dict[str, Any]]:
-    resource_table, metadata, accounting, artifact = validate_dgidb_resource(resource)
+    resource_table, metadata, accounting, artifact = validate_dgidb_resource(
+        resource, copy_payload=copy_resource
+    )
     evidence, diagnostics = _standalone_run_drug_gsea(
         table,
         universe,

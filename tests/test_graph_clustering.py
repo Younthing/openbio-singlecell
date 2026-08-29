@@ -10,12 +10,61 @@ from openbio_singlecell.graph_analysis import (
     run_leiden_partition,
     validate_random_seed,
 )
-from openbio_singlecell.nodes_embedding import (
-    OpenBioSingleCellLeiden,
-    OpenBioSingleCellNeighbors,
-    OpenBioSingleCellUMAP,
+from openbio_singlecell.nodes_embedding import OpenBioSingleCellLeiden as LeidenNode
+from openbio_singlecell.operations_embedding import (
     _leiden_code,
 )
+from openbio_singlecell.operations_embedding import (
+    leiden as leiden_operation,
+)
+from openbio_singlecell.operations_embedding import (
+    neighbors as neighbors_operation,
+)
+from openbio_singlecell.operations_embedding import (
+    umap as umap_operation,
+)
+from tests.artifact_operation_harness import run_anndata_operation
+
+_DEFAULT_PARAMETERS = {
+    leiden_operation: {
+        "resolution": 1.0,
+        "key_added": "leiden",
+        "neighbors_key": "neighbors",
+        "n_iterations": 2,
+        "stability_repeats": 5,
+        "overwrite_existing": False,
+        "random_seed": 0,
+    },
+    neighbors_operation: {
+        "use_rep": "X_pca",
+        "n_dimensions": 0,
+        "n_neighbors": 15,
+        "metric": "euclidean",
+        "method": "umap",
+        "key_added": "neighbors",
+        "overwrite_existing": False,
+        "random_seed": 0,
+    },
+    umap_operation: {
+        "neighbors_key": "neighbors",
+        "min_dist": 0.5,
+        "spread": 1.0,
+        "key_added": "X_umap",
+        "overwrite_existing": False,
+        "random_seed": 0,
+    },
+}
+
+def _run(operation, adata, **parameters):
+    return run_anndata_operation(operation, adata, _DEFAULT_PARAMETERS[operation] | parameters).result
+
+
+def _plain(value):
+    if isinstance(value, dict):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    return _plain(value.tolist()) if hasattr(value, "tolist") else value
 
 
 def _graph_adata(science, matrix):
@@ -82,7 +131,7 @@ def test_stability_seed_range_is_strict(seed):
 
 
 def test_leiden_defaults_disclose_fast_iterations_and_stability_assessment():
-    inputs = {item.id: item for item in OpenBioSingleCellLeiden.GET_SCHEMA().inputs}
+    inputs = {item.id: item for item in LeidenNode.define_schema().inputs}
     assert inputs["n_iterations"].default == 2
     assert inputs["stability_repeats"].default == 5
     assert inputs["n_iterations"].advanced is True
@@ -94,21 +143,23 @@ def test_generated_leiden_matches_runtime_diagnostics(science):
     adata = science.ad.AnnData(science.np.zeros((36, 1)))
     adata.obs_names = [f"cell_{index}" for index in range(36)]
     adata.obsm["X_pca"] = rng.normal(size=(36, 5))
-    neighbors = OpenBioSingleCellNeighbors.execute(
+    neighbors = _run(
+        neighbors_operation,
         adata,
         use_rep="X_pca",
         n_dimensions=5,
         n_neighbors=6,
         random_seed=4,
-    ).result[0]
+    )[0]
 
-    node_output = OpenBioSingleCellLeiden.execute(
+    node_output = _run(
+        leiden_operation,
         neighbors,
         resolution=0.4,
         stability_repeats=3,
         random_seed=9,
     )
-    runtime, report, code = node_output.result
+    runtime, report, code = node_output
     namespace: dict[str, object] = {}
     exec(code, namespace)
     generated = namespace["run_leiden"](neighbors)
@@ -118,7 +169,7 @@ def test_generated_leiden_matches_runtime_diagnostics(science):
     actual = generated.uns["leiden"]["openbio_diagnostics"]
     assert actual["cluster_sizes"] == expected["cluster_sizes"]
     assert actual["singleton_count"] == expected["singleton_count"]
-    assert actual["stability"] == expected["stability"]
+    assert _plain(actual["stability"]) == _plain(expected["stability"])
     sizes = science.np.asarray(list(expected["cluster_sizes"].values()), dtype=int)
     expected_fractions = {label: size / neighbors.n_obs for label, size in expected["cluster_sizes"].items()}
     assert actual["cluster_fractions"] == expected_fractions
@@ -139,8 +190,96 @@ def test_generated_leiden_matches_runtime_diagnostics(science):
     assert "pandas" in report.summary["software_versions"]
     assert "leidenalg" not in report.summary["software_versions"]
     assert resolve_named_graph(runtime, "neighbors", operation="downstream Leiden result")
-    umap = OpenBioSingleCellUMAP.execute(runtime, random_seed=3).result[0]
+    umap = _run(umap_operation, runtime, random_seed=3)[0]
     assert umap.obsm["X_umap"].shape == (runtime.n_obs, 2)
+
+
+def test_leiden_stability_reuses_worker_private_anndata_and_cleans_temporary_keys(monkeypatch, science):
+    rng = science.np.random.default_rng(83)
+    adata = science.ad.AnnData(science.np.zeros((30, 1)))
+    adata.obs_names = [f"cell_{index}" for index in range(adata.n_obs)]
+    adata.obsm["X_pca"] = rng.normal(size=(adata.n_obs, 4))
+    private = _run(
+        neighbors_operation,
+        adata,
+        use_rep="X_pca",
+        n_dimensions=4,
+        n_neighbors=5,
+        random_seed=2,
+    )[0]
+
+    def reject_whole_object_copy(self, *args, **kwargs):
+        del self, args, kwargs
+        raise AssertionError("Leiden repeat stability must not copy the worker-private AnnData")
+
+    monkeypatch.setattr(science.ad.AnnData, "copy", reject_whole_object_copy)
+    output, _, _ = _run(
+        leiden_operation,
+        private,
+        resolution=0.6,
+        stability_repeats=3,
+        random_seed=5,
+    )
+
+    assert "leiden" not in private.obs
+    assert "leiden" in output.obs
+    assert not any(str(key).startswith("__openbio_leiden_stability_") for key in output.obs)
+    assert not any(str(key).startswith("__openbio_leiden_stability_") for key in output.uns)
+
+
+def test_leiden_stability_cleans_temporary_keys_when_repeat_backend_fails(monkeypatch, science):
+    rng = science.np.random.default_rng(89)
+    adata = science.ad.AnnData(science.np.zeros((30, 1)))
+    adata.obs_names = [f"cell_{index}" for index in range(adata.n_obs)]
+    adata.obsm["X_pca"] = rng.normal(size=(adata.n_obs, 4))
+    private = _run(
+        neighbors_operation,
+        adata,
+        use_rep="X_pca",
+        n_dimensions=4,
+        n_neighbors=5,
+        random_seed=2,
+    )[0]
+    namespace = {}
+    exec(
+        _leiden_code(
+            {
+                "resolution": 0.6,
+                "key_added": "leiden",
+                "neighbors_key": "neighbors",
+                "n_iterations": 2,
+                "stability_repeats": 2,
+                "overwrite_existing": False,
+                "random_seed": 5,
+            }
+        ),
+        namespace,
+    )
+    generated_input = private.copy()
+    original_leiden = science.sc.tl.leiden
+
+    worker_targets = []
+
+    def backend(target, **kwargs):
+        key = kwargs["key_added"]
+        if str(key).startswith("__openbio_leiden_stability_"):
+            worker_targets.append(target)
+            target.obs[key] = science.pd.Categorical(["0"] * target.n_obs)
+            target.uns[key] = {"partial": True}
+            raise RuntimeError("repeat backend failed")
+        return original_leiden(target, **kwargs)
+
+    monkeypatch.setattr(science.sc.tl, "leiden", backend)
+    with pytest.raises(RuntimeError, match="repeat backend failed"):
+        _run(leiden_operation, private, resolution=0.6, stability_repeats=2, random_seed=5)
+
+    assert worker_targets
+    assert not any(str(key).startswith("__openbio_leiden_stability_") for key in worker_targets[-1].obs)
+    assert not any(str(key).startswith("__openbio_leiden_stability_") for key in worker_targets[-1].uns)
+    with pytest.raises(RuntimeError, match="repeat backend failed"):
+        namespace["run_leiden"](generated_input)
+    assert not any(str(key).startswith("__openbio_leiden_stability_") for key in generated_input.obs)
+    assert not any(str(key).startswith("__openbio_leiden_stability_") for key in generated_input.uns)
 
 
 def test_leiden_open_parameters_and_zero_variable_graph_match_generated_code(science):
@@ -148,20 +287,22 @@ def test_leiden_open_parameters_and_zero_variable_graph_match_generated_code(sci
     adata = science.ad.AnnData(science.np.empty((30, 0)))
     adata.obs_names = [f"cell_{index}" for index in range(30)]
     adata.obsm["X_latent"] = rng.normal(size=(30, 5))
-    neighbors = OpenBioSingleCellNeighbors.execute(
+    neighbors = _run(
+        neighbors_operation,
         adata,
         use_rep="X_latent",
         n_neighbors=6,
         random_seed=4,
-    ).result[0]
+    )[0]
 
-    runtime, report, code = OpenBioSingleCellLeiden.execute(
+    runtime, report, code = _run(
+        leiden_operation,
         neighbors,
         resolution=0,
         n_iterations=-7,
         stability_repeats=1,
         random_seed=9,
-    ).result
+    )
 
     assert runtime.n_vars == 0
     assert report.summary["parameters"]["resolution"] == 0
@@ -173,7 +314,9 @@ def test_leiden_open_parameters_and_zero_variable_graph_match_generated_code(sci
     with pytest.warns(UserWarning):
         generated = namespace["run_leiden"](neighbors)
     science.pd.testing.assert_series_equal(generated.obs["leiden"], runtime.obs["leiden"])
-    assert generated.uns["leiden"]["openbio_diagnostics"] == runtime.uns["leiden"]["openbio_diagnostics"]
+    assert _plain(generated.uns["leiden"]["openbio_diagnostics"]) == _plain(
+        runtime.uns["leiden"]["openbio_diagnostics"]
+    )
 
 
 def test_leiden_accepts_finite_modularity_outside_unit_interval(monkeypatch, science):
@@ -211,13 +354,14 @@ def test_runtime_and_generated_leiden_reserve_resolved_graph_metadata_key(
     adata = science.ad.AnnData(science.np.zeros((24, 1)))
     adata.obs_names = [f"cell_{index}" for index in range(24)]
     adata.obsm["X_pca"] = rng.normal(size=(24, 4))
-    neighbors = OpenBioSingleCellNeighbors.execute(
+    neighbors = _run(
+        neighbors_operation,
         adata,
         use_rep="X_pca",
         n_dimensions=4,
         n_neighbors=5,
         random_seed=2,
-    ).result[0]
+    )[0]
     metadata_snapshot = copy.deepcopy(neighbors.uns["neighbors"])
     connectivities_snapshot = neighbors.obsp["connectivities"].copy()
     distances_snapshot = neighbors.obsp["distances"].copy()
@@ -234,7 +378,8 @@ def test_runtime_and_generated_leiden_reserve_resolved_graph_metadata_key(
     exec(_leiden_code(parameters), namespace)
 
     runners = (
-        lambda value: OpenBioSingleCellLeiden.execute(
+        lambda value: _run(
+            leiden_operation,
             value,
             resolution=0.5,
             key_added="neighbors",
@@ -270,13 +415,14 @@ def test_runtime_and_generated_leiden_reject_malformed_backend(science, monkeypa
     rng = science.np.random.default_rng(31)
     adata = science.ad.AnnData(science.np.zeros((24, 1)))
     adata.obsm["X_pca"] = rng.normal(size=(24, 4))
-    neighbors = OpenBioSingleCellNeighbors.execute(
+    neighbors = _run(
+        neighbors_operation,
         adata,
         use_rep="X_pca",
         n_dimensions=4,
         n_neighbors=5,
-    ).result[0]
-    _, _, code = OpenBioSingleCellLeiden.execute(neighbors, resolution=0.5, stability_repeats=1).result
+    )[0]
+    _, _, code = _run(leiden_operation, neighbors, resolution=0.5, stability_repeats=1)
     namespace: dict[str, object] = {}
     exec(code, namespace)
 
@@ -292,7 +438,7 @@ def test_runtime_and_generated_leiden_reject_malformed_backend(science, monkeypa
 
     monkeypatch.setattr(science.sc.tl, "leiden", malformed_backend)
     runners = [
-        lambda value: OpenBioSingleCellLeiden.execute(value, resolution=0.5, stability_repeats=1),
+        lambda value: _run(leiden_operation, value, resolution=0.5, stability_repeats=1),
         namespace["run_leiden"],
     ]
     for runner in runners:
@@ -305,12 +451,13 @@ def test_neighbors_summary_discloses_complete_graph_bundle(science):
     adata = science.ad.AnnData(science.np.zeros((30, 1)))
     adata.obsm["X_pca"] = rng.normal(size=(30, 5))
 
-    output, report, _ = OpenBioSingleCellNeighbors.execute(
+    output, report, _ = _run(
+        neighbors_operation,
         adata,
         use_rep="X_pca",
         n_dimensions=5,
         n_neighbors=6,
-    ).result
+    )
     diagnostics = report.summary["key_results"]["graph"]
 
     assert diagnostics["actual_keys"] == {
@@ -337,13 +484,14 @@ def test_neighbors_references_match_connectivity_kernel(science, method, expecte
     adata = science.ad.AnnData(science.np.zeros((30, 1)))
     adata.obsm["X_pca"] = rng.normal(size=(30, 5))
 
-    _, report, _ = OpenBioSingleCellNeighbors.execute(
+    _, report, _ = _run(
+        neighbors_operation,
         adata,
         use_rep="X_pca",
         n_dimensions=5,
         n_neighbors=6,
         method=method,
-    ).result
+    )
     actual_dois = {reference["doi"] for reference in report.summary["references"] if reference["doi"]}
     assert expected_dois <= actual_dois
     if method != "umap":
@@ -363,12 +511,13 @@ def test_neighbors_runtime_and_generated_code_reject_malformed_graph_bundle(scie
     rng = science.np.random.default_rng(47)
     adata = science.ad.AnnData(science.np.zeros((24, 1)))
     adata.obsm["X_pca"] = rng.normal(size=(24, 4))
-    _, _, code = OpenBioSingleCellNeighbors.execute(
+    _, _, code = _run(
+        neighbors_operation,
         adata,
         use_rep="X_pca",
         n_dimensions=4,
         n_neighbors=5,
-    ).result
+    )
     namespace = {}
     exec(code, namespace)
 
@@ -403,7 +552,8 @@ def test_neighbors_runtime_and_generated_code_reject_malformed_graph_bundle(scie
 
     monkeypatch.setattr(science.sc.pp, "neighbors", backend)
     runners = (
-        lambda value: OpenBioSingleCellNeighbors.execute(
+        lambda value: _run(
+            neighbors_operation,
             value,
             use_rep="X_pca",
             n_dimensions=4,

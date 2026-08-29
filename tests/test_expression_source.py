@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +15,36 @@ RAW_SENTINEL = object()
 
 def _adata(*, raw=RAW_SENTINEL):
     return SimpleNamespace(X="X", raw=raw, layers={"counts": "counts"})
+
+
+def test_importing_expression_source_does_not_require_comfy():
+    script = """
+import importlib.abc
+import sys
+
+class RejectComfy(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.partition(".")[0] == "comfy_api":
+            raise ModuleNotFoundError(f"{fullname} blocked for worker import test")
+        return None
+
+sys.meta_path.insert(0, RejectComfy())
+
+from openbio_singlecell.expression_source import ExpressionSource
+
+assert ExpressionSource("X").kind == "X"
+assert not any(name == "comfy_api" or name.startswith("comfy_api.") for name in sys.modules)
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def test_expression_source_input_only_nests_layer_name_under_layer_option():

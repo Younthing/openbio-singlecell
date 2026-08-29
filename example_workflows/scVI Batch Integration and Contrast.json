@@ -1079,13 +1079,11 @@
       },
       "widgets_values": [
         "scvi_integrated_adata",
-        false,
-        "gzip"
+        false
       ],
       "widgets_values_named": {
         "filename_prefix": "scvi_integrated_adata",
-        "overwrite": false,
-        "compression": "gzip"
+        "overwrite": false
       }
     }
   ],

@@ -13,6 +13,7 @@ from openbio_singlecell.files import (
     resolve_input_path,
     tenx_mtx_fingerprint,
     tenx_mtx_provenance,
+    tenx_study_provenance,
 )
 
 
@@ -86,6 +87,25 @@ def test_10x_selection_rejects_ambiguous_roles_and_fingerprints_selected_files(c
     stat = (directory / "features.tsv").stat()
     os.utime(directory / "features.tsv", ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
     assert tenx_mtx_fingerprint("tenx") != fingerprint
+
+
+def test_10x_study_provenance_preserves_casefold_sample_order(comfy_directories):
+    input_dir, _, _ = comfy_directories
+    study = input_dir / "study"
+    for name in ("sample-B", "Sample-a"):
+        sample = study / name
+        sample.mkdir(parents=True)
+        (sample / "matrix.mtx").write_bytes(b"matrix")
+        (sample / "barcodes.tsv").write_bytes(b"cells")
+        (sample / "features.tsv").write_bytes(b"genes")
+
+    provenance = tenx_study_provenance("study")
+
+    assert provenance["path"] == "study"
+    assert list(provenance["samples"]) == ["Sample-a", "sample-B"]
+    assert provenance["samples"]["Sample-a"]["files"]["matrix"]["path"] == (
+        "study/Sample-a/matrix.mtx"
+    )
 
 
 def test_output_increment_overwrite_and_containment(comfy_directories):

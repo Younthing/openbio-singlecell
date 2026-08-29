@@ -41,7 +41,10 @@ EXPECTED_OPTIONAL_DEPENDENCIES = {
     "lineage": ["cassiopeia-mt==2.1.3; platform_system == 'Linux'"],
     "forceatlas2": ["fa2-modified==0.4"],
 }
-EXPECTED_ANALYSIS_OBJECT_WIRE_TYPES = {
+EXPECTED_ARTIFACT_TICKET_WIRE_TYPES = {
+    "anndata": "OPENBIO_ANNDATA",
+    "table": "OPENBIO_SINGLE_CELL_TABLE",
+    "plot": "OPENBIO_SINGLE_CELL_PLOT",
     "augur_result": "OPENBIO_AUGUR_RESULT",
     "dgidb_resource": "OPENBIO_DGIDB_RESOURCE",
     "liana_result": "OPENBIO_LIANA_RESULT",
@@ -50,7 +53,6 @@ EXPECTED_ANALYSIS_OBJECT_WIRE_TYPES = {
     "cnmf_run": "OPENBIO_CNMF_RUN",
     "scvi_model": "OPENBIO_SCVI_MODEL",
     "scenic_result": "OPENBIO_SCENIC_RESULT",
-    "scenic_binary": "OPENBIO_SCENIC_BINARY",
     "cnv_state": "OPENBIO_CNV_STATE",
     "cassiopeia_characters": "OPENBIO_CASSIOPEIA_CHARACTERS",
     "cassiopeia_tree": "OPENBIO_CASSIOPEIA_TREE",
@@ -70,17 +72,12 @@ def test_release_manifest_records_the_public_contract_and_artifacts():
     assert custom_node["contract"] == {
         "node_id_prefix": "OpenBioSingleCell",
         "category_prefix": "openbio/single-cell/",
-        "anndata_wire_type": "OPENBIO_ANNDATA",
-        "artifact_wire_types": {
-            "table": "OPENBIO_SINGLE_CELL_TABLE",
-            "plot": "OPENBIO_SINGLE_CELL_PLOT",
-            "summary": "OPENBIO_SINGLE_CELL_SUMMARY",
-        },
+        "worker_wire_type": "OPENBIO_WORKER",
+        "artifact_ticket_wire_types": EXPECTED_ARTIFACT_TICKET_WIRE_TYPES,
         "reporting_outputs": {
             "summary": "OPENBIO_SINGLE_CELL_SUMMARY",
             "code": "STRING",
         },
-        "analysis_object_wire_types": EXPECTED_ANALYSIS_OBJECT_WIRE_TYPES,
     }
     assert all((PLUGIN_ROOT / relative).is_file() for relative in custom_node["example_workflows"])
     assert all((PLUGIN_ROOT / relative).is_file() for relative in custom_node["workflow_covers"])

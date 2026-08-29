@@ -10,6 +10,7 @@ import pytest
 
 from openbio_singlecell.node_types import SummaryResultType, TableResultType
 from openbio_singlecell.nodes_abundance import OpenBioSingleCellMiloDifferentialAbundance
+from openbio_singlecell.operations_abundance import milo_owned
 
 
 class _FakeMuData(dict):
@@ -352,11 +353,11 @@ def _execute_milo(adata, **overrides):
         "random_seed": 19,
     }
     parameters.update(overrides)
-    return OpenBioSingleCellMiloDifferentialAbundance.execute(adata, **parameters).result
+    return milo_owned(adata, **parameters)
 
 
 def test_milo_schema_exposes_one_pairwise_sample_contrast_and_report_outputs():
-    schema = OpenBioSingleCellMiloDifferentialAbundance.GET_SCHEMA()
+    schema = OpenBioSingleCellMiloDifferentialAbundance.define_schema()
 
     assert [item.id for item in schema.inputs] == [
         "adata",

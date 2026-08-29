@@ -10,12 +10,23 @@ from openbio_singlecell.nodes_trajectory import (
     OpenBioSingleCellDPT,
     OpenBioSingleCellPAGA,
 )
-from openbio_singlecell.trajectory_analysis import (
-    _ta_select_root,
-    analyze_diffusion_map,
-    analyze_dpt,
-    analyze_paga,
-)
+from openbio_singlecell.operations_trajectory import diffusion_map_owned, dpt_owned, paga_owned
+from openbio_singlecell.trajectory_analysis import _ta_select_root
+from openbio_singlecell.trajectory_analysis import analyze_diffusion_map as _analyze_diffusion_map
+from openbio_singlecell.trajectory_analysis import analyze_dpt as _analyze_dpt
+from openbio_singlecell.trajectory_analysis import analyze_paga as _analyze_paga
+
+
+def analyze_diffusion_map(adata, **kwargs):
+    return _analyze_diffusion_map(adata.copy(), **kwargs)
+
+
+def analyze_paga(adata, **kwargs):
+    return _analyze_paga(adata.copy(), **kwargs)
+
+
+def analyze_dpt(adata, **kwargs):
+    return _analyze_dpt(adata.copy(), **kwargs)
 
 
 def _trajectory_input(science, *, n_obs=36, neighbors_key="neighbors"):
@@ -73,12 +84,12 @@ def test_diffusion_map_real_backend_report_state_and_standalone_code(science):
     rng_before = science.np.random.get_state()
     print_before = science.np.get_printoptions()
 
-    output, report, code = OpenBioSingleCellDiffusionMap.execute(
-        adata,
+    output, report, code = diffusion_map_owned(
+        adata.copy(),
         neighbors_key="custom_graph",
         n_comps=7,
         random_seed=17,
-    ).result
+    )
 
     assert "X_diffmap" not in adata.obsm
     assert "diffmap_evals" not in adata.uns
@@ -129,11 +140,11 @@ def test_diffusion_map_treats_stored_zero_diagonal_as_absent_in_runtime_and_code
         storage_before[key] = (matrix.data.copy(), matrix.indices.copy(), matrix.indptr.copy())
 
     _, baseline_summary = analyze_diffusion_map(baseline, n_comps=5, random_seed=19)
-    _, report, code = OpenBioSingleCellDiffusionMap.execute(
-        with_zero_diagonal,
+    _, report, code = diffusion_map_owned(
+        with_zero_diagonal.copy(),
         n_comps=5,
         random_seed=19,
-    ).result
+    )
 
     baseline_fingerprint = baseline_summary["key_results"]["graph"]["graph_fingerprint_sha256"]
     assert report.summary["key_results"]["graph"]["graph_fingerprint_sha256"] == baseline_fingerprint
@@ -391,11 +402,11 @@ def test_all_trajectory_backends_reject_zero_average_graph_tampering(science, mo
 def test_paga_real_backend_unused_categories_report_and_standalone_code(science):
     adata = _trajectory_input(science, neighbors_key="custom_graph")
     input_categories = list(adata.obs["state"].cat.categories)
-    output, report, code = OpenBioSingleCellPAGA.execute(
-        adata,
+    output, report, code = paga_owned(
+        adata.copy(),
         groupby="state",
         neighbors_key="custom_graph",
-    ).result
+    )
 
     assert list(adata.obs["state"].cat.categories) == input_categories
     assert list(output.obs["state"].cat.categories) == ["early", "middle", "late"]
@@ -580,12 +591,12 @@ def test_dpt_requires_graph_bound_diffusion_provenance_and_detects_staleness(sci
 
 def test_dpt_exact_cell_root_report_and_standalone_code(science):
     adata = _diffmapped(science)
-    output, report, code = OpenBioSingleCellDPT.execute(
-        adata,
+    output, report, code = dpt_owned(
+        adata.copy(),
         neighbors_key="neighbors",
         root_mode={"root_mode": "cell_id", "root_cell_id": "cell_004"},
         n_dcs=5,
-    ).result
+    )
 
     assert "dpt_pseudotime" not in adata.obs
     assert output.uns["iroot"] == 4
@@ -629,8 +640,8 @@ def test_dpt_group_medoid_uses_exact_typed_label_and_disclosed_rule(science):
             n_dcs=5,
         )
 
-    node_output, node_report, _code = OpenBioSingleCellDPT.execute(
-        adata,
+    node_output, node_report, _code = dpt_owned(
+        adata.copy(),
         root_mode={
             "root_mode": "group_medoid",
             "root_column": "numeric_stage",
@@ -638,12 +649,12 @@ def test_dpt_group_medoid_uses_exact_typed_label_and_disclosed_rule(science):
             "root_value": "1",
         },
         n_dcs=5,
-    ).result
+    )
     assert node_output.obs["numeric_stage"].iloc[node_output.uns["iroot"]] == 1
     assert node_report.summary["parameters"]["root_value"]["type"] == "integer"
     adata.obs["numeric_float_stage"] = science.pd.Categorical([1.5] * 12 + [2.5] * 24)
-    float_output, float_report, _float_code = OpenBioSingleCellDPT.execute(
-        adata,
+    float_output, float_report, _float_code = dpt_owned(
+        adata.copy(),
         root_mode={
             "root_mode": "group_medoid",
             "root_column": "numeric_float_stage",
@@ -651,11 +662,11 @@ def test_dpt_group_medoid_uses_exact_typed_label_and_disclosed_rule(science):
             "root_value": "1.5",
         },
         n_dcs=5,
-    ).result
+    )
     assert float_output.obs["numeric_float_stage"].iloc[float_output.uns["iroot"]] == 1.5
     assert float_report.summary["parameters"]["root_value"]["type"] == "number"
     with pytest.raises(ValueError, match="canonical base-10"):
-        OpenBioSingleCellDPT.execute(
+        dpt_owned(
             adata,
             root_mode={
                 "root_mode": "group_medoid",
@@ -666,7 +677,7 @@ def test_dpt_group_medoid_uses_exact_typed_label_and_disclosed_rule(science):
             n_dcs=5,
         )
     with pytest.raises(ValueError, match="finite numeric"):
-        OpenBioSingleCellDPT.execute(
+        dpt_owned(
             adata,
             root_mode={
                 "root_mode": "group_medoid",
@@ -824,9 +835,9 @@ def test_dpt_rejects_disconnected_named_graph_even_with_valid_diffmap(science):
 
 def test_trajectory_schemas_have_atomic_three_output_contracts():
     schemas = [
-        OpenBioSingleCellDiffusionMap.GET_SCHEMA(),
-        OpenBioSingleCellPAGA.GET_SCHEMA(),
-        OpenBioSingleCellDPT.GET_SCHEMA(),
+        OpenBioSingleCellDiffusionMap.define_schema(),
+        OpenBioSingleCellPAGA.define_schema(),
+        OpenBioSingleCellDPT.define_schema(),
     ]
     for schema in schemas:
         assert [output.display_name for output in schema.outputs] == ["adata", "summary", "code"]
@@ -857,14 +868,14 @@ def test_trajectory_schemas_have_atomic_three_output_contracts():
 
 def test_generated_code_is_a_node_specific_dependency_closure(science):
     adata = _trajectory_input(science)
-    _diffmap_output, _diffmap_report, diffmap_code = OpenBioSingleCellDiffusionMap.execute(adata, n_comps=5).result
-    _paga_output, _paga_report, paga_code = OpenBioSingleCellPAGA.execute(adata, groupby="state").result
+    _diffmap_output, _diffmap_report, diffmap_code = diffusion_map_owned(adata, n_comps=5)
+    _paga_output, _paga_report, paga_code = paga_owned(adata, groupby="state")
     mapped = _diffmapped(science)
-    _dpt_output, _dpt_report, dpt_code = OpenBioSingleCellDPT.execute(
+    _dpt_output, _dpt_report, dpt_code = dpt_owned(
         mapped,
         root_mode={"root_mode": "cell_id", "root_cell_id": "cell_000"},
         n_dcs=5,
-    ).result
+    )
     assert "def _ta_run_paga" not in diffmap_code and "def _ta_run_dpt" not in diffmap_code
     assert "def _ta_run_diffusion_map" not in paga_code and "def _ta_run_dpt" not in paga_code
     assert "def _ta_run_diffusion_map" not in dpt_code and "def _ta_run_paga" not in dpt_code

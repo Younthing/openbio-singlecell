@@ -42,19 +42,20 @@ def _activity_frame_fingerprint(frame: Any, *, label: str, numpy: Any, pandas: A
     regulators, regulator_hash = _canonical_axis(frame.columns.tolist(), label="regulator identifier")
     if not observations or not regulators:
         raise ValueError(f"TF activity {label} must contain at least one observation and regulator.")
-    try:
-        values = frame.to_numpy(dtype=float, copy=True)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(f"TF activity {label} must contain only numeric values.") from exc
-    if values.shape != (len(observations), len(regulators)):
+    if frame.shape != (len(observations), len(regulators)):
         raise RuntimeError(f"TF activity {label} shape does not match its named axes.")
-    if not bool(numpy.isfinite(values).all()):
-        raise ValueError(f"TF activity {label} contains non-finite values.")
     digest = hashlib.sha256()
     digest.update(f"openbio-singlecell/tf-activity-{label}/v1\0".encode("ascii"))
     digest.update(observation_hash.encode("ascii"))
     digest.update(regulator_hash.encode("ascii"))
-    digest.update(numpy.ascontiguousarray(values, dtype="<f8").tobytes(order="C"))
+    for start in range(0, len(observations), 1024):
+        try:
+            values = frame.iloc[start : start + 1024].to_numpy(dtype=float, copy=False)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(f"TF activity {label} must contain only numeric values.") from exc
+        if not bool(numpy.isfinite(values).all()):
+            raise ValueError(f"TF activity {label} contains non-finite values.")
+        digest.update(numpy.ascontiguousarray(values, dtype="<f8").tobytes(order="C"))
     return {
         "observation_count": len(observations),
         "observation_axis_sha256": observation_hash,
@@ -82,6 +83,22 @@ class TFActivityArtifact:
         object.__setattr__(self, "_adjusted_pvalues", adjusted_pvalues.copy(deep=True))
         object.__setattr__(self, "_provenance", copy.deepcopy(dict(provenance)))
         object.__setattr__(self, "_metadata", copy.deepcopy(dict(metadata)))
+
+    @classmethod
+    def _from_owned(
+        cls,
+        *,
+        scores: Any,
+        adjusted_pvalues: Any,
+        provenance: dict[str, Any],
+        metadata: dict[str, Any],
+    ) -> TFActivityArtifact:
+        result = object.__new__(cls)
+        object.__setattr__(result, "_scores", scores)
+        object.__setattr__(result, "_adjusted_pvalues", adjusted_pvalues)
+        object.__setattr__(result, "_provenance", provenance)
+        object.__setattr__(result, "_metadata", metadata)
+        return result
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError("TFActivityArtifact is immutable; create a new validated artifact instead.")
@@ -123,7 +140,10 @@ def build_tf_activity_artifact(
     provenance: Mapping[str, Any],
     numpy: Any,
     pandas: Any,
+    copy_frames: bool = True,
 ) -> TFActivityArtifact:
+    if not isinstance(copy_frames, bool):
+        raise TypeError("copy_frames must be a boolean.")
     if not isinstance(provenance, Mapping) or not provenance:
         raise ValueError("TF activity provenance must be a nonempty mapping.")
     score_identity = _activity_frame_fingerprint(scores, label="scores", numpy=numpy, pandas=pandas)
@@ -134,7 +154,7 @@ def build_tf_activity_artifact(
         raise ValueError("TF activity score and adjusted-p-value observation axes differ.")
     if score_identity["regulator_axis_sha256"] != pvalue_identity["regulator_axis_sha256"]:
         raise ValueError("TF activity score and adjusted-p-value regulator axes differ.")
-    adjusted_values = adjusted_pvalues.to_numpy(dtype=float, copy=True)
+    adjusted_values = adjusted_pvalues.to_numpy(dtype=float, copy=False)
     if bool(((adjusted_values < 0.0) | (adjusted_values > 1.0)).any()):
         raise ValueError("TF activity adjusted p-values must lie in [0, 1].")
     provenance_copy = copy.deepcopy(dict(provenance))
@@ -149,25 +169,47 @@ def build_tf_activity_artifact(
         "provenance_sha256": _canonical_json_sha256(provenance_copy),
     }
     metadata["artifact_fingerprint_sha256"] = _canonical_json_sha256(metadata)
-    result = TFActivityArtifact(
-        scores=scores,
-        adjusted_pvalues=adjusted_pvalues,
-        provenance=provenance_copy,
-        metadata=metadata,
+    result = (
+        TFActivityArtifact(
+            scores=scores,
+            adjusted_pvalues=adjusted_pvalues,
+            provenance=provenance_copy,
+            metadata=metadata,
+        )
+        if copy_frames
+        else TFActivityArtifact._from_owned(
+            scores=scores,
+            adjusted_pvalues=adjusted_pvalues,
+            provenance=provenance_copy,
+            metadata=metadata,
+        )
     )
-    validate_tf_activity_artifact(result)
+    validate_tf_activity_artifact(result, copy_result=False)
     return result
 
 
-def _portable_tf_activity_payload(result: Any, *, exact_type: bool) -> dict[str, Any]:
+def _portable_tf_activity_payload(
+    result: Any,
+    *,
+    exact_type: bool,
+    copy_payload: bool = True,
+) -> dict[str, Any]:
     if exact_type:
         if type(result) is not TFActivityArtifact:
             raise TypeError(
                 "Rank TF Activities requires an exact OPENBIO_TF_ACTIVITY artifact from CollecTRI ULM."
             )
-        return result.portable()
+        if copy_payload:
+            return result.portable()
+        return {
+            "artifact_type": TF_ACTIVITY_ARTIFACT_TYPE,
+            "scores": object.__getattribute__(result, "_scores"),
+            "adjusted_pvalues": object.__getattribute__(result, "_adjusted_pvalues"),
+            "provenance": object.__getattribute__(result, "_provenance"),
+            "metadata": object.__getattribute__(result, "_metadata"),
+        }
     if isinstance(result, Mapping):
-        payload = copy.deepcopy(dict(result))
+        payload = copy.deepcopy(dict(result)) if copy_payload else dict(result)
     elif getattr(result, "artifact_type", None) == TF_ACTIVITY_ARTIFACT_TYPE and callable(
         getattr(result, "portable", None)
     ):
@@ -183,6 +225,7 @@ def validate_tf_activity_artifact(
     exact_type: bool = True,
     numpy: Any | None = None,
     pandas: Any | None = None,
+    copy_result: bool = True,
 ) -> tuple[Any, Any, dict[str, Any], dict[str, Any]]:
     """Validate producer identity, both matrices, provenance, and current-content fingerprints."""
 
@@ -192,7 +235,11 @@ def validate_tf_activity_artifact(
 
         numpy = np
         pandas = pd
-    payload = _portable_tf_activity_payload(result, exact_type=exact_type)
+    payload = _portable_tf_activity_payload(
+        result,
+        exact_type=exact_type,
+        copy_payload=copy_result,
+    )
     expected_payload = {"artifact_type", "scores", "adjusted_pvalues", "provenance", "metadata"}
     if set(payload) != expected_payload:
         raise ValueError("TF activity portable artifact schema is invalid.")
@@ -245,10 +292,15 @@ def validate_tf_activity_artifact(
         raise ValueError("TF activity matrix observation axes differ.")
     if score_identity["regulator_axis_sha256"] != adjusted_identity["regulator_axis_sha256"]:
         raise ValueError("TF activity matrix regulator axes differ.")
-    adjusted_values = adjusted.to_numpy(dtype=float, copy=True)
+    adjusted_values = adjusted.to_numpy(dtype=float, copy=False)
     if bool(((adjusted_values < 0.0) | (adjusted_values > 1.0)).any()):
         raise ValueError("TF activity adjusted p-values must lie in [0, 1].")
-    return scores.copy(deep=True), adjusted.copy(deep=True), provenance_copy, copy.deepcopy(dict(metadata))
+    return (
+        scores.copy(deep=True) if copy_result else scores,
+        adjusted.copy(deep=True) if copy_result else adjusted,
+        provenance_copy,
+        copy.deepcopy(dict(metadata)),
+    )
 
 
 __all__ = [

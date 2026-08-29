@@ -246,7 +246,7 @@ def _standalone_map_cluster_annotations(
                 "OpenBio metadata has unsupported schema_version "
                 f"{existing_metadata.get('schema_version')!r}; expected 1."
             )
-    output = adata.copy()
+    output = adata
     output.obs[output_column] = output_categorical
     metadata = (
         copy.deepcopy(existing_metadata)
@@ -998,6 +998,8 @@ def _standalone_celltypist_annotation(
         "model_fraction": float(len(matched_features) / len(model_features)),
     }
 
+    # CellTypist preprocessing may normalize/log the prediction input; keep a
+    # dedicated algorithm workspace so the selected source remains unchanged.
     prediction_matrix = matrix.copy()
     prediction_input = sc.AnnData(
         X=prediction_matrix,
@@ -1318,7 +1320,7 @@ def _standalone_celltypist_annotation(
         "provenance": provenance,
     }
 
-    output = adata.copy()
+    output = adata
     for key in stale_obs_keys:
         del output.obs[key]
     for key in stale_obsm_keys:

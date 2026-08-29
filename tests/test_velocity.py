@@ -5,6 +5,8 @@ import json
 import os
 import random
 import sys
+import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -13,6 +15,22 @@ import pytest
 from anndata import AnnData
 from scipy import sparse
 
+from openbio_singlecell.artifact_codecs import read_plot, read_table, write_anndata
+from openbio_singlecell.nodes_velocity import VELOCITY_NODE_CLASSES
+from openbio_singlecell.operations_velocity import (
+    estimate_velocity,
+    recover_dynamics,
+    velocity_filter_and_normalize,
+    velocity_gene_ranking,
+    velocity_graph,
+    velocity_moments,
+    velocity_stream_plot,
+)
+from openbio_singlecell.staged_state_codec import (
+    VELOCITY_STATE_CODEC,
+    read_velocity_state,
+    write_velocity_state,
+)
 from openbio_singlecell.velocity_analysis import (
     VelocityState,
     run_velocity_estimate,
@@ -26,6 +44,7 @@ from openbio_singlecell.velocity_analysis import (
     velocity_code,
 )
 from openbio_singlecell.velocity_portable import VELOCITY_STATE_KEY
+from openbio_singlecell.worker_protocol import OperationContext
 
 
 def _row_normalize(matrix):
@@ -399,6 +418,210 @@ def _chain():
     dynamical = run_velocity_estimate(recovered, mode="dynamical", scvelo_module=fake)
     graph = run_velocity_graph(dynamical, scvelo_module=fake)
     return fake, source, prepared, moments, steady, recovered, dynamical, graph
+
+
+def _operation_context(root: Path) -> OperationContext:
+    root.mkdir()
+    return OperationContext.from_request_path(root / "request.json", str(uuid.uuid4()))
+
+
+def _artifact_descriptor(root: Path, *, kind: str, codec: str) -> dict[str, object]:
+    return {"type": "artifact", "path": str(root.resolve()), "kind": kind, "codec": codec}
+
+
+def _file_snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def test_velocity_worker_operations_chain_uses_new_artifacts_and_never_rewrites_inputs(
+    monkeypatch, tmp_path: Path
+):
+    monkeypatch.setitem(sys.modules, "scvelo", _fake_scvelo())
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    write_anndata(source_root, _adata())
+    source_before = _file_snapshot(source_root)
+
+    def run_state(operation, input_root: Path, parameters: dict[str, object], name: str):
+        before = _file_snapshot(input_root)
+        context = _operation_context(tmp_path / name)
+        records = operation(
+            context,
+            {
+                "adata" if operation is velocity_filter_and_normalize else "velocity_state":
+                    _artifact_descriptor(
+                        input_root,
+                        kind=(
+                            "OPENBIO_ANNDATA"
+                            if operation is velocity_filter_and_normalize
+                            else "OPENBIO_VELOCITY_STATE"
+                        ),
+                        codec=(
+                            "anndata-h5ad-v1"
+                            if operation is velocity_filter_and_normalize
+                            else VELOCITY_STATE_CODEC
+                        ),
+                    )
+            },
+            parameters,
+        )
+        assert [record["name"] for record in records] == ["velocity_state", "summary", "code"]
+        assert records[0]["codec"] == VELOCITY_STATE_CODEC
+        assert _file_snapshot(input_root) == before
+        output_root = context.output_root / records[0]["payload"]
+        read_velocity_state(output_root)
+        return output_root
+
+    prepared = run_state(
+        velocity_filter_and_normalize,
+        source_root,
+        {
+            "spliced_layer": "spliced",
+            "unspliced_layer": "unspliced",
+            "min_shared_counts": 0,
+            "min_shared_cells": 0,
+            "normalization_target": "median_library",
+            "overwrite_existing": False,
+        },
+        "prepare",
+    )
+    moments = run_state(
+        velocity_moments,
+        prepared,
+        {
+            "neighbors_key": "vel_neighbors",
+            "mode": "connectivities",
+            "max_dense_gib": 2.0,
+            "overwrite_existing": False,
+        },
+        "moments",
+    )
+    steady = run_state(
+        estimate_velocity,
+        moments,
+        {
+            "mode": "deterministic",
+            "vkey": "velocity",
+            "min_r2": 0.01,
+            "min_likelihood": 0.001,
+            "overwrite_existing": False,
+        },
+        "estimate",
+    )
+    recovered = run_state(
+        recover_dynamics,
+        steady,
+        {
+            "gene_selection": "velocity_genes",
+            "n_top_genes": 0,
+            "max_iter": 10,
+            "n_jobs": 1,
+            "max_dense_gib": 2.0,
+            "overwrite_existing": False,
+        },
+        "recover",
+    )
+    dynamical = run_state(
+        estimate_velocity,
+        recovered,
+        {
+            "mode": "dynamical",
+            "vkey": "velocity",
+            "min_r2": 0.01,
+            "min_likelihood": 0.001,
+            "overwrite_existing": True,
+        },
+        "dynamical",
+    )
+    graph = run_state(
+        velocity_graph,
+        dynamical,
+        {
+            "vkey": "velocity",
+            "xkey": "Ms",
+            "mode_neighbors": "distances",
+            "n_jobs": 1,
+            "overwrite_existing": False,
+        },
+        "graph",
+    )
+
+    ranking_before = _file_snapshot(recovered)
+    ranking_context = _operation_context(tmp_path / "ranking")
+    ranking_records = velocity_gene_ranking(
+        ranking_context,
+        {
+            "velocity_state": _artifact_descriptor(
+                recovered, kind="OPENBIO_VELOCITY_STATE", codec=VELOCITY_STATE_CODEC
+            )
+        },
+        {"top_n": 8, "include_failed": True, "max_output_rows": 100_000},
+    )
+    assert [record["name"] for record in ranking_records] == ["table", "summary", "code"]
+    table, _metadata = read_table(ranking_context.output_root / ranking_records[0]["payload"])
+    assert not table.empty
+    assert _file_snapshot(recovered) == ranking_before
+
+    graph_before = _file_snapshot(graph)
+    plot_context = _operation_context(tmp_path / "stream")
+    plot_records = velocity_stream_plot(
+        plot_context,
+        {
+            "velocity_state": _artifact_descriptor(
+                graph, kind="OPENBIO_VELOCITY_STATE", codec=VELOCITY_STATE_CODEC
+            )
+        },
+        {"basis": "umap", "color_key": "leiden", "density": 2.0, "smooth": 0.5, "min_mass": 1.0},
+    )
+    assert [record["name"] for record in plot_records] == ["plot", "summary", "code"]
+    png, _metadata = read_plot(plot_context.output_root / plot_records[0]["payload"])
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert _file_snapshot(graph) == graph_before
+    assert _file_snapshot(source_root) == source_before
+
+
+def test_velocity_state_codec_roundtrip_is_h5ad_plus_strict_json(tmp_path: Path):
+    state = run_velocity_prepare(
+        _adata(), min_shared_counts=0, scvelo_module=_fake_scvelo()
+    )
+    root = tmp_path / "velocity-state"
+    root.mkdir()
+
+    descriptors = write_velocity_state(root, state)
+
+    assert VELOCITY_STATE_CODEC == "velocity-state-h5ad-json-v1"
+    assert {path.name for path in root.iterdir()} == {"data.h5ad", "state.json"}
+    assert {item["path"] for item in descriptors} == {"data.h5ad", "state.json"}
+    json.loads((root / "state.json").read_text(encoding="utf-8"))
+    restored = read_velocity_state(root)
+    payload, summary, metadata, portable = validate_velocity_state(restored)
+    assert restored.fingerprint == state.fingerprint
+    assert summary == state.summary
+    assert metadata == state.metadata
+    assert portable["state_fingerprint_sha256"] == metadata["state_fingerprint_sha256"]
+    assert payload.shape == state.portable_adata().shape
+
+
+def test_velocity_nodes_are_schema_only_and_operation_module_is_worker_pure():
+    assert all("execute" not in node.__dict__ for node in VELOCITY_NODE_CLASSES)
+    assert [node.define_schema().node_id for node in VELOCITY_NODE_CLASSES] == [
+        "OpenBioSingleCellVelocityFilterAndNormalize",
+        "OpenBioSingleCellVelocityMoments",
+        "OpenBioSingleCellEstimateVelocity",
+        "OpenBioSingleCellVelocityGraph",
+        "OpenBioSingleCellRecoverDynamics",
+        "OpenBioSingleCellVelocityGeneRanking",
+        "OpenBioSingleCellVelocityStreamPlot",
+    ]
+    source = Path(__file__).parents[1] / "openbio_singlecell" / "operations_velocity.py"
+    text = source.read_text(encoding="utf-8")
+    assert "comfy_api" not in text
+    assert "folder_paths" not in text
+    assert "nodes_velocity" not in text
 
 
 @pytest.mark.parametrize("matrix_kind", ["dense", "csr", "csc"])

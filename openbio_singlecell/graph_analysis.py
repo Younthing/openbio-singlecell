@@ -187,9 +187,7 @@ def _validated_sparse_graph_matrix(
     if values.size and bool((values < 0).any()):
         raise ValueError(f"{operation} {matrix_name} matrix contains negative weights.")
     diagonal = science.np.asarray(matrix.diagonal(), dtype=float)
-    if require_zero_diagonal and diagonal.size and not bool(
-        science.np.allclose(diagonal, 0.0, rtol=0.0, atol=1e-12)
-    ):
+    if require_zero_diagonal and diagonal.size and not bool(science.np.allclose(diagonal, 0.0, rtol=0.0, atol=1e-12)):
         raise ValueError(f"{operation} {matrix_name} matrix must have a zero diagonal.")
     return matrix
 
@@ -421,20 +419,23 @@ def assess_leiden_stability(
     seeds = [int(random_seed)]
     for offset in range(1, repeats):
         seed = int(random_seed) + offset
-        scratch = adata.copy()
         key = f"__openbio_leiden_stability_{offset}"
         collision = 0
-        while key in scratch.obs or key in scratch.uns:
+        while key in adata.obs or key in adata.uns:
             collision += 1
             key = f"__openbio_leiden_stability_{offset}_{collision}"
-        result = run_leiden_partition(
-            scratch,
-            graph,
-            resolution=resolution,
-            key_added=key,
-            random_seed=seed,
-            n_iterations=n_iterations,
-        )
+        try:
+            result = run_leiden_partition(
+                adata,
+                graph,
+                resolution=resolution,
+                key_added=key,
+                random_seed=seed,
+                n_iterations=n_iterations,
+            )
+        finally:
+            adata.obs.drop(columns=[key], inplace=True, errors="ignore")
+            adata.uns.pop(key, None)
         memberships.append(result.membership)
         seeds.append(seed)
     pairwise = []

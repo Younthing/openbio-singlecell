@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import subprocess
 import sys
@@ -11,7 +12,12 @@ from pathlib import Path
 from comfy_api.latest import io
 
 from openbio_singlecell import PLUGIN_VERSION, SCHEMA_VERSION, dependencies
-from openbio_singlecell.extension import NODE_CLASSES, OpenBioSingleCellExtension, comfy_entrypoint
+from openbio_singlecell.extension import (
+    NODE_CLASSES,
+    RAW_NODE_CLASSES,
+    OpenBioSingleCellExtension,
+    comfy_entrypoint,
+)
 from openbio_singlecell.node_types import (
     AnnDataType,
     AugurResultType,
@@ -23,16 +29,17 @@ from openbio_singlecell.node_types import (
     LianaResultType,
     PlotResultType,
     PseudobulkType,
-    SCENICBinaryArtifactType,
     SCENICResultArtifactType,
     SCVIModelType,
     SummaryResultType,
     TableResultType,
     TFActivityArtifactType,
     VelocityStateType,
+    WorkerType,
 )
 
 EXPECTED_NODE_IDS = {
+    "OpenBioSingleCellPythonWorker",
     "OpenBioSingleCellLoadH5AD",
     "OpenBioSingleCellLoad10xMTX",
     "OpenBioSingleCellLoad10xStudy",
@@ -127,6 +134,7 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellSaveH5AD",
     "OpenBioSingleCellExportCSV",
     "OpenBioSingleCellSavePNG",
+    "OpenBioSingleCellPersistArtifact",
 }
 
 REMOVED_NODE_IDS = {
@@ -154,7 +162,7 @@ def test_package_metadata_is_versioned():
     assert SummaryResultType.io_type == "OPENBIO_SINGLE_CELL_SUMMARY"
     assert SCVIModelType.io_type == "OPENBIO_SCVI_MODEL"
     assert SCENICResultArtifactType.io_type == "OPENBIO_SCENIC_RESULT"
-    assert SCENICBinaryArtifactType.io_type == "OPENBIO_SCENIC_BINARY"
+    assert WorkerType.io_type == "OPENBIO_WORKER"
     assert CassiopeiaCharactersType.io_type == "OPENBIO_CASSIOPEIA_CHARACTERS"
     assert CassiopeiaTreeType.io_type == "OPENBIO_CASSIOPEIA_TREE"
     assert CNMFRunType.io_type == "OPENBIO_CNMF_RUN"
@@ -178,7 +186,7 @@ def test_input_extension_loads():
     assert isinstance(extension, OpenBioSingleCellExtension)
     node_ids = [node.GET_SCHEMA().node_id for node in NODE_CLASSES]
     schemas = [node.GET_SCHEMA() for node in NODE_CLASSES]
-    assert len(node_ids) == 94
+    assert len(node_ids) == 96
     assert len(node_ids) == len(set(node_ids))
     assert set(node_ids) == EXPECTED_NODE_IDS
     assert REMOVED_NODE_IDS.isdisjoint(node_ids)
@@ -201,10 +209,11 @@ def test_input_extension_loads():
         "openbio/single-cell/input": 4,
         "openbio/single-cell/lineage": 4,
         "openbio/single-cell/marker-evidence": 2,
-        "openbio/single-cell/output": 4,
+        "openbio/single-cell/output": 5,
         "openbio/single-cell/preprocessing": 6,
         "openbio/single-cell/qc": 4,
         "openbio/single-cell/regulatory": 6,
+        "openbio/single-cell/runtime": 1,
         "openbio/single-cell/study": 1,
         "openbio/single-cell/trajectory": 3,
         "openbio/single-cell/velocity": 7,
@@ -224,6 +233,55 @@ def test_node_categories_preserve_domain_distinctions():
     assert categories["OpenBioSingleCellCellTypeCorrelation"] == "openbio/single-cell/diagnostics"
 
 
+def test_scientific_nodes_are_async_and_expose_one_optional_worker_socket():
+    scientific_ids = {
+        node.define_schema().node_id
+        for node in RAW_NODE_CLASSES
+        if node.define_schema().category
+        not in {"openbio/single-cell/runtime", "openbio/single-cell/study", "openbio/single-cell/output"}
+    }
+    registered = {node.GET_SCHEMA().node_id: node for node in NODE_CLASSES}
+
+    for node_id in scientific_ids:
+        node = registered[node_id]
+        schema = node.GET_SCHEMA()
+        worker_inputs = [item for item in schema.inputs if item.id == "worker"]
+        assert getattr(node, "OPENBIO_WORKER_ADAPTED", False) is True
+        assert inspect.iscoroutinefunction(node.execute)
+        assert len(worker_inputs) == 1
+        assert schema.inputs[-1] is worker_inputs[0]
+        assert worker_inputs[0].get_io_type() == WorkerType.io_type
+        assert worker_inputs[0].optional is True
+
+    worker_node = registered["OpenBioSingleCellPythonWorker"]
+    worker_schema = worker_node.GET_SCHEMA()
+    assert worker_schema.display_name == "Python Worker"
+    assert [item.id for item in worker_schema.inputs] == ["python"]
+    assert [(item.display_name, item.io_type) for item in worker_schema.outputs] == [
+        ("worker", WorkerType.io_type)
+    ]
+    assert inspect.iscoroutinefunction(worker_node.execute)
+
+
+def test_worker_registry_exactly_matches_adapted_scientific_nodes():
+    from openbio_singlecell import worker_operations as _worker_operations  # noqa: F401
+    from openbio_singlecell.artifact_service import operation_id_for_node
+    from openbio_singlecell.worker_protocol import registered_operation_ids
+
+    expected = {
+        operation_id_for_node(node.GET_SCHEMA().node_id)
+        for node in NODE_CLASSES
+        if getattr(node, "OPENBIO_WORKER_ADAPTED", False)
+    }
+    actual = {
+        operation_id
+        for operation_id in registered_operation_ids()
+        if operation_id.startswith("openbio.node.")
+    }
+
+    assert actual == expected
+
+
 def test_node_outputs_use_only_their_concrete_public_contracts():
     expected_types = {
         "adata": AnnDataType.io_type,
@@ -239,10 +297,10 @@ def test_node_outputs_use_only_their_concrete_public_contracts():
         "k_metrics": TableResultType.io_type,
         "resource": DGIdbResourceType.io_type,
         "cnv_state": CNVStateType.io_type,
-            "activities": TFActivityArtifactType.io_type,
-            "scenic_result": SCENICResultArtifactType.io_type,
-            "binary": SCENICBinaryArtifactType.io_type,
-            "velocity_state": VelocityStateType.io_type,
+        "activities": TFActivityArtifactType.io_type,
+        "scenic_result": SCENICResultArtifactType.io_type,
+        "velocity_state": VelocityStateType.io_type,
+        "worker": WorkerType.io_type,
     }
     expected_multi_outputs = {
         "OpenBioSingleCellCalculateQC": [
@@ -671,7 +729,6 @@ def test_node_outputs_use_only_their_concrete_public_contracts():
             ("code", "STRING"),
         ],
         "OpenBioSingleCellSCENICActivityBinarization": [
-            ("binary", SCENICBinaryArtifactType.io_type),
             ("thresholds", TableResultType.io_type),
             ("summary", SummaryResultType.io_type),
             ("code", "STRING"),
@@ -715,13 +772,13 @@ def test_registered_ports_reject_generic_and_legacy_analysis_contracts():
         LianaResultType.io_type,
         PlotResultType.io_type,
         PseudobulkType.io_type,
-        SCENICBinaryArtifactType.io_type,
         SCENICResultArtifactType.io_type,
         SCVIModelType.io_type,
         SummaryResultType.io_type,
         TableResultType.io_type,
         TFActivityArtifactType.io_type,
         VelocityStateType.io_type,
+        WorkerType.io_type,
     }
     allowed_output_types = allowed_openbio_types | {"STRING"}
     forbidden_types = {
@@ -734,6 +791,7 @@ def test_registered_ports_reject_generic_and_legacy_analysis_contracts():
         "OPENBIO_SAMPLE_SHEET",
         "OPENBIO_SINGLE_CELL_STUDY_DESIGN",
         "OPENBIO_SINGLE_CELL_RESULT",
+        "OPENBIO_SCENIC_BINARY",
     }
     object_consumers = {}
 
@@ -754,7 +812,6 @@ def test_registered_ports_reject_generic_and_legacy_analysis_contracts():
                 DGIdbResourceType.io_type,
                 LianaResultType.io_type,
                 PseudobulkType.io_type,
-                SCENICBinaryArtifactType.io_type,
                 SCENICResultArtifactType.io_type,
                 TFActivityArtifactType.io_type,
                 VelocityStateType.io_type,
@@ -767,6 +824,21 @@ def test_registered_ports_reject_generic_and_legacy_analysis_contracts():
             assert output.display_name.lower() not in {"dataset", "dataset_name"}
 
     assert object_consumers == {
+        ("OpenBioSingleCellPersistArtifact", "artifact"): {
+            AnnDataType.io_type,
+            AugurResultType.io_type,
+            CassiopeiaCharactersType.io_type,
+            CassiopeiaTreeType.io_type,
+            CNVStateType.io_type,
+            DGIdbResourceType.io_type,
+            LianaResultType.io_type,
+            PlotResultType.io_type,
+            PseudobulkType.io_type,
+            SCENICResultArtifactType.io_type,
+            TableResultType.io_type,
+            TFActivityArtifactType.io_type,
+            VelocityStateType.io_type,
+        },
         ("OpenBioSingleCellAugurResults", "result"): {AugurResultType.io_type},
         ("OpenBioSingleCellDrugGSEA", "resource"): {DGIdbResourceType.io_type},
         ("OpenBioSingleCellDrugHypergeometric", "resource"): {DGIdbResourceType.io_type},
@@ -876,9 +948,14 @@ def test_extension_loads_without_scientific_dependencies():
 
         sys.meta_path.insert(0, BlockScience())
 
+        from comfy.cli_args import args
         from openbio_singlecell import dependencies
         from openbio_singlecell.extension import NODE_CLASSES, comfy_entrypoint
 
+        args.cache_classic = True
+        args.cache_none = False
+        args.cache_lru = 0
+        args.cache_ram = []
         assert NODE_CLASSES
         node_count = len(NODE_CLASSES)
         extension = asyncio.run(comfy_entrypoint())

@@ -958,13 +958,11 @@
       },
       "widgets_values": [
         "clustered_adata",
-        false,
-        "gzip"
+        false
       ],
       "widgets_values_named": {
         "filename_prefix": "clustered_adata",
-        "overwrite": false,
-        "compression": "gzip"
+        "overwrite": false
       }
     }
   ],

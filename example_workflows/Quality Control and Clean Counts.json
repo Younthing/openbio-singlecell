@@ -619,13 +619,11 @@
       },
       "widgets_values": [
         "qc_clean_counts",
-        false,
-        "gzip"
+        false
       ],
       "widgets_values_named": {
         "filename_prefix": "qc_clean_counts",
-        "overwrite": false,
-        "compression": "gzip"
+        "overwrite": false
       }
     }
   ],

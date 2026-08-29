@@ -18,10 +18,11 @@ from openbio_singlecell.nodes_results import (
     OpenBioSingleCellFilterMarkerGenes,
     OpenBioSingleCellMarkerGenes,
 )
+from openbio_singlecell.operations_results import filter_marker_genes_owned, marker_genes_owned
 
 
-def _output_values(node_output):
-    return node_output.result
+def _output_values(operation_output):
+    return operation_output
 
 
 def _matrix_values(matrix, science):
@@ -73,7 +74,7 @@ def _logged_adata(science, *, sparse_matrix: bool = True, gene_prefix: str = "G"
 
 def _rank(adata, *, n_genes: int = 0):
     return _output_values(
-        OpenBioSingleCellMarkerGenes.execute(
+        marker_genes_owned(
             adata,
             groupby="cluster",
             method="wilcoxon",
@@ -92,8 +93,8 @@ def _run_code(code: str, function_name: str, *arguments):
 
 
 def test_marker_schemas_expose_atomic_evidence_universe_summary_and_code():
-    marker_schema = OpenBioSingleCellMarkerGenes.GET_SCHEMA()
-    filter_schema = OpenBioSingleCellFilterMarkerGenes.GET_SCHEMA()
+    marker_schema = OpenBioSingleCellMarkerGenes.define_schema()
+    filter_schema = OpenBioSingleCellFilterMarkerGenes.define_schema()
 
     assert [output.display_name for output in marker_schema.outputs] == ["table", "universe", "summary", "code"]
     assert [output.display_name for output in filter_schema.outputs] == ["table", "universe", "summary", "code"]
@@ -213,7 +214,7 @@ def test_marker_backend_receives_only_variable_expression_and_budget_preflights_
 
     observed_n_vars.clear()
     with pytest.raises(ValueError, match="exceeding max_working_memory_gib"):
-        OpenBioSingleCellMarkerGenes.execute(
+        marker_genes_owned(
             adata,
             groupby="cluster",
             method="wilcoxon",
@@ -234,7 +235,7 @@ def test_marker_memory_guard_precedes_identifier_and_group_materialization(scien
 
     monkeypatch.setattr(marker_evidence, "_validate_identifier_values", forbidden_identifier_materialization)
     with pytest.raises(ValueError, match="identifier/group validation buffers.*exceeding max_working_memory_gib"):
-        OpenBioSingleCellMarkerGenes.execute(
+        marker_genes_owned(
             adata,
             groupby="cluster",
             method="wilcoxon",
@@ -250,7 +251,7 @@ def test_marker_memory_guard_precedes_identifier_and_group_materialization(scien
 def test_marker_supported_t_test_paths_return_complete_finite_evidence(science, method):
     adata = _logged_adata(science)
     table, universe, summary, code = _output_values(
-        OpenBioSingleCellMarkerGenes.execute(
+        marker_genes_owned(
             adata,
             "cluster",
             method,
@@ -283,7 +284,7 @@ def test_marker_retains_zero_and_positive_constant_genes_as_neutral_hypotheses(
     adata.layers["log1p_norm"] = science.sparse.csr_matrix(logged) if sparse_matrix else logged
 
     table, universe, summary, _ = _output_values(
-        OpenBioSingleCellMarkerGenes.execute(
+        marker_genes_owned(
             adata,
             "cluster",
             method,
@@ -419,11 +420,11 @@ def test_marker_rejects_logreg_irrelevant_tie_policy_and_output_budget(science):
         "max_output_rows": 10_000,
     }
     with pytest.raises(ValueError, match="Unsupported Marker Genes method"):
-        OpenBioSingleCellMarkerGenes.execute(method="logreg", tie_correct=False, **common)
+        marker_genes_owned(method="logreg", tie_correct=False, **common)
     with pytest.raises(ValueError, match="only applicable to the Wilcoxon"):
-        OpenBioSingleCellMarkerGenes.execute(method="t-test", tie_correct=True, **common)
+        marker_genes_owned(method="t-test", tie_correct=True, **common)
     with pytest.raises(ValueError, match="exceeding max_output_rows"):
-        OpenBioSingleCellMarkerGenes.execute(
+        marker_genes_owned(
             adata,
             "cluster",
             "wilcoxon",
@@ -433,7 +434,7 @@ def test_marker_rejects_logreg_irrelevant_tie_policy_and_output_budget(science):
             5,
         )
     with pytest.raises(ValueError, match=r"marker and universe outputs \(6 \+ 6\)"):
-        OpenBioSingleCellMarkerGenes.execute(
+        marker_genes_owned(
             adata,
             "cluster",
             "wilcoxon",
@@ -479,7 +480,7 @@ def test_filter_inclusive_thresholds_preserve_order_rank_universe_and_provenance
     original_universe_source = copy.deepcopy(universe.source)
 
     filtered, returned_universe, summary, code = _output_values(
-        OpenBioSingleCellFilterMarkerGenes.execute(
+        filter_marker_genes_owned(
             table,
             universe,
             min_log2_fold_change=float(candidate["log2_fold_change_approx"]),
@@ -505,7 +506,7 @@ def test_filter_inclusive_thresholds_preserve_order_rank_universe_and_provenance
     science.pd.testing.assert_frame_equal(generated_universe, universe.table)
 
     with pytest.raises(ValueError, match="requires table operation.*marker_genes"):
-        OpenBioSingleCellFilterMarkerGenes.execute(filtered, universe, -100.0, 0.0, 1.0, 1.0)
+        filter_marker_genes_owned(filtered, universe, -100.0, 0.0, 1.0, 1.0)
 
 
 def test_filter_rejects_same_size_different_universe_and_tampered_content(science):
@@ -513,19 +514,19 @@ def test_filter_rejects_same_size_different_universe_and_tampered_content(scienc
     _, universe_b, _, _ = _rank(_logged_adata(science, gene_prefix="B"))
 
     with pytest.raises(ValueError, match="analysis fingerprints do not match"):
-        OpenBioSingleCellFilterMarkerGenes.execute(table_a, universe_b)
+        filter_marker_genes_owned(table_a, universe_b)
 
     changed_frame = universe_a.table.copy()
     changed_frame.loc[0, "gene"] = "DIFFERENT"
     tampered_universe = replace(universe_a, table=changed_frame)
     with pytest.raises(ValueError, match="SHA-256 identity|current-content fingerprint"):
-        OpenBioSingleCellFilterMarkerGenes.execute(table_a, tampered_universe)
+        filter_marker_genes_owned(table_a, tampered_universe)
 
     changed_table = table_a.table.copy()
     changed_table.loc[0, "gene"] = "OUTSIDE_UNIVERSE"
     tampered_table = replace(table_a, table=changed_table)
     with pytest.raises(ValueError, match="current-content fingerprint"):
-        OpenBioSingleCellFilterMarkerGenes.execute(tampered_table, universe_a)
+        filter_marker_genes_owned(tampered_table, universe_a)
 
 
 def test_filter_rejects_same_axes_and_parameters_from_different_ranking_content(science):
@@ -541,7 +542,7 @@ def test_filter_rejects_same_axes_and_parameters_from_different_ranking_content(
     assert table_a.parameters["universe_fingerprint"] == table_b.parameters["universe_fingerprint"]
     assert table_a.parameters["ranking_fingerprint"] != table_b.parameters["ranking_fingerprint"]
     with pytest.raises(ValueError, match="ranking fingerprints do not match"):
-        OpenBioSingleCellFilterMarkerGenes.execute(table_a, universe_b)
+        filter_marker_genes_owned(table_a, universe_b)
 
 
 def test_filter_recomputes_numeric_content_fingerprint_and_checks_bh_invariant(science):
@@ -549,13 +550,13 @@ def test_filter_recomputes_numeric_content_fingerprint_and_checks_bh_invariant(s
     changed = table.table.copy()
     changed.loc[0, "score"] += 0.25
     with pytest.raises(ValueError, match="current-content fingerprint"):
-        OpenBioSingleCellFilterMarkerGenes.execute(replace(table, table=changed), universe)
+        filter_marker_genes_owned(replace(table, table=changed), universe)
 
     invalid = table.table.copy()
     invalid.loc[0, "p_value"] = 0.8
     invalid.loc[0, "p_adjusted"] = 0.7
     with pytest.raises(ValueError, match="cannot be smaller than raw p-values"):
-        OpenBioSingleCellFilterMarkerGenes.execute(replace(table, table=invalid), universe)
+        filter_marker_genes_owned(replace(table, table=invalid), universe)
 
     tolerated = table.table.copy()
     tolerated.loc[0, "p_value"] = 0.5
@@ -572,18 +573,18 @@ def test_filter_rejects_wrong_producer_and_incomplete_direct_marker_grid(science
     wrong_producer = replace(table, parameters=parameters, source=source)
 
     with pytest.raises(ValueError, match="approved marker-evidence producer"):
-        OpenBioSingleCellFilterMarkerGenes.execute(wrong_producer, universe)
+        filter_marker_genes_owned(wrong_producer, universe)
 
     incomplete = replace(table, table=table.table.iloc[1:].reset_index(drop=True))
     with pytest.raises(ValueError, match="current-content fingerprint"):
-        OpenBioSingleCellFilterMarkerGenes.execute(incomplete, universe)
+        filter_marker_genes_owned(incomplete, universe)
 
 
 def test_filter_valid_empty_output_is_reported_and_cannot_be_filtered_again(science):
     table, universe, _, _ = _rank(_logged_adata(science))
 
     empty, returned_universe, summary, code = _output_values(
-        OpenBioSingleCellFilterMarkerGenes.execute(table, universe, 1_000_000.0, 1.0, 0.0, 0.0)
+        filter_marker_genes_owned(table, universe, 1_000_000.0, 1.0, 0.0, 0.0)
     )
 
     assert empty.table.empty
@@ -594,7 +595,7 @@ def test_filter_valid_empty_output_is_reported_and_cannot_be_filtered_again(scie
     science.pd.testing.assert_frame_equal(generated_table, empty.table)
     science.pd.testing.assert_frame_equal(generated_universe, universe.table)
     with pytest.raises(ValueError, match="requires table operation.*marker_genes"):
-        OpenBioSingleCellFilterMarkerGenes.execute(empty, universe, 0.0, 0.0, 1.0, 1.0)
+        filter_marker_genes_owned(empty, universe, 0.0, 0.0, 1.0, 1.0)
 
 
 @pytest.mark.parametrize(
@@ -611,7 +612,7 @@ def test_filter_rejects_malformed_marker_tables(science, mutator, error):
     malformed = replace(table, table=mutator(table.table.copy()))
 
     with pytest.raises((TypeError, ValueError), match=error):
-        OpenBioSingleCellFilterMarkerGenes.execute(malformed, universe)
+        filter_marker_genes_owned(malformed, universe)
 
 
 def science_duplicate(frame):
@@ -641,13 +642,13 @@ def test_filter_rejects_invalid_thresholds_before_table_values(science, threshol
     values[threshold] = value
 
     with pytest.raises((TypeError, ValueError), match=error):
-        OpenBioSingleCellFilterMarkerGenes.execute(malformed, universe, **values)
+        filter_marker_genes_owned(malformed, universe, **values)
 
 
 def test_filter_generated_code_matches_runtime_failures(science):
     table, universe, _, _ = _rank(_logged_adata(science))
     filtered, _, _, code = _output_values(
-        OpenBioSingleCellFilterMarkerGenes.execute(table, universe, 0.0, 0.0, 1.0, 1.0)
+        filter_marker_genes_owned(table, universe, 0.0, 0.0, 1.0, 1.0)
     )
     generated_table, generated_universe = _run_code(code, "filter_marker_genes", table.table, universe.table)
     science.pd.testing.assert_frame_equal(generated_table, filtered.table)

@@ -1,26 +1,9 @@
 from __future__ import annotations
 
-import time
-from typing import TYPE_CHECKING
-
 from comfy_api.latest import io
 
-from .analysis_utils import finish_adata, make_summary_result, make_table_result
-from .cnv_analysis import (
-    CNVState,
-    analyze_cnv_pca,
-    analyze_cnv_score,
-    analyze_infer_cnv,
-    cnv_pca_code,
-    cnv_score_code,
-    infer_cnv_code,
-)
-from .expression_source import DynamicExpressionSource, ExpressionSourceSpec
+from .expression_source import ExpressionSourceSpec
 from .node_types import AnnDataType, CNVStateType, SummaryResultType, TableResultType
-
-if TYPE_CHECKING:
-    from anndata import AnnData
-
 
 CATEGORY = "openbio/single-cell/copy-number"
 
@@ -69,63 +52,6 @@ class OpenBioSingleCellInferCNV(io.ComfyNode):
             ],
         )
 
-    @classmethod
-    def execute(
-        cls,
-        adata: AnnData,
-        source: DynamicExpressionSource | None = None,
-        reference_key: str = "cell_type",
-        reference_categories: str = "",
-        sample_key: str = "sample",
-        genome_assembly: str = "",
-        window_size: int = 100,
-        step: int = 10,
-        lfc_clip: float = 3.0,
-        dynamic_threshold: float = 1.5,
-        exclude_chromosomes: str = "chrX,chrY,chrM",
-        output_key: str = "cnv",
-        minimum_reference_cells: int = 20,
-        chunksize: int = 5000,
-        n_jobs: int = 1,
-        max_output_gib: float = 4.0,
-        overwrite_existing: bool = False,
-    ) -> io.NodeOutput:
-        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
-        started_at = time.perf_counter()
-        cells, genes = int(adata.n_obs), int(adata.n_vars)
-        parameters = {
-            "source_kind": expression.kind,
-            "layer_name": expression.layer_name,
-            "reference_key": reference_key,
-            "reference_categories": reference_categories,
-            "sample_key": sample_key,
-            "genome_assembly": genome_assembly,
-            "window_size": window_size,
-            "step": step,
-            "lfc_clip": lfc_clip,
-            "dynamic_threshold": dynamic_threshold,
-            "exclude_chromosomes": exclude_chromosomes,
-            "output_key": output_key,
-            "minimum_reference_cells": minimum_reference_cells,
-            "chunksize": chunksize,
-            "n_jobs": n_jobs,
-            "max_output_gib": max_output_gib,
-            "overwrite_existing": overwrite_existing,
-        }
-        cnv_state, summary = analyze_infer_cnv(adata, **parameters)
-        report = make_summary_result(
-            summary=summary,
-            title="Expression-derived CNV inference summary",
-            operation="infer_cnv",
-            parameters=summary["parameters"],
-            description=summary["results"],
-            warnings=summary["warnings"],
-            input_cells=cells,
-            input_genes=genes,
-            started_at=started_at,
-        )
-        return io.NodeOutput(cnv_state, report, infer_cnv_code(**parameters))
-
 
 class OpenBioSingleCellCNVPCA(io.ComfyNode):
     @classmethod
@@ -149,51 +75,6 @@ class OpenBioSingleCellCNVPCA(io.ComfyNode):
                 io.String.Output("code"),
             ],
         )
-
-    @classmethod
-    def execute(
-        cls,
-        cnv_state: CNVState,
-        n_comps: int = 30,
-        output_key: str = "X_cnv_pca",
-        overwrite_existing: bool = False,
-        max_output_gib: float = 2.0,
-        random_seed: int = 0,
-    ) -> io.NodeOutput:
-        started_at = time.perf_counter()
-        input_adata = cnv_state.to_adata()
-        cells, genes = int(input_adata.n_obs), int(input_adata.n_vars)
-        parameters = {
-            "n_comps": n_comps,
-            "output_key": output_key,
-            "overwrite_existing": overwrite_existing,
-            "max_output_gib": max_output_gib,
-            "random_seed": random_seed,
-        }
-        output, summary = analyze_cnv_pca(cnv_state, **parameters)
-        finish_adata(
-            output,
-            "cnv_pca",
-            dict(summary["parameters"]),
-            cells,
-            genes,
-            started_at,
-            random_seed=random_seed,
-            warnings=[str(value) for value in summary["warnings"]],
-        )
-        report = make_summary_result(
-            summary=summary,
-            title="CNV PCA summary",
-            operation="cnv_pca",
-            parameters=summary["parameters"],
-            description=summary["results"],
-            warnings=summary["warnings"],
-            input_cells=cells,
-            input_genes=genes,
-            started_at=started_at,
-            random_seed=random_seed,
-        )
-        return io.NodeOutput(output, report, cnv_pca_code(**parameters))
 
 
 class OpenBioSingleCellCNVScore(io.ComfyNode):
@@ -221,56 +102,6 @@ class OpenBioSingleCellCNVScore(io.ComfyNode):
                 io.String.Output("code"),
             ],
         )
-
-    @classmethod
-    def execute(
-        cls,
-        cnv_state: CNVState,
-        adata: AnnData,
-        groupby: str = "cnv_leiden",
-        output_key: str = "cnv_score",
-        overwrite_existing: bool = False,
-    ) -> io.NodeOutput:
-        started_at = time.perf_counter()
-        cells, genes = int(adata.n_obs), int(adata.n_vars)
-        parameters = {
-            "groupby": groupby,
-            "output_key": output_key,
-            "overwrite_existing": overwrite_existing,
-        }
-        output, table, summary = analyze_cnv_score(cnv_state, adata, **parameters)
-        finish_adata(
-            output,
-            "cnv_score",
-            dict(summary["parameters"]),
-            cells,
-            genes,
-            started_at,
-            warnings=[str(value) for value in summary["warnings"]],
-        )
-        table_result = make_table_result(
-            title=f"CNV group scores by {groupby}",
-            operation="cnv_score",
-            parameters=summary["parameters"],
-            description=summary["results"],
-            warnings=summary["warnings"],
-            input_cells=cells,
-            input_genes=genes,
-            started_at=started_at,
-            table=table,
-        )
-        report = make_summary_result(
-            summary=summary,
-            title="CNV group score summary",
-            operation="cnv_score",
-            parameters=summary["parameters"],
-            description=summary["results"],
-            warnings=summary["warnings"],
-            input_cells=cells,
-            input_genes=genes,
-            started_at=started_at,
-        )
-        return io.NodeOutput(output, table_result, report, cnv_score_code(**parameters))
 
 
 CNV_NODE_CLASSES = [

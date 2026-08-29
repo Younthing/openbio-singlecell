@@ -170,13 +170,13 @@ def _plot_umap_impl(
         if not stored.index.equals(adata.obs_names):
             raise ValueError("UMAP coordinate DataFrame index is not exactly aligned to adata.obs_names.")
         coordinate_source = "dataframe_index_verified"
-        stored = stored.to_numpy(copy=True)
+        stored = stored.to_numpy(copy=False)
     else:
         coordinate_source = "anndata_obsm_row_contract"
         if sparse.issparse(stored):
             stored = stored.toarray()
         else:
-            stored = np.asarray(stored).copy()
+            stored = np.asarray(stored)
     stored_coordinates = np.asarray(stored)
     if stored_coordinates.ndim != 2 or stored_coordinates.shape[0] != n_obs or stored_coordinates.shape[1] < 2:
         raise ValueError(
@@ -190,7 +190,7 @@ def _plot_umap_impl(
     if np.iscomplexobj(stored_coordinates):
         raise TypeError("UMAP coordinates must contain real numeric values, not complex values.")
     available_dimensions = int(stored_coordinates.shape[1])
-    coordinates = np.asarray(stored_coordinates[:, :2], dtype=float).copy()
+    coordinates = np.asarray(stored_coordinates[:, :2], dtype=float)
     if not bool(np.isfinite(coordinates).all()):
         raise ValueError("The first two displayed UMAP coordinate dimensions contain non-finite values.")
 

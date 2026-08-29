@@ -161,7 +161,7 @@ def _state_maps_payload(state_maps: Mapping[int, Mapping[int, str]]) -> list[lis
     ]
 
 
-def _validate_character_frame(frame: Any) -> Any:
+def _validate_character_frame(frame: Any, *, _owned: bool = False) -> Any:
     np, pd = _numpy_pandas()
     if not isinstance(frame, pd.DataFrame):
         raise TypeError("Cassiopeia character matrices must be pandas DataFrames.")
@@ -173,6 +173,11 @@ def _validate_character_frame(frame: Any) -> Any:
     columns = frame.columns.tolist()
     if any(not isinstance(value, str) or not value or value != value.strip() for value in cells + columns):
         raise ValueError("Cassiopeia character axes must be exact non-empty strings.")
+    owned_values = frame.to_numpy(copy=False)
+    if _owned and owned_values.dtype == np.dtype("int64"):
+        if bool(np.any(owned_values < MISSING_STATE)):
+            raise ValueError("Cassiopeia states must be -1, 0, or positive integers.")
+        return frame
     values = frame.to_numpy(dtype=object, copy=True)
     integer_values = np.empty(values.shape, dtype=np.int64)
     for row_index in range(values.shape[0]):
@@ -219,6 +224,7 @@ class CassiopeiaCharacters:
         metadata: Mapping[str, Any],
         *,
         _token: object | None = None,
+        _owned: bool = False,
     ) -> None:
         if _token is not _ARTIFACT_TOKEN:
             raise TypeError("CassiopeiaCharacters values can only be created by the audited preparation function.")
@@ -232,13 +238,13 @@ class CassiopeiaCharacters:
         for lineage_id in lineage_ids:
             if not isinstance(lineage_id, str) or not lineage_id or lineage_id != lineage_id.strip():
                 raise ValueError("Cassiopeia lineage IDs must be exact non-empty strings.")
-            frame = _validate_character_frame(matrices[lineage_id])
+            frame = _validate_character_frame(matrices[lineage_id], _owned=_owned)
             lineage_priors = _normalize_priors(priors[lineage_id])
             lineage_maps = _normalize_state_maps(state_maps[lineage_id])
             _validate_prior_closure(frame, lineage_priors, lineage_maps)
-            normalized_matrices[lineage_id] = frame.copy(deep=True)
-            normalized_priors[lineage_id] = copy.deepcopy(lineage_priors)
-            normalized_maps[lineage_id] = copy.deepcopy(lineage_maps)
+            normalized_matrices[lineage_id] = frame
+            normalized_priors[lineage_id] = lineage_priors
+            normalized_maps[lineage_id] = lineage_maps
             lineage_hashes[lineage_id] = {
                 "character_matrix_sha256": _frame_hash(frame),
                 "priors_sha256": _hash_payload(_priors_payload(lineage_priors)),
@@ -316,12 +322,14 @@ class CassiopeiaCharacters:
                 raise ValueError(f"Cassiopeia character artifact payload for lineage {lineage_id!r} was tampered with.")
 
     def copy_lineage(
-        self, lineage_id: str
+        self, lineage_id: str, *, _owned: bool = False
     ) -> tuple[Any, dict[int, dict[int, float]], dict[int, dict[int, str]]]:
         self._validate()
         if lineage_id not in self.__matrices:
             available = ", ".join(self.__matrices) or "none"
             raise ValueError(f"Lineage {lineage_id!r} has no computable character payload; available: {available}.")
+        if _owned:
+            return self.__matrices[lineage_id], self.__priors[lineage_id], self.__state_maps[lineage_id]
         return (
             self.__matrices[lineage_id].copy(deep=True),
             copy.deepcopy(self.__priors[lineage_id]),
@@ -340,12 +348,13 @@ class CassiopeiaTree:
         metadata: Mapping[str, Any],
         *,
         _token: object | None = None,
+        _owned: bool = False,
     ) -> None:
         if _token is not _ARTIFACT_TOKEN:
             raise TypeError("CassiopeiaTree values can only be created by audited reconstruction.")
         if not hasattr(tree, "copy") or not callable(tree.copy):
             raise TypeError("Cassiopeia tree backend must provide the public copy method.")
-        private_tree = tree.copy()
+        private_tree = tree if _owned else tree.copy()
         content = _tree_content(private_tree)
         normalized_metadata = _json_value(metadata)
         if not isinstance(normalized_metadata, dict):
@@ -442,9 +451,9 @@ class CassiopeiaTree:
     def topology_fingerprint(self) -> str:
         return str(self.metadata["topology_sha256"])
 
-    def copy_tree(self) -> Any:
+    def copy_tree(self, *, _owned: bool = False) -> Any:
         self._validate()
-        return self.__tree.copy()
+        return self.__tree if _owned else self.__tree.copy()
 
 
 def _require_characters(value: Any) -> CassiopeiaCharacters:
@@ -629,7 +638,7 @@ def _tree_content(tree: Any) -> dict[str, Any]:
     structure = _graph_structure(graph)
     if str(getattr(tree, "root", "")) != structure["root"]:
         raise ValueError("Cassiopeia backend root disagrees with the public topology.")
-    matrix = _validate_character_frame(getattr(tree, "character_matrix", None))
+    matrix = _validate_character_frame(getattr(tree, "character_matrix", None), _owned=True)
     cells = list(matrix.index)
     if set(cells) != set(structure["leaves"]):
         raise ValueError("Cassiopeia character-matrix cells do not exactly match topology leaves.")
@@ -666,7 +675,14 @@ def _require_tree(value: Any) -> CassiopeiaTree:
     return value
 
 
-def _canonicalize_solved_tree(cassiopeia: Any, tree: Any, matrix: Any, priors: Mapping[int, Mapping[int, float]]) -> Any:
+def _canonicalize_solved_tree(
+    cassiopeia: Any,
+    tree: Any,
+    matrix: Any,
+    priors: Mapping[int, Mapping[int, float]],
+    *,
+    _worker_owned: bool = False,
+) -> Any:
     nx = importlib.import_module("networkx")
     graph = tree.get_tree_topology()
     structure = _graph_structure(graph)
@@ -693,9 +709,9 @@ def _canonicalize_solved_tree(cassiopeia: Any, tree: Any, matrix: Any, priors: M
         mapping[node] = canonical
     canonical_graph = nx.relabel_nodes(graph, mapping, copy=True)
     canonical_tree = cassiopeia.data.CassiopeiaTree(
-        character_matrix=matrix.copy(deep=True),
+        character_matrix=matrix if _worker_owned else matrix.copy(deep=True),
         missing_state_indicator=MISSING_STATE,
-        priors=copy.deepcopy(dict(priors)),
+        priors=priors if _worker_owned else copy.deepcopy(dict(priors)),
         tree=canonical_graph,
     )
     _tree_content(canonical_tree)
@@ -1387,6 +1403,7 @@ def reconstruct_cassiopeia_tree(
     prior_transformation: str = "negative_log",
     collapse_mutationless_edges: bool = False,
     openbio_version: str = "standalone",
+    _worker_owned: bool = False,
 ) -> tuple[CassiopeiaTree, dict[str, Any], str]:
     artifact = _require_characters(characters)
     if not isinstance(lineage_id, str) or not lineage_id or lineage_id != lineage_id.strip():
@@ -1404,7 +1421,7 @@ def reconstruct_cassiopeia_tree(
     ):
         raise ValueError("Character artifact dependency provenance does not match the pinned Cassiopeia runtime.")
     upstream_fingerprint = artifact.fingerprint
-    matrix, priors, _ = artifact.copy_lineage(lineage_id)
+    matrix, priors, _ = artifact.copy_lineage(lineage_id, _owned=_worker_owned)
     if matrix.shape[0] < 2:
         raise ValueError("VanillaGreedy reconstruction requires at least two character-matrix cells.")
     qc_record = next(
@@ -1412,9 +1429,9 @@ def reconstruct_cassiopeia_tree(
         None,
     )
     backend_tree = cassiopeia.data.CassiopeiaTree(
-        character_matrix=matrix.copy(deep=True),
+        character_matrix=matrix if _worker_owned else matrix.copy(deep=True),
         missing_state_indicator=MISSING_STATE,
-        priors=copy.deepcopy(priors),
+        priors=priors if _worker_owned else copy.deepcopy(priors),
     )
     constructor_parameters = inspect.signature(cassiopeia.solver.VanillaGreedySolver).parameters
     missing_classifier = constructor_parameters["missing_data_classifier"].default
@@ -1442,7 +1459,13 @@ def reconstruct_cassiopeia_tree(
     artifact._validate()
     if artifact.fingerprint != upstream_fingerprint:
         raise RuntimeError("Source character artifact changed during reconstruction.")
-    canonical_tree = _canonicalize_solved_tree(cassiopeia, backend_tree, matrix, priors)
+    canonical_tree = _canonicalize_solved_tree(
+        cassiopeia,
+        backend_tree,
+        matrix,
+        priors,
+        _worker_owned=_worker_owned,
+    )
     content = _tree_content(canonical_tree)
     parameters = {
         "lineage_id": lineage_id,
@@ -1466,6 +1489,7 @@ def reconstruct_cassiopeia_tree(
             },
         },
         _token=_ARTIFACT_TOKEN,
+        _owned=_worker_owned,
     )
     results = (
         f"VanillaGreedy reconstructed lineage {lineage_id!r} with {len(content['leaves'])} leaves, "
@@ -1475,7 +1499,7 @@ def reconstruct_cassiopeia_tree(
     summary = _strict_summary(
         node_id="OpenBioSingleCellReconstructCassiopeiaTree",
         methods=(
-            "A defensive copy of one computable character matrix was solved with Cassiopeia VanillaGreedy, "
+            "One private computable character matrix was solved with Cassiopeia VanillaGreedy, "
             "the documented assign_missing_average callable, empirical mutation priors, and the declared prior "
             "transformation. The solver-generated root was retained. Internal nodes were relabeled from their exact "
             "descendant leaf sets, and the rooted arborescence, leaf/character axes, priors, and branch lengths were "
@@ -1549,6 +1573,7 @@ def compute_cassiopeia_expansions(
     minimum_depth: int = 1,
     fdr_threshold: float = 0.05,
     openbio_version: str = "standalone",
+    _worker_owned: bool = False,
 ) -> tuple[Any, dict[str, Any], str]:
     _, pd = _numpy_pandas()
     artifact = _require_tree(tree)
@@ -1561,7 +1586,7 @@ def compute_cassiopeia_expansions(
     fdr_threshold = _validate_fraction(fdr_threshold, "fdr_threshold")
     cassiopeia = _require_cassiopeia()
     source_fingerprint = artifact.fingerprint
-    backend_input = artifact.copy_tree()
+    backend_input = artifact.copy_tree(_owned=_worker_owned)
     input_content = _tree_content(backend_input)
     graph = backend_input.get_tree_topology()
     structure = _graph_structure(graph)
@@ -1949,6 +1974,7 @@ def add_cassiopeia_plasticity(
     overwrite_existing: bool = False,
     max_working_gib: float = 4.0,
     openbio_version: str = "standalone",
+    _worker_owned: bool = False,
 ) -> tuple[Any, Any, dict[str, Any], str]:
     np, pd = _numpy_pandas()
     artifact = _require_tree(tree)
@@ -1997,7 +2023,7 @@ def add_cassiopeia_plasticity(
         raise ValueError("Existing output columns are not owned by this audited plasticity node.")
 
     source_fingerprint = artifact.fingerprint
-    backend_tree = artifact.copy_tree()
+    backend_tree = artifact.copy_tree(_owned=_worker_owned)
     graph = backend_tree.get_tree_topology()
     structure = _graph_structure(graph)
     tree_leaves = set(structure["leaves"])
@@ -2088,7 +2114,7 @@ def add_cassiopeia_plasticity(
     if _adata_snapshot(adata, annotation_key) != input_snapshot:
         raise RuntimeError("Plasticity analysis mutated its AnnData input.")
 
-    output = adata.copy()
+    output = adata if _worker_owned else adata.copy()
     score_values: list[Any] = []
     status_values: list[str] = []
     table_records: list[dict[str, Any]] = []

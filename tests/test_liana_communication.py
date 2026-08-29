@@ -4,6 +4,7 @@ import copy
 import importlib.metadata
 import json
 import types
+import uuid
 
 import numpy as np
 import pandas as pd
@@ -11,13 +12,14 @@ import pytest
 from anndata import AnnData
 from matplotlib.figure import Figure
 
+from openbio_singlecell.liana_artifact_codec import LIANA_CODEC, read_liana_result, write_liana_result
 from openbio_singlecell.liana_communication import (
     liana_communication_code,
     liana_resource_cache_fingerprint,
     run_liana_communication,
 )
 from openbio_singlecell.liana_plot import liana_dot_plot_code, render_liana_dot_plot
-from openbio_singlecell.liana_result import LianaResult, validate_liana_result
+from openbio_singlecell.liana_result import LianaResult, build_liana_result, validate_liana_result
 from openbio_singlecell.node_types import (
     LianaResultType,
     PlotResultType,
@@ -355,7 +357,7 @@ def test_communication_exact_by_sample_complete_family_summary_and_immutability(
     assert selector.calls == ["consensus"]
     assert len(backend.calls) == 1
     work, sample_key, key_added, inplace, verbose, kwargs = backend.calls[0]
-    assert work is not adata
+    assert work is adata
     assert sample_key == "sample"
     assert key_added == "__openbio_liana_private_scratch__"
     assert inplace is False and verbose is False
@@ -373,7 +375,7 @@ def test_communication_exact_by_sample_complete_family_summary_and_immutability(
     else:
         assert kwargs["supp_columns"] is None
     assert np.array_equal(adata.X, original.X)
-    assert adata.obs.equals(original.obs)
+    assert np.array_equal(adata.obs.to_numpy(dtype=str), original.obs.to_numpy(dtype=str))
     assert np.array_equal(adata.raw.X, original.raw.X)
 
 
@@ -394,9 +396,110 @@ def test_liana_result_is_defensive_exact_typed_and_detects_private_tampering():
         validate_liana_result(artifact)
 
 
+def test_liana_artifact_round_trip_preserves_validated_result_without_copying_owned_table(tmp_path):
+    *_prefix, artifact, _summary = _run()
+    owned_table = object.__getattribute__(artifact, "_table")
+
+    assert validate_liana_result(artifact, copy_result=False)[0] is owned_table
+
+    artifact_root = tmp_path / "liana"
+    artifact_root.mkdir()
+    write_liana_result(artifact_root, artifact)
+    restored = read_liana_result(artifact_root)
+    table, provenance, metadata = validate_liana_result(
+        restored,
+        exact_type=False,
+        copy_result=False,
+    )
+
+    assert table.equals(owned_table)
+    assert provenance == artifact.provenance
+    assert metadata == artifact.metadata
+
+
+def test_liana_result_builder_can_adopt_worker_owned_table_without_copying():
+    *_prefix, artifact, _summary = _run()
+    owned_table = artifact.table
+
+    adopted = build_liana_result(
+        table=owned_table,
+        method="rank_aggregate",
+        provenance=artifact.provenance,
+        numpy=np,
+        pandas=pd,
+        copy_table=False,
+    )
+
+    assert object.__getattribute__(adopted, "_table") is owned_table
+
+
+def test_worker_owned_liana_uses_the_worker_private_anndata_in_place():
+    from openbio_singlecell.operations_communication import liana_communication_owned
+
+    adata = _adata()
+    fake, backend, _selector = _fake_liana("rank_aggregate")
+
+    result, report, code = liana_communication_owned(
+        adata,
+        sample_key="sample",
+        condition_key="condition",
+        identity_key="cell_type",
+        annotation_status="curated",
+        organism="Homo sapiens",
+        method="rank_aggregate",
+        resource_mode="bundled_human",
+        resource_name="consensus",
+        resource_path=None,
+        resource_metadata_json=_resource_metadata(),
+        source={"source": "X"},
+        expression_proportion=0.1,
+        min_cells_per_identity_sample=2,
+        permutations=1000,
+        random_seed=7,
+        jobs=1,
+        max_output_rows=100,
+        max_working_memory_gib=1.0,
+        liana_module=fake,
+    )
+
+    assert backend.calls[0][0] is adata
+    validate_liana_result(result, copy_result=False)
+    assert report.summary["node_id"] == "OpenBioSingleCellLianaCommunication"
+    assert "method_object.by_sample" in code
+
+
+def test_worker_owned_liana_copies_resource_only_for_backend_workspace(monkeypatch):
+    import openbio_singlecell.liana_communication as communication
+
+    adata = _adata()
+    fake, _backend, _selector = _fake_liana("rank_aggregate")
+    resolved_resource_id = None
+    copy_count = 0
+    original_resolve = communication._liana_resolve_resource
+    original_copy = pd.DataFrame.copy
+
+    def tracked_resolve(*args, **kwargs):
+        nonlocal resolved_resource_id
+        result = original_resolve(*args, **kwargs)
+        resolved_resource_id = id(result[0])
+        return result
+
+    def tracked_copy(frame, *args, **kwargs):
+        nonlocal copy_count
+        if id(frame) == resolved_resource_id:
+            copy_count += 1
+        return original_copy(frame, *args, **kwargs)
+
+    monkeypatch.setattr(communication, "_liana_resolve_resource", tracked_resolve)
+    monkeypatch.setattr(pd.DataFrame, "copy", tracked_copy)
+    communication._liana_run_impl(adata, **_parameters("rank_aggregate", fake))
+
+    assert copy_count == 1
+
+
 @pytest.mark.parametrize(
     ("mutation", "match"),
-    [("caller", "caller-owned AnnData"), ("resource", "private pinned resource")],
+    [("caller", "worker-owned selected expression"), ("resource", "private pinned resource")],
 )
 def test_adversarial_backend_mutation_is_detected(mutation, match):
     adata = _adata()
@@ -618,6 +721,161 @@ def _plot_parameters(fake, **overrides):
     return values
 
 
+def test_worker_owned_liana_plot_consumes_portable_artifact(tmp_path):
+    from openbio_singlecell.operations_communication import liana_dot_plot_owned
+
+    *_prefix, artifact, _summary = _run()
+    root = tmp_path / "result"
+    root.mkdir()
+    write_liana_result(root, artifact)
+    portable = read_liana_result(root)
+    fake, plotting = _plot_fake()
+
+    plotted, report, code = liana_dot_plot_owned(
+        portable,
+        source_labels="A",
+        target_labels="B",
+        selection_method="rank_aggregate",
+        selection_threshold=0.25,
+        top_n=1,
+        figure_width=5.0,
+        figure_height=4.0,
+        max_plot_rows=100,
+        max_image_pixels=5_000_000,
+        liana_module=fake,
+    )
+
+    assert plotted.png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert report.summary["node_id"] == "OpenBioSingleCellLianaDotPlot"
+    assert len(plotting.calls) == 1
+    assert "dotplot_by_sample" in code
+
+
+def test_liana_worker_operations_publish_portable_artifacts_without_rewriting_input(
+    tmp_path,
+    monkeypatch,
+):
+    import openbio_singlecell.operations_communication as operations
+    from openbio_singlecell.artifact_codecs import read_plot, write_anndata
+    from openbio_singlecell.worker_protocol import OperationContext
+
+    adata = _adata()
+    fake, _backend, _selector = _fake_liana("rank_aggregate")
+    result, report, code = operations.liana_communication_owned(
+        adata,
+        sample_key="sample",
+        condition_key="condition",
+        identity_key="cell_type",
+        annotation_status="curated",
+        organism="Homo sapiens",
+        method="rank_aggregate",
+        resource_mode="bundled_human",
+        resource_name="consensus",
+        resource_path=None,
+        resource_metadata_json=_resource_metadata(),
+        source={"source": "X"},
+        expression_proportion=0.1,
+        min_cells_per_identity_sample=2,
+        permutations=1000,
+        random_seed=7,
+        jobs=1,
+        max_output_rows=100,
+        max_working_memory_gib=1.0,
+        liana_module=fake,
+    )
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    write_anndata(input_root, _adata())
+    input_bytes = (input_root / "data.h5ad").read_bytes()
+    staging = tmp_path / "run.partial"
+    staging.mkdir()
+    context = OperationContext(staging, str(uuid.uuid4()))
+    monkeypatch.setattr(
+        operations,
+        "liana_communication_owned",
+        lambda *_args, **_kwargs: (result, report, code),
+    )
+
+    records = operations.liana_communication(
+        context,
+        {
+            "adata": {
+                "type": "artifact",
+                "path": str(input_root.resolve()),
+                "kind": "OPENBIO_ANNDATA",
+                "codec": "anndata-h5ad-v1",
+            }
+        },
+        {
+            "sample_key": "sample",
+            "condition_key": "condition",
+            "identity_key": "cell_type",
+            "annotation_status": "curated",
+            "organism": "Homo sapiens",
+            "method": "rank_aggregate",
+            "resource_mode": "bundled_human",
+            "resource_name": "consensus",
+            "resource_metadata_json": _resource_metadata(),
+            "source": {"source": "X"},
+            "expression_proportion": 0.1,
+            "min_cells_per_identity_sample": 2,
+            "permutations": 1000,
+            "random_seed": 7,
+            "jobs": 1,
+            "max_output_rows": 100,
+            "max_working_memory_gib": 1.0,
+        },
+    )
+    portable = read_liana_result(staging / records[0]["payload"])
+    fake_plot, _plotting = _plot_fake()
+    plotted, plot_report, plot_code = operations.liana_dot_plot_owned(
+        portable,
+        source_labels="A",
+        target_labels="B",
+        selection_method="rank_aggregate",
+        selection_threshold=0.25,
+        top_n=1,
+        figure_width=5.0,
+        figure_height=4.0,
+        max_plot_rows=100,
+        max_image_pixels=5_000_000,
+        liana_module=fake_plot,
+    )
+    monkeypatch.setattr(
+        operations,
+        "liana_dot_plot_owned",
+        lambda *_args, **_kwargs: (plotted, plot_report, plot_code),
+    )
+    plot_records = operations.liana_dot_plot(
+        context,
+        {
+            "result": {
+                "type": "artifact",
+                "path": str((staging / records[0]["payload"]).resolve()),
+                "kind": "OPENBIO_LIANA_RESULT",
+                "codec": LIANA_CODEC,
+            }
+        },
+        {
+            "source_labels": "A",
+            "target_labels": "B",
+            "selection_method": "rank_aggregate",
+            "selection_threshold": 0.25,
+            "top_n": 1,
+            "figure_width": 5.0,
+            "figure_height": 4.0,
+            "max_plot_rows": 100,
+            "max_image_pixels": 5_000_000,
+        },
+    )
+
+    validate_liana_result(portable, exact_type=False, copy_result=False)
+    assert [record["name"] for record in records] == ["result", "summary", "code"]
+    assert [record["name"] for record in plot_records] == ["plot", "summary", "code"]
+    assert read_plot(staging / plot_records[0]["payload"])[0].startswith(b"\x89PNG\r\n\x1a\n")
+    assert (input_root / "data.h5ad").read_bytes() == input_bytes
+
+
 @pytest.mark.parametrize(
     ("method", "colour", "size", "inverse_colour"),
     [
@@ -716,8 +974,8 @@ def test_dot_plot_selection_contract_and_empty_or_missing_filters_fail_before_re
 
 
 def test_node_schemas_have_typed_ports_and_dynamic_branches():
-    communication = OpenBioSingleCellLianaCommunication.GET_SCHEMA()
-    plot = OpenBioSingleCellLianaDotPlot.GET_SCHEMA()
+    communication = OpenBioSingleCellLianaCommunication.define_schema()
+    plot = OpenBioSingleCellLianaDotPlot.define_schema()
     assert [item.id for item in communication.inputs[:7]] == [
         "adata",
         "sample_key",
@@ -745,18 +1003,57 @@ def test_node_schemas_have_typed_ports_and_dynamic_branches():
     ]
 
 
+def test_liana_nodes_flatten_dynamic_inputs_for_the_worker_protocol():
+    communication = OpenBioSingleCellLianaCommunication.prepare_worker_arguments(
+        {
+            "adata": "ticket",
+            "resource": {
+                "resource": "local_resource",
+                "resource_name": "snapshot",
+                "resource_csv": "resource.csv",
+                "resource_metadata_json": _resource_metadata("snapshot"),
+            },
+        }
+    )
+    plot = OpenBioSingleCellLianaDotPlot.prepare_worker_arguments(
+        {
+            "result": "ticket",
+            "selection": {
+                "selection": "cellphonedb",
+                "max_cellphone_pvalue": 0.025,
+            },
+        }
+    )
+
+    assert communication == {
+        "adata": "ticket",
+        "resource_mode": "local_resource",
+        "resource_name": "snapshot",
+        "resource_csv": "resource.csv",
+        "resource_metadata_json": _resource_metadata("snapshot"),
+    }
+    assert plot == {
+        "result": "ticket",
+        "selection_method": "cellphonedb",
+        "selection_threshold": 0.025,
+    }
+
+
 
 def test_dot_plot_node_rejects_method_branch_mismatch_before_renderer_import():
+    from openbio_singlecell.operations_communication import liana_dot_plot_owned
+
     *_prefix, artifact, _summary = _run("rank_aggregate")
     with pytest.raises(ValueError, match="does not match the typed result method"):
-        OpenBioSingleCellLianaDotPlot.execute(
-            artifact,
-            selection={"selection": "cellphonedb", "max_cellphone_pvalue": 0.05},
+        liana_dot_plot_owned(
+            artifact.portable(),
+            selection_method="cellphonedb",
+            selection_threshold=0.05,
         )
 
 
 def test_current_liana_schemas_are_exact():
-    current_communication = tuple(item.id for item in OpenBioSingleCellLianaCommunication.GET_SCHEMA().inputs)
+    current_communication = tuple(item.id for item in OpenBioSingleCellLianaCommunication.define_schema().inputs)
     assert current_communication == (
         "adata",
         "sample_key",
@@ -775,7 +1072,7 @@ def test_current_liana_schemas_are_exact():
         "max_output_rows",
         "max_working_memory_gib",
     )
-    current_plot = tuple(item.id for item in OpenBioSingleCellLianaDotPlot.GET_SCHEMA().inputs)
+    current_plot = tuple(item.id for item in OpenBioSingleCellLianaDotPlot.define_schema().inputs)
     assert current_plot == (
         "result",
         "source_labels",

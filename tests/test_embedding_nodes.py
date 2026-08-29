@@ -1,17 +1,139 @@
 from __future__ import annotations
 
+import json
 import random
 
 import pytest
 
+from openbio_singlecell.artifact_codecs import ANNDATA_PAYLOAD, read_anndata, write_anndata
 from openbio_singlecell.contracts import ensure_metadata
 from openbio_singlecell.nodes_embedding import (
-    OpenBioSingleCellForceDirectedGraph,
-    OpenBioSingleCellNeighbors,
-    OpenBioSingleCellPCA,
-    OpenBioSingleCellTSNE,
-    OpenBioSingleCellUMAP,
+    OpenBioSingleCellForceDirectedGraph as ForceDirectedGraphNode,
 )
+from openbio_singlecell.nodes_embedding import (
+    OpenBioSingleCellPCA as PCANode,
+)
+from openbio_singlecell.nodes_embedding import (
+    OpenBioSingleCellTSNE as TSNENode,
+)
+from openbio_singlecell.operations_embedding import (
+    force_directed_graph,
+    neighbors,
+    pca,
+    tsne,
+    umap,
+)
+from openbio_singlecell.operations_input import ANNDATA_CODEC, ANNDATA_KIND
+from openbio_singlecell.worker_protocol import OperationContext, ProtocolError
+from tests.artifact_operation_harness import run_anndata_operation
+
+_DEFAULT_PARAMETERS = {
+    pca: {
+        "n_comps": 50,
+        "use_hvg": True,
+        "source": None,
+        "overwrite_existing": False,
+        "max_output_gib": 2.0,
+        "random_seed": 0,
+    },
+    neighbors: {
+        "use_rep": "X_pca",
+        "n_dimensions": 0,
+        "n_neighbors": 15,
+        "metric": "euclidean",
+        "method": "umap",
+        "key_added": "neighbors",
+        "overwrite_existing": False,
+        "random_seed": 0,
+    },
+    umap: {
+        "neighbors_key": "neighbors",
+        "min_dist": 0.5,
+        "spread": 1.0,
+        "key_added": "X_umap",
+        "overwrite_existing": False,
+        "random_seed": 0,
+    },
+    tsne: {
+        "use_rep": "X_pca",
+        "n_dimensions": 0,
+        "perplexity": 30.0,
+        "metric": "euclidean",
+        "early_exaggeration": 12.0,
+        "learning_rate": 1000.0,
+        "key_added": "X_tsne",
+        "overwrite_existing": False,
+        "random_seed": 0,
+    },
+    force_directed_graph: {
+        "layout": "fr",
+        "init_mode": "random",
+        "init_key": "X_draw_graph_fr",
+        "neighbors_key": "neighbors",
+        "key_suffix": "",
+        "overwrite_existing": False,
+        "random_seed": 0,
+    },
+}
+
+
+def _run(operation, adata, **parameters):
+    return run_anndata_operation(operation, adata, _DEFAULT_PARAMETERS[operation] | parameters).result
+
+
+def _artifact_descriptor(root):
+    return {
+        "type": "artifact",
+        "kind": ANNDATA_KIND,
+        "codec": ANNDATA_CODEC,
+        "path": str(root.resolve()),
+    }
+
+
+def test_pca_operation_publishes_ordered_artifacts_without_changing_input_file(tmp_path, science):
+    rng = science.np.random.default_rng(501)
+    adata = science.ad.AnnData(rng.normal(size=(12, 5)))
+    adata.obs_names = [f"cell_{index}" for index in range(adata.n_obs)]
+    adata.var_names = [f"gene_{index}" for index in range(adata.n_vars)]
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    write_anndata(input_root, adata)
+    input_payload = input_root / ANNDATA_PAYLOAD
+    before = input_payload.read_bytes()
+    staging = tmp_path / "run.partial"
+    staging.mkdir()
+    context = OperationContext(staging, "00000000-0000-4000-8000-000000000001")
+    parameters = {
+        "n_comps": 2,
+        "use_hvg": False,
+        "source": {"source": "X"},
+        "overwrite_existing": False,
+        "max_output_gib": 1.0,
+        "random_seed": 7,
+    }
+
+    records = pca(context, {"adata": _artifact_descriptor(input_root)}, parameters)
+
+    assert [(record["type"], record["name"]) for record in records] == [
+        ("artifact", "adata"),
+        ("summary", "summary"),
+        ("string", "code"),
+    ]
+    assert records[0] == {
+        "type": "artifact",
+        "name": "adata",
+        "kind": ANNDATA_KIND,
+        "codec": ANNDATA_CODEC,
+        "payload": "outputs/adata",
+    }
+    assert input_payload.read_bytes() == before
+    assert "X_pca" not in read_anndata(input_root).obsm
+    written = read_anndata(staging / records[0]["payload"])
+    assert written.obsm["X_pca"].shape == (12, 2)
+    json.dumps(records, allow_nan=False)
+
+    with pytest.raises(ProtocolError, match="parameters"):
+        pca(context, {"adata": _artifact_descriptor(input_root)}, parameters | {"unexpected": True})
 
 
 def _embedding_input(science, *, n_obs=24, n_vars=6):
@@ -25,13 +147,14 @@ def _embedding_input(science, *, n_obs=24, n_vars=6):
 
 def _neighbor_input(science):
     adata = _embedding_input(science)
-    return OpenBioSingleCellNeighbors.execute(
+    return _run(
+        neighbors,
         adata,
         use_rep="X_pca",
         n_dimensions=4,
         n_neighbors=5,
         random_seed=3,
-    ).result[0]
+    )[0]
 
 
 def _malformed_coordinates(science, n_obs, kind):
@@ -54,13 +177,13 @@ def _assert_numpy_rng_state_equal(science, expected, actual):
     ("node", "kwargs", "generated_name", "result_key"),
     [
         (
-            OpenBioSingleCellNeighbors,
+            neighbors,
             {"n_neighbors": 5, "metric": "euclidean"},
             "compute_neighbors",
             "connectivities",
         ),
         (
-            OpenBioSingleCellTSNE,
+            tsne,
             {"perplexity": 5.0, "metric": "euclidean"},
             "run_tsne",
             "X_tsne",
@@ -72,21 +195,21 @@ def test_x_dimension_slicing_preserves_user_temp_key(science, node, kwargs, gene
     adata = science.ad.AnnData(rng.normal(size=(24, 6)))
     sentinel = rng.normal(size=(24, 2))
     prefix = (
-        "__openbio_neighbors_representation" if node is OpenBioSingleCellNeighbors else "__openbio_tsne_representation"
+        "__openbio_neighbors_representation" if node is neighbors else "__openbio_tsne_representation"
     )
     adata.obsm[prefix] = sentinel.copy()
 
-    node_output = node.execute(adata, use_rep="X", n_dimensions=3, random_seed=2, **kwargs)
-    runtime, code = node_output.result[0], node_output.result[2]
+    node_output = _run(node, adata, use_rep="X", n_dimensions=3, random_seed=2, **kwargs)
+    runtime, code = node_output[0], node_output[2]
     assert science.np.array_equal(runtime.obsm[prefix], sentinel)
-    assert result_key in (runtime.obsp if node is OpenBioSingleCellNeighbors else runtime.obsm)
+    assert result_key in (runtime.obsp if node is neighbors else runtime.obsm)
 
     namespace: dict[str, object] = {}
     exec(code, namespace)
     generated = namespace[generated_name](adata)
     assert science.np.array_equal(generated.obsm[prefix], sentinel)
-    assert result_key in (generated.obsp if node is OpenBioSingleCellNeighbors else generated.obsm)
-    if node is OpenBioSingleCellNeighbors:
+    assert result_key in (generated.obsp if node is neighbors else generated.obsm)
+    if node is neighbors:
         difference = generated.obsp[result_key] - runtime.obsp[result_key]
         assert difference.nnz == 0 or science.np.allclose(difference.data, 0.0)
     else:
@@ -98,38 +221,39 @@ def test_pca_umap_and_force_graph_generated_code_matches(science):
     adata = science.ad.AnnData(rng.normal(size=(30, 8)))
     adata.layers["log1p_norm"] = adata.X.copy()
 
-    pca_output = OpenBioSingleCellPCA.execute(adata, n_comps=4, use_hvg=False)
-    pca, pca_code = pca_output.result[0], pca_output.result[2]
+    pca_output = _run(pca, adata, n_comps=4, use_hvg=False)
+    pca_result, pca_code = pca_output[0], pca_output[2]
     namespace: dict[str, object] = {}
     exec(pca_code, namespace)
     with pytest.warns(UserWarning, match="provenance is unknown"):
         generated_pca = namespace["run_pca"](adata)
-    assert science.np.allclose(generated_pca.obsm["X_pca"], pca.obsm["X_pca"])
-    assert science.np.allclose(generated_pca.varm["PCs"], pca.varm["PCs"])
+    assert science.np.allclose(generated_pca.obsm["X_pca"], pca_result.obsm["X_pca"])
+    assert science.np.allclose(generated_pca.varm["PCs"], pca_result.varm["PCs"])
 
-    neighbors = OpenBioSingleCellNeighbors.execute(
-        pca,
+    neighbor_output = _run(
+        neighbors,
+        pca_result,
         use_rep="X_pca",
         n_dimensions=4,
         n_neighbors=5,
-    ).result[0]
-    umap_output = OpenBioSingleCellUMAP.execute(neighbors)
-    umap, umap_code = umap_output.result[0], umap_output.result[2]
+    )[0]
+    umap_output = _run(umap, neighbor_output)
+    umap_result, umap_code = umap_output[0], umap_output[2]
     namespace = {}
     exec(umap_code, namespace)
-    generated_umap = namespace["run_umap"](neighbors)
-    assert science.np.allclose(generated_umap.obsm["X_umap"], umap.obsm["X_umap"])
+    generated_umap = namespace["run_umap"](neighbor_output)
+    assert science.np.allclose(generated_umap.obsm["X_umap"], umap_result.obsm["X_umap"])
 
-    graph_output = OpenBioSingleCellForceDirectedGraph.execute(neighbors, layout="fr")
-    graph, graph_code = graph_output.result[0], graph_output.result[2]
+    graph_output = _run(force_directed_graph, neighbor_output, layout="fr")
+    graph_result, graph_code = graph_output[0], graph_output[2]
     namespace = {}
     exec(graph_code, namespace)
-    generated_graph = namespace["run_force_directed_graph"](neighbors)
-    assert science.np.allclose(generated_graph.obsm["X_draw_graph_fr"], graph.obsm["X_draw_graph_fr"])
+    generated_graph = namespace["run_force_directed_graph"](neighbor_output)
+    assert science.np.allclose(generated_graph.obsm["X_draw_graph_fr"], graph_result.obsm["X_draw_graph_fr"])
 
 
 def test_pca_schema_has_only_computational_bounds():
-    inputs = {item.id: item for item in OpenBioSingleCellPCA.GET_SCHEMA().inputs}
+    inputs = {item.id: item for item in PCANode.define_schema().inputs}
 
     assert inputs["n_comps"].min == 1
     assert inputs["n_comps"].max is None
@@ -147,7 +271,7 @@ def test_pca_sparse_preflight_does_not_densify_expression(science, monkeypatch):
         raise AssertionError("PCA preflight must not densify sparse expression")
 
     monkeypatch.setattr(science.sparse.csr_matrix, "toarray", reject_toarray)
-    output, _, code = OpenBioSingleCellPCA.execute(adata, n_comps=4, use_hvg=False).result
+    output, _, code = _run(pca, adata, n_comps=4, use_hvg=False)
     assert output.obsm["X_pca"].shape == (30, 4)
 
     namespace: dict[str, object] = {}
@@ -161,7 +285,7 @@ def test_pca_generated_code_recognizes_scale_to_layer_provenance(science):
     rng = science.np.random.default_rng(29)
     adata = science.ad.AnnData(rng.normal(size=(30, 8)))
     adata.layers["log1p_norm"] = adata.X.copy()
-    _, _, code = OpenBioSingleCellPCA.execute(adata, n_comps=4, use_hvg=False).result
+    _, _, code = _run(pca, adata, n_comps=4, use_hvg=False)
     scaled = adata.copy()
     metadata = ensure_metadata(scaled)
     metadata["analysis_history"] = {
@@ -172,7 +296,7 @@ def test_pca_generated_code_recognizes_scale_to_layer_provenance(science):
     }
     scaled.uns["openbio_singlecell"] = metadata
 
-    _, report, _ = OpenBioSingleCellPCA.execute(scaled, n_comps=4, use_hvg=False).result
+    _, report, _ = _run(pca, scaled, n_comps=4, use_hvg=False)
     assert not any("provenance is unknown" in item for item in report.summary["warnings"])
     assert report.summary["parameters"]["expression_state"] == "scaled"
     assert report.summary["parameters"]["expression_state_evidence"] == "OpenBio Scale history"
@@ -188,12 +312,13 @@ def test_pca_runtime_and_generated_code_disclose_snapshot_expression_x_counts(sc
     rng = science.np.random.default_rng(37)
     valid = science.ad.AnnData(rng.normal(size=(30, 8)))
     valid.uns["log1p"] = {"base": None}
-    _, _, code = OpenBioSingleCellPCA.execute(
+    _, _, code = _run(
+        pca,
         valid,
         n_comps=3,
         use_hvg=False,
         source={"source": "X"},
-    ).result
+    )
     namespace = {}
     exec(code, namespace)
 
@@ -208,12 +333,13 @@ def test_pca_runtime_and_generated_code_disclose_snapshot_expression_x_counts(sc
     counts.uns["openbio_singlecell"] = metadata
 
     assert namespace["_expression_state"](counts) == "counts"
-    output, report, _ = OpenBioSingleCellPCA.execute(
+    output, report, _ = _run(
+        pca,
         counts,
         n_comps=3,
         use_hvg=False,
         source={"source": "X"},
-    ).result
+    )
     assert output.obsm["X_pca"].shape == (30, 3)
     assert any("explicitly selected 'counts' expression" in warning for warning in report.summary["warnings"])
     with pytest.warns(UserWarning, match="explicitly selected 'counts' expression"):
@@ -239,19 +365,21 @@ def test_pca_output_budget_accounts_for_full_axis_loadings_with_hvg(science):
         return adata
 
     small = make_adata(8)
-    _, report, code = OpenBioSingleCellPCA.execute(
+    _, report, code = _run(
+        pca,
         small,
         n_comps=2,
         use_hvg=True,
         max_output_gib=1e-6,
-    ).result
+    )
     assert report.summary["key_results"]["estimated_dense_output_bytes"] == 30 * 2 * 4 + 8 * 2 * 8 + 2 * 16
     namespace = {}
     exec(code, namespace)
     large = make_adata(1000)
 
     runners = (
-        lambda value: OpenBioSingleCellPCA.execute(
+        lambda value: _run(
+            pca,
             value,
             n_comps=2,
             use_hvg=True,
@@ -265,13 +393,13 @@ def test_pca_output_budget_accounts_for_full_axis_loadings_with_hvg(science):
 
 
 def test_tsne_schema_uses_audited_scanpy_learning_rate():
-    inputs = {item.id: item for item in OpenBioSingleCellTSNE.GET_SCHEMA().inputs}
+    inputs = {item.id: item for item in TSNENode.define_schema().inputs}
     assert inputs["learning_rate"].default == 1000.0
 
 
 def test_umap_runs_and_warns_when_min_dist_exceeds_spread(science):
     adata = _neighbor_input(science)
-    output, report, code = OpenBioSingleCellUMAP.execute(adata, min_dist=1.1, spread=1.0).result
+    output, report, code = _run(umap, adata, min_dist=1.1, spread=1.0)
 
     assert output.obsm["X_umap"].shape == (adata.n_obs, 2)
     assert any("min_dist exceeds spread" in warning for warning in report.summary["warnings"])
@@ -284,12 +412,13 @@ def test_umap_runs_and_warns_when_min_dist_exceeds_spread(science):
 
 def test_neighbors_discloses_scanpy_effective_k_for_oversized_request(science):
     adata = _embedding_input(science)
-    output, report, code = OpenBioSingleCellNeighbors.execute(
+    output, report, code = _run(
+        neighbors,
         adata,
         use_rep="X_pca",
         n_neighbors=100,
         random_seed=3,
-    ).result
+    )
     summary = report.summary
     effective = output.uns["neighbors"]["params"]["n_neighbors"]
 
@@ -313,33 +442,35 @@ def test_embedding_and_graph_nodes_support_zero_variable_adata_with_obsm(science
     adata.obs_names = [f"cell_{index}" for index in range(24)]
     adata.obsm["X_latent"] = rng.normal(size=(24, 4))
 
-    neighbors, _, neighbors_code = OpenBioSingleCellNeighbors.execute(
+    neighbor_output, _, neighbors_code = _run(
+        neighbors,
         adata,
         use_rep="X_latent",
         n_neighbors=5,
         random_seed=2,
-    ).result
-    tsne, _, tsne_code = OpenBioSingleCellTSNE.execute(
+    )
+    tsne_output, _, tsne_code = _run(
+        tsne,
         adata,
         use_rep="X_latent",
         perplexity=5,
         random_seed=2,
-    ).result
-    umap, _, umap_code = OpenBioSingleCellUMAP.execute(neighbors, random_seed=2).result
-    force, _, force_code = OpenBioSingleCellForceDirectedGraph.execute(neighbors, random_seed=2).result
+    )
+    umap_output, _, umap_code = _run(umap, neighbor_output, random_seed=2)
+    force_output, _, force_code = _run(force_directed_graph, neighbor_output, random_seed=2)
 
-    assert neighbors.n_vars == tsne.n_vars == umap.n_vars == force.n_vars == 0
+    assert neighbor_output.n_vars == tsne_output.n_vars == umap_output.n_vars == force_output.n_vars == 0
     namespace = {}
     for code in (neighbors_code, tsne_code, umap_code, force_code):
         exec(code, namespace)
     generated_neighbors = namespace["compute_neighbors"](adata)
     generated_tsne = namespace["run_tsne"](adata)
-    generated_umap = namespace["run_umap"](neighbors)
-    generated_force = namespace["run_force_directed_graph"](neighbors)
+    generated_umap = namespace["run_umap"](neighbor_output)
+    generated_force = namespace["run_force_directed_graph"](neighbor_output)
     assert generated_neighbors.n_vars == generated_tsne.n_vars == generated_umap.n_vars == generated_force.n_vars == 0
-    assert science.np.allclose(generated_tsne.obsm["X_tsne"], tsne.obsm["X_tsne"])
-    assert science.np.allclose(generated_umap.obsm["X_umap"], umap.obsm["X_umap"])
-    assert science.np.allclose(generated_force.obsm["X_draw_graph_fr"], force.obsm["X_draw_graph_fr"])
+    assert science.np.allclose(generated_tsne.obsm["X_tsne"], tsne_output.obsm["X_tsne"])
+    assert science.np.allclose(generated_umap.obsm["X_umap"], umap_output.obsm["X_umap"])
+    assert science.np.allclose(generated_force.obsm["X_draw_graph_fr"], force_output.obsm["X_draw_graph_fr"])
 
 
 def test_umap_accepts_directed_self_loop_graph_but_force_rejects_it(science):
@@ -350,7 +481,7 @@ def test_umap_accepts_directed_self_loop_graph_but_force_rejects_it(science):
     graph[1, 0] = 0.75
     adata.obsp["connectivities"] = graph.tocsr()
 
-    output, report, code = OpenBioSingleCellUMAP.execute(adata, random_seed=4).result
+    output, report, code = _run(umap, adata, random_seed=4)
     diagnostics = report.summary["key_results"]["graph"]["connectivities"]
     assert output.obsm["X_umap"].shape == (adata.n_obs, 2)
     assert diagnostics["symmetric"] is False
@@ -362,12 +493,12 @@ def test_umap_accepts_directed_self_loop_graph_but_force_rejects_it(science):
     assert namespace["run_umap"](adata).obsm["X_umap"].shape == (adata.n_obs, 2)
 
     with pytest.raises(ValueError, match="zero diagonal|symmetric|undirected"):
-        OpenBioSingleCellForceDirectedGraph.execute(adata)
+        _run(force_directed_graph, adata)
 
 
 def test_tsne_subunit_perplexity_runs_with_warning(science):
     adata = _embedding_input(science)
-    output, report, code = OpenBioSingleCellTSNE.execute(adata, perplexity=0.5, random_seed=7).result
+    output, report, code = _run(tsne, adata, perplexity=0.5, random_seed=7)
     assert output.obsm["X_tsne"].shape == (adata.n_obs, 2)
     assert any("below 1" in warning for warning in report.summary["warnings"])
     namespace = {}
@@ -397,13 +528,14 @@ def test_neighbors_metric_degeneracy_is_rejected_before_backend(
     valid = science.ad.AnnData(science.np.zeros((24, 1)))
     representation = rng.normal(size=(24, 4))
     valid.obsm["X_latent"] = representation
-    _, _, code = OpenBioSingleCellNeighbors.execute(
+    _, _, code = _run(
+        neighbors,
         valid,
         use_rep="X_latent",
         n_dimensions=4,
         n_neighbors=5,
         metric=metric,
-    ).result
+    )
     namespace = {}
     exec(code, namespace)
     invalid = valid.copy()
@@ -420,7 +552,8 @@ def test_neighbors_metric_degeneracy_is_rejected_before_backend(
 
     monkeypatch.setattr(science.sc.pp, "neighbors", backend)
     runners = (
-        lambda value: OpenBioSingleCellNeighbors.execute(
+        lambda value: _run(
+            neighbors,
             value,
             use_rep="X_latent",
             n_dimensions=4,
@@ -445,7 +578,7 @@ def test_umap_discloses_and_executes_fixed_hidden_optimizer_policy(science, monk
         target.uns["umap"] = {"params": {"a": 1.0, "b": 1.0, "random_state": kwargs["random_state"]}}
 
     monkeypatch.setattr(science.sc.tl, "umap", backend)
-    _, report, _ = OpenBioSingleCellUMAP.execute(adata).result
+    _, report, _ = _run(umap, adata)
 
     assert captured["maxiter"] is None
     assert captured["alpha"] == 1.0
@@ -460,7 +593,7 @@ def test_umap_discloses_and_executes_fixed_hidden_optimizer_policy(science, monk
 @pytest.mark.parametrize("kind", ["shape", "nonnumeric", "nonfinite"])
 def test_umap_runtime_and_generated_code_reject_malformed_backend(science, monkeypatch, kind):
     adata = _neighbor_input(science)
-    _, _, code = OpenBioSingleCellUMAP.execute(adata).result
+    _, _, code = _run(umap, adata)
     namespace = {}
     exec(code, namespace)
 
@@ -472,7 +605,7 @@ def test_umap_runtime_and_generated_code_reject_malformed_backend(science, monke
         target.uns[parameter_key] = {"params": {}}
 
     monkeypatch.setattr(science.sc.tl, "umap", backend)
-    for runner in (OpenBioSingleCellUMAP.execute, namespace["run_umap"]):
+    for runner in (lambda value: _run(umap, value), namespace["run_umap"]):
         with pytest.raises((TypeError, RuntimeError), match="coordinate"):
             runner(adata)
 
@@ -480,7 +613,7 @@ def test_umap_runtime_and_generated_code_reject_malformed_backend(science, monke
 @pytest.mark.parametrize("kind", ["shape", "nonnumeric", "nonfinite"])
 def test_tsne_runtime_and_generated_code_reject_malformed_backend(science, monkeypatch, kind):
     adata = _embedding_input(science)
-    _, _, code = OpenBioSingleCellTSNE.execute(adata, perplexity=5.0).result
+    _, _, code = _run(tsne, adata, perplexity=5.0)
     namespace = {}
     exec(code, namespace)
 
@@ -491,7 +624,7 @@ def test_tsne_runtime_and_generated_code_reject_malformed_backend(science, monke
 
     monkeypatch.setattr(science.sc.tl, "tsne", backend)
     runners = (
-        lambda value: OpenBioSingleCellTSNE.execute(value, perplexity=5.0),
+        lambda value: _run(tsne, value, perplexity=5.0),
         namespace["run_tsne"],
     )
     for runner in runners:
@@ -521,7 +654,7 @@ def test_pca_runtime_and_generated_code_reject_malformed_backend(science, monkey
         }
     }
     adata.uns["openbio_singlecell"] = metadata
-    _, _, code = OpenBioSingleCellPCA.execute(adata, n_comps=2, use_hvg=True).result
+    _, _, code = _run(pca, adata, n_comps=2, use_hvg=True)
     namespace = {}
     exec(code, namespace)
 
@@ -548,7 +681,7 @@ def test_pca_runtime_and_generated_code_reject_malformed_backend(science, monkey
 
     monkeypatch.setattr(science.sc.pp, "pca", backend)
     runners = (
-        lambda value: OpenBioSingleCellPCA.execute(value, n_comps=2, use_hvg=True),
+        lambda value: _run(pca, value, n_comps=2, use_hvg=True),
         namespace["run_pca"],
     )
     for runner in runners:
@@ -560,14 +693,14 @@ def test_pca_requires_unique_variable_names_in_runtime_and_generated_code(scienc
     valid = _embedding_input(science, n_obs=30, n_vars=8)
     del valid.obsm["X_pca"]
     valid.layers["log1p_norm"] = valid.X.copy()
-    _, _, code = OpenBioSingleCellPCA.execute(valid, n_comps=3, use_hvg=False).result
+    _, _, code = _run(pca, valid, n_comps=3, use_hvg=False)
     namespace = {}
     exec(code, namespace)
     duplicate = valid.copy()
     duplicate.var_names = ["duplicate", "duplicate", *[f"gene_{index}" for index in range(2, 8)]]
 
     runners = (
-        lambda value: OpenBioSingleCellPCA.execute(value, n_comps=3, use_hvg=False),
+        lambda value: _run(pca, value, n_comps=3, use_hvg=False),
         namespace["run_pca"],
     )
     for runner in runners:
@@ -583,7 +716,7 @@ def test_pca_reports_partial_constant_variables(science):
     adata.var_names = [f"gene_{index}" for index in range(8)]
     adata.layers["log1p_norm"] = matrix.copy()
 
-    _, report, _ = OpenBioSingleCellPCA.execute(adata, n_comps=3, use_hvg=False).result
+    _, report, _ = _run(pca, adata, n_comps=3, use_hvg=False)
     results = report.summary["key_results"]
     assert results["constant_selected_variables"] == 1
     assert results["constant_selected_variable_examples"] == ["gene_3"]
@@ -593,7 +726,7 @@ def test_pca_reports_partial_constant_variables(science):
 @pytest.mark.parametrize("kind", ["shape", "nonnumeric", "nonfinite"])
 def test_force_graph_runtime_and_generated_code_reject_malformed_backend(science, monkeypatch, kind):
     adata = _neighbor_input(science)
-    _, _, code = OpenBioSingleCellForceDirectedGraph.execute(adata, layout="fr").result
+    _, _, code = _run(force_directed_graph, adata, layout="fr")
     namespace = {}
     exec(code, namespace)
 
@@ -604,7 +737,7 @@ def test_force_graph_runtime_and_generated_code_reject_malformed_backend(science
 
     monkeypatch.setattr(science.sc.tl, "draw_graph", backend)
     runners = (
-        lambda value: OpenBioSingleCellForceDirectedGraph.execute(value, layout="fr"),
+        lambda value: _run(force_directed_graph, value, layout="fr"),
         namespace["run_force_directed_graph"],
     )
     for runner in runners:
@@ -615,19 +748,21 @@ def test_force_graph_runtime_and_generated_code_reject_malformed_backend(science
 def test_force_graph_generated_code_validates_existing_initialization(science):
     adata = _neighbor_input(science)
     adata.obsm["initial"] = science.np.zeros((adata.n_obs, 2), dtype=float)
-    _, _, code = OpenBioSingleCellForceDirectedGraph.execute(
+    _, _, code = _run(
+        force_directed_graph,
         adata,
         layout="fr",
         init_mode="existing",
         init_key="initial",
-    ).result
+    )
     namespace = {}
     exec(code, namespace)
     invalid = adata.copy()
     invalid.obsm["initial"] = science.np.full((adata.n_obs, 2), science.np.nan)
 
     runners = (
-        lambda value: OpenBioSingleCellForceDirectedGraph.execute(
+        lambda value: _run(
+            force_directed_graph,
             value,
             layout="fr",
             init_mode="existing",
@@ -651,18 +786,20 @@ def test_force_graph_generated_code_reproduces_paga_initialization_validation(sc
         "pos": science.np.asarray([[0.0, 0.0], [1.0, 1.0]]),
         "connectivities": science.sparse.csr_matrix([[0.0, 1.0], [1.0, 0.0]]),
     }
-    _, _, code = OpenBioSingleCellForceDirectedGraph.execute(
+    _, _, code = _run(
+        force_directed_graph,
         adata,
         layout="fr",
         init_mode="paga",
-    ).result
+    )
     namespace = {}
     exec(code, namespace)
     invalid = adata.copy()
     invalid.uns["paga"]["pos"] = science.np.asarray([["bad", "0"], ["1", "1"]], dtype=object)
 
     runners = (
-        lambda value: OpenBioSingleCellForceDirectedGraph.execute(
+        lambda value: _run(
+            force_directed_graph,
             value,
             layout="fr",
             init_mode="paga",
@@ -676,11 +813,11 @@ def test_force_graph_generated_code_reproduces_paga_initialization_validation(sc
 
 def test_force_graph_runtime_and_generated_code_restore_global_rng(science):
     adata = _neighbor_input(science)
-    _, _, code = OpenBioSingleCellForceDirectedGraph.execute(adata, layout="fr").result
+    _, _, code = _run(force_directed_graph, adata, layout="fr")
     namespace = {}
     exec(code, namespace)
     runners = (
-        lambda: OpenBioSingleCellForceDirectedGraph.execute(adata, layout="fr"),
+        lambda: _run(force_directed_graph, adata, layout="fr"),
         lambda: namespace["run_force_directed_graph"](adata),
     )
     for runner in runners:
@@ -694,7 +831,7 @@ def test_force_graph_runtime_and_generated_code_restore_global_rng(science):
 
 
 def test_force_graph_layout_interface_and_kamada_kawai_reference(science):
-    inputs = {item.id: item for item in OpenBioSingleCellForceDirectedGraph.GET_SCHEMA().inputs}
+    inputs = {item.id: item for item in ForceDirectedGraphNode.define_schema().inputs}
     assert set(inputs["layout"].options) == {"fr", "kk", "fa"}
-    _, report, _ = OpenBioSingleCellForceDirectedGraph.execute(_neighbor_input(science), layout="kk").result
+    _, report, _ = _run(force_directed_graph, _neighbor_input(science), layout="kk")
     assert any(reference["doi"] == "10.1016/0020-0190(89)90102-6" for reference in report.summary["references"])

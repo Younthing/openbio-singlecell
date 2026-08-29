@@ -259,7 +259,8 @@ def binarize_scenic_activity(
     openbio_version: str = PLUGIN_VERSION,
     _portable_artifact: bool = False,
     _threshold_backend: Any | None = None,
-) -> tuple[SCENICBinaryArtifact, DataFrame, dict[str, Any]]:
+    _worker_owned: bool = False,
+) -> tuple[SCENICBinaryArtifact | None, DataFrame, dict[str, Any]]:
     import numpy as np
     import pandas as pd
     import scipy
@@ -304,6 +305,7 @@ def binarize_scenic_activity(
         exact_type=not _portable_artifact,
         numpy=np,
         pandas=pd,
+        copy_result=not _portable_artifact,
     )
     cells, regulon_count = activity.shape
     if (cells, regulon_count) != (declared_cells, declared_regulons):
@@ -314,8 +316,8 @@ def binarize_scenic_activity(
     backend = _derive_threshold_exact if _threshold_backend is None else _threshold_backend
     if not callable(backend):
         raise TypeError("SCENIC threshold backend must be callable.")
-    private_activity = activity.copy(deep=True)
-    activity_before = private_activity.copy(deep=True)
+    private_activity = activity if _worker_owned else activity.copy(deep=True)
+    activity_before = None if _worker_owned else private_activity.copy(deep=True)
     global_state = np.random.get_state()
     thresholds: dict[str, float] = {}
     low_information: list[str] = []
@@ -348,10 +350,11 @@ def binarize_scenic_activity(
             if not math.isfinite(threshold):
                 raise RuntimeError(f"SCENIC threshold backend returned a non-finite value for {regulon!r}.")
             thresholds[regulon] = threshold
-        try:
-            pd.testing.assert_frame_equal(private_activity, activity_before, check_exact=True)
-        except AssertionError as exc:
-            raise RuntimeError("SCENIC threshold backend modified its private activity input.") from exc
+        if activity_before is not None:
+            try:
+                pd.testing.assert_frame_equal(private_activity, activity_before, check_exact=True)
+            except AssertionError as exc:
+                raise RuntimeError("SCENIC threshold backend modified its private activity input.") from exc
     finally:
         np.random.set_state(global_state)
     if list(thresholds) != regulons:
@@ -390,7 +393,17 @@ def binarize_scenic_activity(
             _canonical_json(threshold_rows).encode("utf-8")
         ).hexdigest(),
     }
-    binary_artifact = SCENICBinaryArtifact(binary, provenance)
+    if _worker_owned:
+        binary_artifact = None
+        binary_fingerprint = _binary_fingerprint(
+            tuple(binary.index.tolist()),
+            tuple(binary.columns.tolist()),
+            binary,
+            provenance,
+        )
+    else:
+        binary_artifact = SCENICBinaryArtifact(binary, provenance)
+        binary_fingerprint = binary_artifact.artifact_fingerprint_sha256
     warnings = [
         "Binarization is a data-dependent descriptive heuristic; thresholds are not p-values.",
         "A cell is active only when AUC is strictly greater than the threshold; equality is off.",
@@ -451,7 +464,7 @@ def binarize_scenic_activity(
             "source_scenic_artifact_fingerprint_sha256": source_metadata[
                 "artifact_fingerprint_sha256"
             ],
-            "binary_artifact_fingerprint_sha256": binary_artifact.artifact_fingerprint_sha256,
+            "binary_artifact_fingerprint_sha256": binary_fingerprint,
             "external_scenic_provenance": source_provenance,
         },
         "parameters": parameters,

@@ -434,7 +434,7 @@ def _standalone_run_generic_ora(
     ordered_selected = [gene for gene in universe_genes if gene in selected_set]
     backend = query_set(
         features=ordered_selected,
-        net=resource["network"].copy(),
+        net=resource["network"],
         alternative="greater",
         n_bg=len(universe_genes),
         ha_corr=0.5,

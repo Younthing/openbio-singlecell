@@ -1125,7 +1125,8 @@ def import_pyscenic_bundle(
     max_regulon_edges: int = 2_000_000,
     max_dense_bytes: int = 1_073_741_824,
     openbio_version: str = PLUGIN_VERSION,
-) -> tuple[AnnData, SCENICResultArtifact, dict[str, Any]]:
+    _portable_artifact: bool = False,
+) -> tuple[AnnData, Any, dict[str, Any]]:
     import numpy as np
     import pandas as pd
     from scipy import sparse
@@ -1138,7 +1139,7 @@ def import_pyscenic_bundle(
     _positive_int(max_dense_bytes, description="pySCENIC max_dense_bytes")
     if adata.n_obs < 1 or adata.n_vars < 1:
         raise ValueError("pySCENIC import requires a non-empty AnnData object.")
-    output = adata.copy()
+    output = adata
     if SCENIC_ACTIVITY_KEY in output.obsm and not overwrite:
         raise ValueError(
             f"AnnData obsm[{SCENIC_ACTIVITY_KEY!r}] already exists; enable overwrite only after reviewing provenance."
@@ -1254,8 +1255,17 @@ def import_pyscenic_bundle(
         "resources": copy.deepcopy(manifest["resources"]),
         "bundle_accounting": copy.deepcopy(accounting),
     }
-    artifact = SCENICResultArtifact(activity, membership, provenance)
-    output.obsm[SCENIC_ACTIVITY_KEY] = activity.copy(deep=True)
+    artifact = (
+        SCENICResultArtifact._portable_from_owned(activity, membership, provenance)
+        if _portable_artifact
+        else SCENICResultArtifact(activity, membership, provenance)
+    )
+    artifact_fingerprint = (
+        artifact["artifact_fingerprint_sha256"]
+        if isinstance(artifact, dict)
+        else artifact.artifact_fingerprint_sha256
+    )
+    output.obsm[SCENIC_ACTIVITY_KEY] = activity
     activity_values = activity.to_numpy(dtype=float, copy=False)
     leading_regulons = []
     for regulon in activity.columns[:10]:
@@ -1348,7 +1358,7 @@ def import_pyscenic_bundle(
             "activity_min": float(activity_values.min()),
             "activity_max": float(activity_values.max()),
             "leading_regulons": leading_regulons,
-            "artifact_fingerprint_sha256": artifact.artifact_fingerprint_sha256,
+            "artifact_fingerprint_sha256": artifact_fingerprint,
             "manifest_sha256": manifest_hash,
             "bundle_accounting": copy.deepcopy(accounting),
             "validation_accounting": copy.deepcopy(validation_accounting),

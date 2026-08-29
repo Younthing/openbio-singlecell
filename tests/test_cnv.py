@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import math
+import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import openbio_singlecell.cnv_analysis as cnv_analysis_module
+from openbio_singlecell.artifact_codecs import read_anndata, read_table, write_anndata
 from openbio_singlecell.cnv_analysis import (
     CNV_STATE_TYPE,
     CNVState,
@@ -23,6 +26,13 @@ from openbio_singlecell.nodes_cnv import (
     OpenBioSingleCellCNVScore,
     OpenBioSingleCellInferCNV,
 )
+from openbio_singlecell.operations_cnv import cnv_pca, cnv_score, infer_cnv
+from openbio_singlecell.staged_state_codec import (
+    CNV_STATE_CODEC,
+    read_cnv_state,
+    write_cnv_state,
+)
+from openbio_singlecell.worker_protocol import OperationContext
 
 
 def _cnv_adata(science, *, sparse=False):
@@ -206,8 +216,122 @@ def _infer_parameters():
     }
 
 
+def _infer_operation_parameters():
+    parameters = _infer_parameters()
+    parameters.pop("source_kind")
+    parameters.pop("layer_name")
+    return {"source": {"source": "layer", "layer_name": "log1p_norm"}, **parameters}
+
+
+def test_cnv_state_codec_roundtrip_is_h5ad_plus_strict_json(
+    science, monkeypatch, tmp_path: Path
+):
+    _install_fake_backend(monkeypatch, science)
+    state, _summary = analyze_infer_cnv(_cnv_adata(science), **_infer_parameters())
+    root = tmp_path / "cnv-state"
+    root.mkdir()
+
+    descriptors = write_cnv_state(root, state)
+
+    assert CNV_STATE_CODEC == "cnv-state-h5ad-json-v1"
+    assert {path.name for path in root.iterdir()} == {"data.h5ad", "state.json"}
+    assert {item["path"] for item in descriptors} == {"data.h5ad", "state.json"}
+    json.loads((root / "state.json").read_text(encoding="utf-8"))
+    restored = read_cnv_state(root)
+    assert restored.fingerprint == state.fingerprint
+    assert restored.metadata == state.metadata
+    assert restored.to_adata().shape == state.to_adata().shape
+
+
+def _operation_context(root: Path) -> OperationContext:
+    root.mkdir()
+    return OperationContext.from_request_path(root / "request.json", str(uuid.uuid4()))
+
+
+def _artifact_descriptor(root: Path, *, kind: str, codec: str) -> dict[str, object]:
+    return {"type": "artifact", "path": str(root.resolve()), "kind": kind, "codec": codec}
+
+
+def _file_snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def test_cnv_worker_operations_use_new_artifacts_and_never_rewrite_inputs(
+    science, monkeypatch, tmp_path: Path
+):
+    _install_fake_backend(monkeypatch, science)
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    write_anndata(source_root, _cnv_adata(science))
+    source_before = _file_snapshot(source_root)
+
+    infer_context = _operation_context(tmp_path / "infer")
+    infer_records = infer_cnv(
+        infer_context,
+        {
+            "adata": _artifact_descriptor(
+                source_root, kind="OPENBIO_ANNDATA", codec="anndata-h5ad-v1"
+            )
+        },
+        _infer_operation_parameters(),
+    )
+    assert [record["name"] for record in infer_records] == ["cnv_state", "summary", "code"]
+    assert infer_records[0]["codec"] == CNV_STATE_CODEC
+    assert _file_snapshot(source_root) == source_before
+    state_root = infer_context.output_root / infer_records[0]["payload"]
+    read_cnv_state(state_root)
+
+    state_before = _file_snapshot(state_root)
+    pca_context = _operation_context(tmp_path / "pca")
+    pca_records = cnv_pca(
+        pca_context,
+        {
+            "cnv_state": _artifact_descriptor(
+                state_root, kind="OPENBIO_CNV_STATE", codec=CNV_STATE_CODEC
+            )
+        },
+        {
+            "n_comps": 2,
+            "output_key": "X_cnv_pca",
+            "overwrite_existing": False,
+            "max_output_gib": 1.0,
+            "random_seed": 7,
+        },
+    )
+    assert [record["name"] for record in pca_records] == ["adata", "summary", "code"]
+    assert _file_snapshot(state_root) == state_before
+    pca_root = pca_context.output_root / pca_records[0]["payload"]
+    assert read_anndata(pca_root).obsm["X_cnv_pca"].shape == (48, 2)
+
+    pca_before = _file_snapshot(pca_root)
+    score_context = _operation_context(tmp_path / "score")
+    score_records = cnv_score(
+        score_context,
+        {
+            "cnv_state": _artifact_descriptor(
+                state_root, kind="OPENBIO_CNV_STATE", codec=CNV_STATE_CODEC
+            ),
+            "adata": _artifact_descriptor(
+                pca_root, kind="OPENBIO_ANNDATA", codec="anndata-h5ad-v1"
+            ),
+        },
+        {"groupby": "partition", "output_key": "cnv_score", "overwrite_existing": False},
+    )
+    assert [record["name"] for record in score_records] == ["adata", "table", "summary", "code"]
+    assert _file_snapshot(state_root) == state_before
+    assert _file_snapshot(pca_root) == pca_before
+    scored = read_anndata(score_context.output_root / score_records[0]["payload"])
+    table, _metadata = read_table(score_context.output_root / score_records[1]["payload"])
+    assert "cnv_score" in scored.obs
+    assert table["cell_count"].tolist() == [24, 24]
+
+
 def test_cnv_schemas_are_atomic_and_typed():
-    infer_schema = OpenBioSingleCellInferCNV.GET_SCHEMA()
+    infer_schema = OpenBioSingleCellInferCNV.define_schema()
     assert [item.id for item in infer_schema.inputs][:7] == [
         "adata",
         "source",
@@ -222,12 +346,12 @@ def test_cnv_schemas_are_atomic_and_typed():
         ("summary", SummaryResultType.io_type),
         ("code", "STRING"),
     ]
-    assert [(item.display_name, item.io_type) for item in OpenBioSingleCellCNVPCA.GET_SCHEMA().outputs] == [
+    assert [(item.display_name, item.io_type) for item in OpenBioSingleCellCNVPCA.define_schema().outputs] == [
         ("adata", AnnDataType.io_type),
         ("summary", SummaryResultType.io_type),
         ("code", "STRING"),
     ]
-    score_schema = OpenBioSingleCellCNVScore.GET_SCHEMA()
+    score_schema = OpenBioSingleCellCNVScore.define_schema()
     assert [item.id for item in score_schema.inputs] == [
         "cnv_state",
         "adata",
@@ -241,6 +365,20 @@ def test_cnv_schemas_are_atomic_and_typed():
         ("summary", SummaryResultType.io_type),
         ("code", "STRING"),
     ]
+
+
+def test_cnv_nodes_are_schema_only_and_operation_module_is_worker_pure():
+    node_classes = (
+        OpenBioSingleCellInferCNV,
+        OpenBioSingleCellCNVPCA,
+        OpenBioSingleCellCNVScore,
+    )
+    assert all("execute" not in node.__dict__ for node in node_classes)
+    source = Path(__file__).parents[1] / "openbio_singlecell" / "operations_cnv.py"
+    text = source.read_text(encoding="utf-8")
+    assert "comfy_api" not in text
+    assert "folder_paths" not in text
+    assert "nodes_cnv" not in text
 
 
 @pytest.mark.parametrize("sparse", [False, True])

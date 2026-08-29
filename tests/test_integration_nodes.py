@@ -13,17 +13,71 @@ from pathlib import Path
 import pytest
 import torch
 
+from openbio_singlecell.artifact_codecs import ANNDATA_PAYLOAD, read_anndata, write_anndata
 from openbio_singlecell.contracts import ensure_metadata
 from openbio_singlecell.node_types import AnnDataType, SCVIModelType, SummaryResultType
 from openbio_singlecell.nodes_integration import (
-    OpenBioSingleCellHarmonyIntegration,
-    OpenBioSingleCellSCVIIntegration,
-    _scvi_code,
+    OpenBioSingleCellHarmonyIntegration as HarmonyIntegrationNode,
 )
+from openbio_singlecell.nodes_integration import (
+    OpenBioSingleCellSCVIIntegration as SCVIIntegrationNode,
+)
+from openbio_singlecell.operations_input import ANNDATA_CODEC, ANNDATA_KIND
+from openbio_singlecell.operations_integration import (
+    _scvi_code,
+    harmony_integration,
+    scvi_integration,
+)
+from openbio_singlecell.worker_protocol import OperationContext
+from tests.artifact_operation_harness import run_anndata_operation
+
+
+def _run_harmony(adata, **overrides):
+    parameters = {
+        "technical_batch_keys": "batch",
+        "basis": "X_pca",
+        "theta": {"theta": "automatic"},
+        "ridge_penalty": -1.0,
+        "sigma": 0.1,
+        "n_clusters": 0,
+        "tau": 0.0,
+        "adjusted_basis": "X_pca_harmony",
+        "overwrite_existing": False,
+        "max_iter_harmony": 10,
+        "max_iter_kmeans": 4,
+        "random_seed": 0,
+    }
+    parameters.update(overrides)
+    return run_anndata_operation(harmony_integration, adata, parameters).result
+
+
+def _run_scvi(adata, **overrides):
+    parameters = {
+        "source": {"source": "layer", "counts_layer": "counts"},
+        "technical_batch_key": "batch",
+        "categorical_covariates": "",
+        "continuous_covariates": "",
+        "n_latent": 10,
+        "gene_likelihood": "zinb",
+        "n_layers": 1,
+        "dispersion": "gene",
+        "dropout_rate": 0.1,
+        "epochs": {"epochs": "automatic"},
+        "early_stopping": False,
+        "train_size": 0.9,
+        "batch_size": 128,
+        "size_factor_key": "",
+        "accelerator": "auto",
+        "output_key": "X_scVI",
+        "overwrite_existing": False,
+        "random_seed": 0,
+    }
+    parameters.update(overrides)
+    return run_anndata_operation(scvi_integration, adata, parameters, artifact_output="model").result
 
 
 def output_values(node_output):
-    return node_output.result
+    return node_output
 
 
 @pytest.fixture(autouse=True)
@@ -118,7 +172,7 @@ def _fake_harmonypy(science):
 
 
 def test_harmony_schema_and_fake_backend_contract(integration_adata, science, monkeypatch):
-    schema = OpenBioSingleCellHarmonyIntegration.GET_SCHEMA()
+    schema = HarmonyIntegrationNode.define_schema()
     inputs = {item.id: item for item in schema.inputs}
     assert [(item.display_name, item.io_type) for item in schema.outputs] == [
         ("adata", AnnDataType.io_type),
@@ -142,7 +196,7 @@ def test_harmony_schema_and_fake_backend_contract(integration_adata, science, mo
     monkeypatch.setitem(sys.modules, "harmonypy", fake)
     original_basis = integration_adata.obsm["X_pca"].copy()
     output, report, code = output_values(
-        OpenBioSingleCellHarmonyIntegration.execute(
+        _run_harmony(
             integration_adata,
             technical_batch_keys="batch, protocol",
             n_clusters=3,
@@ -184,7 +238,7 @@ def test_harmony_schema_and_fake_backend_contract(integration_adata, science, mo
 
     namespace = {}
     exec(code, namespace)
-    reproduced = namespace["run_harmony_integration"](integration_adata)
+    reproduced = namespace["run_harmony_integration"](integration_adata.copy())
     science.np.testing.assert_allclose(reproduced.obsm["X_pca_harmony"], output.obsm["X_pca_harmony"])
     science.np.testing.assert_array_equal(reproduced.obsm["X_pca"], original_basis)
     metadata_collision = integration_adata.copy()
@@ -198,7 +252,7 @@ def test_harmony_custom_theta_is_explicit_in_runtime_summary_and_code(integratio
     monkeypatch.setitem(sys.modules, "harmonypy", fake)
 
     output, report, code = output_values(
-        OpenBioSingleCellHarmonyIntegration.execute(
+        _run_harmony(
             integration_adata,
             theta={"theta": "custom", "theta_value": 3.5},
             n_clusters=3,
@@ -211,7 +265,7 @@ def test_harmony_custom_theta_is_explicit_in_runtime_summary_and_code(integratio
     assert report.summary["parameters"]["theta"] == 3.5
     namespace = {}
     exec(code, namespace)
-    reproduced = namespace["run_harmony_integration"](integration_adata)
+    reproduced = namespace["run_harmony_integration"](integration_adata.copy())
     assert fake.calls[-1]["theta_provided"] is True
     assert fake.calls[-1]["theta"] == 3.5
     science.np.testing.assert_allclose(reproduced.obsm["X_pca_harmony"], output.obsm["X_pca_harmony"])
@@ -246,11 +300,11 @@ def test_harmony_square_backend_result_preserves_reviewed_200_orientation(scienc
     fake.run_harmony = run_harmony
     monkeypatch.setitem(sys.modules, "harmonypy", fake)
 
-    runtime, report, code = output_values(OpenBioSingleCellHarmonyIntegration.execute(adata, n_clusters=2))
+    runtime, report, code = output_values(_run_harmony(adata, n_clusters=2))
     namespace: dict[str, object] = {}
     exec(code, namespace)
     with pytest.warns(UserWarning, match="Small Harmony Technical-batch levels"):
-        generated = namespace["run_harmony_integration"](adata)
+        generated = namespace["run_harmony_integration"](adata.copy())
 
     expected = raw_z_corr
     science.np.testing.assert_array_equal(runtime.obsm["X_pca_harmony"], expected)
@@ -267,7 +321,7 @@ def test_harmony_runtime_and_generated_code_reject_legacy_transposed_backend_sha
 ):
     fake = _fake_harmonypy(science)
     monkeypatch.setitem(sys.modules, "harmonypy", fake)
-    _, _, code = output_values(OpenBioSingleCellHarmonyIntegration.execute(integration_adata, n_clusters=3))
+    _, _, code = output_values(_run_harmony(integration_adata, n_clusters=3))
     namespace: dict[str, object] = {}
     exec(code, namespace)
 
@@ -280,7 +334,7 @@ def test_harmony_runtime_and_generated_code_reject_legacy_transposed_backend_sha
 
     fake.run_harmony = wrong_orientation
     runners = (
-        lambda value: OpenBioSingleCellHarmonyIntegration.execute(value, n_clusters=3),
+        lambda value: _run_harmony(value, n_clusters=3),
         namespace["run_harmony_integration"],
     )
     for runner in runners:
@@ -297,18 +351,18 @@ def test_harmony_accepts_capability_checked_2_0_patch_and_rejects_identity_drift
 
     fake.__version__ = "2.0.1"
     monkeypatch.setattr(importlib.metadata, "version", lambda name: "2.0.1" if name == "harmonypy" else "test")
-    _, report, _ = output_values(OpenBioSingleCellHarmonyIntegration.execute(integration_adata, n_clusters=3))
+    _, report, _ = output_values(_run_harmony(integration_adata, n_clusters=3))
     assert report.summary["parameters"]["harmonypy_version"] == "2.0.1"
 
     fake.__version__ = "0.2.0"
     monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.2.0" if name == "harmonypy" else "test")
     with pytest.raises(RuntimeError, match=r"harmonypy 2\.0\.x"):
-        OpenBioSingleCellHarmonyIntegration.execute(integration_adata, n_clusters=3)
+        _run_harmony(integration_adata, n_clusters=3)
 
     fake.__version__ = "2.0.0"
     monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.2.0" if name == "harmonypy" else "test")
     with pytest.raises(RuntimeError, match="distribution reports '0.2.0'"):
-        OpenBioSingleCellHarmonyIntegration.execute(integration_adata, n_clusters=3)
+        _run_harmony(integration_adata, n_clusters=3)
 
 
 @pytest.mark.parametrize(
@@ -327,7 +381,7 @@ def test_harmony_accepts_capability_checked_2_0_patch_and_rejects_identity_drift
 def test_harmony_rejects_invalid_state_before_backend(integration_adata, science, mutator, match):
     mutator(integration_adata, science.np)
     with pytest.raises(ValueError, match=match):
-        OpenBioSingleCellHarmonyIntegration.execute(integration_adata, n_clusters=3)
+        _run_harmony(integration_adata, n_clusters=3)
 
 
 @pytest.mark.parametrize(
@@ -344,16 +398,14 @@ def test_harmony_advisory_small_strata_run_and_disclose(
     monkeypatch.setitem(sys.modules, "harmonypy", fake)
     integration_adata.obs = integration_adata.obs.assign(batch=labels)
 
-    output, report, code = output_values(
-        OpenBioSingleCellHarmonyIntegration.execute(integration_adata, n_clusters=3)
-    )
+    output, report, code = output_values(_run_harmony(integration_adata, n_clusters=3))
     assert output.obsm["X_pca_harmony"].shape == integration_adata.obsm["X_pca"].shape
     assert any(summary_text in warning for warning in report.summary["warnings"])
 
     namespace = {}
     exec(code, namespace)
     with pytest.warns(UserWarning) as caught:
-        reproduced = namespace["run_harmony_integration"](integration_adata)
+        reproduced = namespace["run_harmony_integration"](integration_adata.copy())
     assert any(generated_text in str(item.message) for item in caught)
     science.np.testing.assert_allclose(reproduced.obsm["X_pca_harmony"], output.obsm["X_pca_harmony"])
 
@@ -366,9 +418,7 @@ def test_harmony_one_component_and_zero_variance_are_advisory_with_generated_par
     integration_adata.obsm["X_pca"] = science.np.ones((integration_adata.n_obs, 1), dtype=float)
     original = integration_adata.obsm["X_pca"].copy()
 
-    output, report, code = output_values(
-        OpenBioSingleCellHarmonyIntegration.execute(integration_adata, n_clusters=1)
-    )
+    output, report, code = output_values(_run_harmony(integration_adata, n_clusters=1))
 
     assert output.obsm["X_pca_harmony"].shape == (integration_adata.n_obs, 1)
     assert report.summary["key_results"]["constant_input_components"] == 1
@@ -381,7 +431,7 @@ def test_harmony_one_component_and_zero_variance_are_advisory_with_generated_par
     namespace = {}
     exec(code, namespace)
     with pytest.warns(UserWarning) as caught:
-        generated = namespace["run_harmony_integration"](integration_adata)
+        generated = namespace["run_harmony_integration"](integration_adata.copy())
     messages = [str(item.message) for item in caught]
     assert any("one-dimensional basis" in message for message in messages)
     assert any("zero-variance component" in message for message in messages)
@@ -399,35 +449,33 @@ def test_harmony_ignores_irrelevant_variable_axis(integration_adata, science, mo
         value = integration_adata.copy()
         value.var_names = ["duplicate", "duplicate", *[f"gene_{index}" for index in range(2, value.n_vars)]]
 
-    output, report, code = output_values(OpenBioSingleCellHarmonyIntegration.execute(value, n_clusters=1))
+    output, report, code = output_values(_run_harmony(value, n_clusters=1))
 
     assert output.obsm["X_pca_harmony"].shape == value.obsm["X_pca"].shape
     assert report.summary["key_results"]["features"] == value.n_vars
     assert fake.calls[-1]["sigma"] == [0.1]
     namespace = {}
     exec(code, namespace)
-    generated = namespace["run_harmony_integration"](value)
+    generated = namespace["run_harmony_integration"](value.copy())
     science.np.testing.assert_allclose(generated.obsm["X_pca_harmony"], output.obsm["X_pca_harmony"])
 
 
-def test_harmony_cluster_safety_and_distinct_destination_fail_before_backend(
-    integration_adata, science, monkeypatch
-):
+def test_harmony_cluster_safety_and_distinct_destination_fail_before_backend(integration_adata, science, monkeypatch):
     fake = _fake_harmonypy(science)
     monkeypatch.setitem(sys.modules, "harmonypy", fake)
 
     for clusters in (1, integration_adata.n_obs):
         _, report, _ = output_values(
-            OpenBioSingleCellHarmonyIntegration.execute(integration_adata, n_clusters=clusters)
+            _run_harmony(integration_adata, n_clusters=clusters)
         )
         assert report.summary["parameters"]["n_clusters"] == clusters
         assert fake.calls[-1]["sigma"] == [0.1] * clusters
 
     calls = len(fake.calls)
     with pytest.raises(ValueError, match="cannot exceed the number of cells"):
-        OpenBioSingleCellHarmonyIntegration.execute(integration_adata, n_clusters=integration_adata.n_obs + 1)
+        _run_harmony(integration_adata, n_clusters=integration_adata.n_obs + 1)
     with pytest.raises(ValueError, match="must differ from basis"):
-        OpenBioSingleCellHarmonyIntegration.execute(
+        _run_harmony(
             integration_adata,
             adjusted_basis="X_pca",
             overwrite_existing=True,
@@ -442,13 +490,13 @@ def test_harmony_backend_receives_private_basis_copy(integration_adata, science,
     monkeypatch.setitem(sys.modules, "harmonypy", fake)
     original = integration_adata.obsm["X_pca"].copy()
 
-    output, _, code = output_values(OpenBioSingleCellHarmonyIntegration.execute(integration_adata, n_clusters=2))
+    output, _, code = output_values(_run_harmony(integration_adata, n_clusters=2))
 
     science.np.testing.assert_array_equal(integration_adata.obsm["X_pca"], original)
     science.np.testing.assert_array_equal(output.obsm["X_pca"], original)
     namespace = {}
     exec(code, namespace)
-    generated = namespace["run_harmony_integration"](integration_adata)
+    generated = namespace["run_harmony_integration"](integration_adata.copy())
     science.np.testing.assert_array_equal(integration_adata.obsm["X_pca"], original)
     science.np.testing.assert_array_equal(generated.obsm["X_pca"], original)
 
@@ -469,7 +517,7 @@ def test_harmony_backend_receives_private_basis_copy(integration_adata, science,
 )
 def test_harmony_rejects_invalid_parameters_before_backend(integration_adata, kwargs, error, match):
     with pytest.raises(error, match=match):
-        OpenBioSingleCellHarmonyIntegration.execute(integration_adata, n_clusters=3, **kwargs)
+        _run_harmony(integration_adata, n_clusters=3, **kwargs)
 
 
 def _fake_scvi(science):
@@ -496,6 +544,7 @@ def _fake_scvi(science):
             self.test_indices = []
             self.device = "cpu"
             self.train_kwargs = None
+            self.save_calls = []
             self.deregister_manager_calls = []
             type(self).instances.append(self)
 
@@ -518,10 +567,88 @@ def _fake_scvi(science):
         def deregister_manager(self, adata=None):
             self.deregister_manager_calls.append(adata)
 
+        def save(self, path, *, overwrite, save_anndata):
+            destination = Path(path)
+            destination.mkdir()
+            (destination / "model.pt").write_bytes(b"native-scvi-model")
+            self.save_calls.append({"path": str(destination), "overwrite": overwrite, "save_anndata": save_anndata})
+
     module = types.ModuleType("scvi")
     module.settings = types.SimpleNamespace(seed=123)
     module.model = types.SimpleNamespace(SCVI=FakeSCVI)
     return module, FakeSCVI
+
+
+def test_scvi_operation_saves_official_worker_bound_native_directory(
+    tmp_path,
+    integration_adata,
+    science,
+    monkeypatch,
+):
+    fake_scvi, fake_class = _fake_scvi(science)
+    monkeypatch.setitem(sys.modules, "scvi", fake_scvi)
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    write_anndata(input_root, integration_adata)
+    input_payload = input_root / ANNDATA_PAYLOAD
+    before = input_payload.read_bytes()
+    staging = tmp_path / "run.partial"
+    staging.mkdir()
+    context = OperationContext(staging, "00000000-0000-4000-8000-000000000002")
+    parameters = {
+        "source": {"source": "layer", "counts_layer": "counts"},
+        "technical_batch_key": "batch",
+        "categorical_covariates": "",
+        "continuous_covariates": "",
+        "n_latent": 3,
+        "gene_likelihood": "zinb",
+        "n_layers": 1,
+        "dispersion": "gene",
+        "dropout_rate": 0.1,
+        "epochs": {"epochs": "fixed", "max_epochs": 2},
+        "early_stopping": False,
+        "train_size": 0.9,
+        "batch_size": 128,
+        "size_factor_key": "",
+        "accelerator": "cpu",
+        "output_key": "X_scVI",
+        "overwrite_existing": False,
+        "random_seed": 5,
+    }
+
+    records = scvi_integration(
+        context,
+        {
+            "adata": {
+                "type": "artifact",
+                "kind": ANNDATA_KIND,
+                "codec": ANNDATA_CODEC,
+                "path": str(input_root.resolve()),
+            }
+        },
+        parameters,
+    )
+
+    assert [(record["type"], record["name"]) for record in records] == [
+        ("artifact", "adata"),
+        ("artifact", "model"),
+        ("summary", "summary"),
+        ("string", "code"),
+    ]
+    assert records[1] == {
+        "type": "artifact",
+        "name": "model",
+        "kind": "OPENBIO_SCVI_MODEL",
+        "codec": "scvi-native-directory",
+        "payload": "outputs/model/native",
+    }
+    model_root = staging / records[1]["payload"]
+    assert (model_root / "model.pt").read_bytes() == b"native-scvi-model"
+    assert fake_class.instances[-1].save_calls == [{"path": str(model_root), "overwrite": False, "save_anndata": True}]
+    assert input_payload.read_bytes() == before
+    assert "X_scVI" not in read_anndata(input_root).obsm
+    assert read_anndata(staging / records[0]["payload"]).obsm["X_scVI"].shape == (60, 3)
+    json.dumps(records, allow_nan=False)
 
 
 def test_scvi_fake_backend_reporting_code_and_private_model_state(integration_adata, science, monkeypatch):
@@ -531,7 +658,7 @@ def test_scvi_fake_backend_reporting_code_and_private_model_state(integration_ad
     numpy_state = science.np.random.get_state()
     torch_state = torch.random.get_rng_state()
     output, model, report, code = output_values(
-        OpenBioSingleCellSCVIIntegration.execute(
+        _run_scvi(
             integration_adata,
             source={"source": "layer", "counts_layer": "counts"},
             technical_batch_key="batch",
@@ -568,28 +695,29 @@ def test_scvi_fake_backend_reporting_code_and_private_model_state(integration_ad
     assert raw_model.train_kwargs["early_stopping_min_delta"] == 0.0
     assert raw_model.train_kwargs["check_val_every_n_epoch"] == 1
     assert fake_scvi.settings.seed == 123
+    assert model == {
+        "kind": "OPENBIO_SCVI_MODEL",
+        "codec": "scvi-native-directory",
+        "members": ("model.pt",),
+    }
     assert raw_model.adata is not output
-    returned_training_copy = model.registered_adata
-    returned_training_copy.obs = returned_training_copy.obs.assign(batch="mutated")
-    assert set(model.registered_adata.obs["batch"].astype(str)) == {"lane_a", "lane_b"}
-    assert model.diagnostics["actual_epochs"] == 2
-    assert model.training_parameters["count_source_state"] == "counts"
-    assert model.training_parameters["count_source_state_evidence"]
-    assert model.evidence["registered_count_state"] == "counts"
-    assert model.evidence["registered_count_state_evidence"]
+    assert set(raw_model.adata.obs["batch"].astype(str)) == {"lane_a", "lane_b"}
     assert output.obsm["X_scVI"].shape == (60, 3)
     assert "X_scVI" not in integration_adata.obsm
     assert report.summary["parameters"]["epochs_mode"] == "fixed"
     assert report.summary["parameters"]["devices"] == 1
     assert report.summary["parameters"]["accelerator"] == "cpu"
     assert report.summary["key_results"]["training"]["device"] == "cpu"
-    assert report.summary["key_results"]["model_process_local"] is True
+    assert report.summary["key_results"]["training"]["actual_epochs"] == 2
+    assert report.summary["key_results"]["count_source_state"] == "counts"
+    assert report.summary["key_results"]["count_source_state_evidence"]
+    assert report.summary["key_results"]["model_session_only"] is True
     json.dumps(report.summary, allow_nan=False)
     compile(code, "<scvi-code>", "exec")
 
     namespace = {}
     exec(code, namespace)
-    reproduced, reproduced_model = namespace["run_scvi_integration"](integration_adata)
+    reproduced, reproduced_model = namespace["run_scvi_integration"](integration_adata.copy())
     science.np.testing.assert_array_equal(reproduced.obsm["X_scVI"], output.obsm["X_scVI"])
     assert reproduced_model.train_kwargs == raw_model.train_kwargs
     collision = integration_adata.copy()
@@ -612,11 +740,7 @@ def test_scvi_real_backend_open_boundaries_smoke():
         pytest.skip("Real scVI smoke requires the optional scvi-tools backend.")
 
     plugin_root = Path(__file__).resolve().parents[1]
-    comfy_root = next(
-        Path(entry).resolve()
-        for entry in sys.path
-        if entry and (Path(entry) / "main.py").is_file()
-    )
+    comfy_root = next(Path(entry).resolve() for entry in sys.path if entry and (Path(entry) / "main.py").is_file())
     environment = os.environ.copy()
     python_paths = [str(plugin_root), str(comfy_root)]
     if environment.get("PYTHONPATH"):
@@ -680,7 +804,7 @@ def test_scvi_restores_mps_rng_state_in_runtime_and_generated_code(integration_a
     monkeypatch.setattr(fake_class, "train", train_and_mutate_mps)
 
     _, _, _, code = output_values(
-        OpenBioSingleCellSCVIIntegration.execute(
+        _run_scvi(
             integration_adata,
             source={"source": "layer", "counts_layer": "counts"},
             n_latent=3,
@@ -702,7 +826,7 @@ def test_scvi_runtime_and_generated_code_reject_untrained_backend(integration_ad
     fake_scvi, fake_class = _fake_scvi(science)
     monkeypatch.setitem(sys.modules, "scvi", fake_scvi)
     _, _, _, code = output_values(
-        OpenBioSingleCellSCVIIntegration.execute(
+        _run_scvi(
             integration_adata,
             source={"source": "layer", "counts_layer": "counts"},
             n_latent=3,
@@ -712,7 +836,7 @@ def test_scvi_runtime_and_generated_code_reject_untrained_backend(integration_ad
     fake_class.report_trained = False
 
     with pytest.raises(RuntimeError, match="did not report a trained model"):
-        OpenBioSingleCellSCVIIntegration.execute(
+        _run_scvi(
             integration_adata,
             source={"source": "layer", "counts_layer": "counts"},
             n_latent=3,
@@ -730,11 +854,10 @@ def test_scvi_unknown_integer_source_is_disclosed(integration_adata, science, mo
     monkeypatch.setitem(sys.modules, "scvi", fake_scvi)
     integration_adata.uns.pop("openbio_singlecell")
 
-    _, model, report, code = output_values(OpenBioSingleCellSCVIIntegration.execute(integration_adata, n_latent=3))
+    _, _model, report, code = output_values(_run_scvi(integration_adata, n_latent=3))
 
     assert report.summary["key_results"]["count_source_state"] == "unknown"
-    assert model.evidence["registered_count_state"] == "unknown"
-    assert model.evidence["registered_count_state_evidence"] is None
+    assert report.summary["key_results"]["count_source_state_evidence"] is None
     assert any("no recorded raw-count provenance" in item for item in report.summary["warnings"])
     namespace = {}
     exec(code, namespace)
@@ -771,7 +894,7 @@ def test_scvi_transformed_provenance_is_advisory_in_runtime_and_code(integration
         "early_stopping": False,
     }
 
-    output, _, report, _ = output_values(OpenBioSingleCellSCVIIntegration.execute(integration_adata, n_latent=3))
+    output, _, report, _ = output_values(_run_scvi(integration_adata, n_latent=3))
     assert output.obsm["X_scVI"].shape == (integration_adata.n_obs, 3)
     assert report.summary["key_results"]["count_source_state"] == "scaled"
     assert report.summary["key_results"]["count_source_state_evidence"] == "OpenBio Scale history"
@@ -823,7 +946,7 @@ def test_scvi_rejects_invalid_scientific_state_before_backend(integration_adata,
     mutator(integration_adata, science.np)
     kwargs = {"continuous_covariates": "percent_mito"} if "nonconstant" in match else {}
     with pytest.raises(ValueError, match=match):
-        OpenBioSingleCellSCVIIntegration.execute(integration_adata, n_latent=3, **kwargs)
+        _run_scvi(integration_adata, n_latent=3, **kwargs)
 
 
 @pytest.mark.parametrize(
@@ -851,7 +974,7 @@ def test_scvi_advisory_noninformative_covariates_run_and_disclose(
     mutator(integration_adata)
 
     output, _, report, code = output_values(
-        OpenBioSingleCellSCVIIntegration.execute(integration_adata, n_latent=3, **kwargs)
+        _run_scvi(integration_adata, n_latent=3, **kwargs)
     )
     assert output.obsm["X_scVI"].shape == (integration_adata.n_obs, 3)
     assert any(summary_text in warning for warning in report.summary["warnings"])
@@ -886,7 +1009,7 @@ def test_scvi_open_expert_architecture_and_count_advisories_have_generated_parit
     original = selected.copy()
 
     output, _, report, code = output_values(
-        OpenBioSingleCellSCVIIntegration.execute(
+        _run_scvi(
             integration_adata,
             source={"source": "layer", "counts_layer": "counts"},
             n_latent=10,
@@ -934,7 +1057,7 @@ def test_scvi_dropout_one_is_advisory_with_generated_parity(integration_adata, s
     monkeypatch.setitem(sys.modules, "scvi", fake_scvi)
 
     output, _, report, code = output_values(
-        OpenBioSingleCellSCVIIntegration.execute(
+        _run_scvi(
             integration_adata,
             dropout_rate=1.0,
             n_latent=3,
@@ -967,11 +1090,11 @@ def test_scvi_dropout_one_is_advisory_with_generated_parity(integration_adata, s
 )
 def test_scvi_rejects_invalid_parameters_before_backend(integration_adata, kwargs, error, match):
     with pytest.raises(error, match=match):
-        OpenBioSingleCellSCVIIntegration.execute(integration_adata, n_latent=3, **kwargs)
+        _run_scvi(integration_adata, n_latent=3, **kwargs)
 
 
 def test_scvi_schema_is_narrow_and_uses_concrete_outputs():
-    schema = OpenBioSingleCellSCVIIntegration.GET_SCHEMA()
+    schema = SCVIIntegrationNode.define_schema()
     inputs = {item.id: item for item in schema.inputs}
     assert [(item.display_name, item.io_type) for item in schema.outputs] == [
         ("adata", AnnDataType.io_type),
