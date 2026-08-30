@@ -18,7 +18,6 @@ import scipy
 from openbio_singlecell import PLUGIN_VERSION
 from openbio_singlecell.node_types import (
     AnnDataType,
-    SCENICBinaryArtifactType,
     SCENICResultArtifactType,
     SummaryResultType,
 )
@@ -317,10 +316,10 @@ def pyscenic_bundle(tmp_path, science):
 
 
 def test_pyscenic_node_schemas_are_atomic_and_typed():
-    importer = OpenBioSingleCellImportPySCENICResults.GET_SCHEMA()
-    rss = OpenBioSingleCellSCENICRegulonSpecificity.GET_SCHEMA()
-    binary = OpenBioSingleCellSCENICActivityBinarization.GET_SCHEMA()
-    membership = OpenBioSingleCellSCENICTFModules.GET_SCHEMA()
+    importer = OpenBioSingleCellImportPySCENICResults.define_schema()
+    rss = OpenBioSingleCellSCENICRegulonSpecificity.define_schema()
+    binary = OpenBioSingleCellSCENICActivityBinarization.define_schema()
+    membership = OpenBioSingleCellSCENICTFModules.define_schema()
 
     assert [item.id for item in importer.inputs] == [
         "adata",
@@ -339,7 +338,12 @@ def test_pyscenic_node_schemas_are_atomic_and_typed():
     ]
     assert rss.inputs[1].get_io_type() == SCENICResultArtifactType.io_type
     assert binary.inputs[0].get_io_type() == SCENICResultArtifactType.io_type
-    assert binary.outputs[0].io_type == SCENICBinaryArtifactType.io_type
+    assert [(item.display_name, item.io_type) for item in binary.outputs] == [
+        ("thresholds", "OPENBIO_SINGLE_CELL_TABLE"),
+        ("summary", SummaryResultType.io_type),
+        ("code", "STRING"),
+    ]
+    assert all(item.io_type != "OPENBIO_SCENIC_BINARY" for item in binary.outputs)
     assert membership.inputs[0].get_io_type() == SCENICResultArtifactType.io_type
     assert all(item.io_type != "OPENBIO_SCENIC_NETWORK" for item in membership.outputs)
 
@@ -350,8 +354,7 @@ def test_import_validates_bundle_owns_outputs_and_emits_strict_report(pyscenic_b
     output, artifact, summary = import_pyscenic_bundle(adata, manifest_path)
 
     science.np.testing.assert_array_equal(adata.X, original.X)
-    assert "scenic_auc" not in adata.obsm
-    assert output is not adata
+    assert output is adata
     assert output.obs_names.tolist() == adata.obs_names.tolist()
     assert output.var_names.tolist() == adata.var_names.tolist()
     assert output.obsm["scenic_auc"].columns.tolist() == ["TF1(+)", "TF2(-)"]
@@ -420,8 +423,88 @@ def test_import_validates_bundle_owns_outputs_and_emits_strict_report(pyscenic_b
     json.dumps(summary, allow_nan=False)
 
 
+def test_scenic_file_codec_round_trip_uses_h5ad_jsonl_and_json(pyscenic_bundle, science, tmp_path):
+    from openbio_singlecell.regulatory_artifact_codecs import read_scenic, write_scenic
+    from openbio_singlecell.scenic_artifact import validate_scenic_result_artifact
+
+    adata, manifest_path = pyscenic_bundle
+    _output, artifact, _summary = import_pyscenic_bundle(adata, manifest_path)
+    root = tmp_path / "scenic"
+    root.mkdir()
+
+    write_scenic(root, artifact)
+    portable = read_scenic(root)
+    activity, membership, provenance, metadata = validate_scenic_result_artifact(
+        portable,
+        exact_type=False,
+        numpy=science.np,
+        pandas=science.pd,
+        copy_result=False,
+    )
+
+    science.pd.testing.assert_frame_equal(activity, artifact.activity)
+    science.pd.testing.assert_frame_equal(membership, artifact.membership)
+    assert provenance == artifact.provenance
+    assert metadata["artifact_fingerprint_sha256"] == artifact.artifact_fingerprint_sha256
+    assert (root / "activity" / "data.h5ad").is_file()
+    assert (root / "membership" / "data.jsonl").is_file()
+    assert (root / "result.json").is_file()
+
+
+def test_pyscenic_worker_operation_writes_new_artifacts_without_rewriting_input(
+    pyscenic_bundle,
+    tmp_path,
+):
+    import uuid
+
+    from openbio_singlecell.artifact_codecs import read_anndata, write_anndata
+    from openbio_singlecell.operations_regulatory import import_pyscenic_results
+    from openbio_singlecell.regulatory_artifact_codecs import read_scenic
+    from openbio_singlecell.worker_protocol import OperationContext
+
+    adata, manifest_path = pyscenic_bundle
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    write_anndata(input_root, adata)
+    input_bytes = (input_root / "data.h5ad").read_bytes()
+    staging = tmp_path / "run.partial"
+    staging.mkdir()
+    context = OperationContext(staging, str(uuid.uuid4()))
+
+    records = import_pyscenic_results(
+        context,
+        {
+            "adata": {
+                "type": "artifact",
+                "path": str(input_root.resolve()),
+                "kind": "OPENBIO_ANNDATA",
+                "codec": "anndata-h5ad-v1",
+            },
+            "run_manifest_json": {
+                "type": "file",
+                "path": str(manifest_path.resolve()),
+                "provenance": {},
+            },
+        },
+        {
+            "overwrite": False,
+            "max_file_bytes": 2_147_483_647,
+            "max_adjacency_edges": 100,
+            "max_regulon_edges": 100,
+            "max_dense_bytes": 1_073_741_824,
+        },
+    )
+
+    assert [record["name"] for record in records] == ["adata", "scenic_result", "summary", "code"]
+    assert (input_root / "data.h5ad").read_bytes() == input_bytes
+    assert "scenic_auc" in read_anndata(staging / records[0]["payload"]).obsm
+    portable = read_scenic(staging / records[1]["payload"])
+    assert portable["regulons"] == ["TF1(+)", "TF2(-)"]
+
+
 def test_import_generated_code_is_full_runtime_equivalent(pyscenic_bundle, science):
     adata, manifest_path = pyscenic_bundle
+    generated_input = adata.copy()
     runtime_output, runtime_artifact, runtime_summary = import_pyscenic_bundle(
         adata, manifest_path, max_adjacency_edges=100, max_regulon_edges=100
     )
@@ -438,7 +521,7 @@ def test_import_generated_code_is_full_runtime_equivalent(pyscenic_bundle, scien
     exec(code, namespace)
     generated_output, generated_artifact, generated_summary = namespace[
         "import_validated_pyscenic_bundle"
-    ](adata)
+    ](generated_input)
 
     science.pd.testing.assert_frame_equal(
         runtime_output.obsm["scenic_auc"], generated_output.obsm["scenic_auc"]
@@ -563,6 +646,7 @@ def test_import_accepts_explicit_numeric_state_optional_container_and_cli_defaul
     omit_options(manifest["commands"]["aucell"], "--auc_threshold", "--num_workers", "--seed")
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     _refresh_manifest_hashes(manifest_path)
+    generated_input = adata.copy()
 
     output, artifact, summary = import_pyscenic_bundle(adata, manifest_path)
     science.np.testing.assert_array_equal(output.X, transformed)
@@ -598,7 +682,7 @@ def test_import_accepts_explicit_numeric_state_optional_container_and_cli_defaul
     exec(compile(code, "<generated-expert-pyscenic-import>", "exec"), namespace)
     generated_output, generated_artifact, generated_summary = namespace[
         "import_validated_pyscenic_bundle"
-    ](adata)
+    ](generated_input)
     science.np.testing.assert_array_equal(output.X, generated_output.X)
     assert artifact.to_portable() == generated_artifact.to_portable()
     assert summary == generated_summary
@@ -887,6 +971,60 @@ def test_binarization_rejects_bad_seed_memory_and_adversarial_backend(pyscenic_b
         binarize_scenic_activity(artifact, _threshold_backend=nonfinite_backend)
 
 
+def test_worker_owned_scenic_consumers_reuse_decoded_activity(
+    pyscenic_bundle,
+    monkeypatch,
+):
+    adata, manifest_path = pyscenic_bundle
+    _output, artifact, _summary = import_pyscenic_bundle(adata, manifest_path)
+    portable = artifact.to_portable()
+    portable["activity"] = pd.DataFrame(
+        portable["activity"],
+        index=portable["observations"],
+        columns=portable["regulons"],
+    )
+    activity = portable["activity"]
+    copied_shapes = []
+    copy_true_shapes = []
+    original_copy = pd.DataFrame.copy
+    original_to_numpy = pd.DataFrame.to_numpy
+
+    def tracked_copy(frame, *args, **kwargs):
+        if frame is activity:
+            copied_shapes.append(frame.shape)
+        return original_copy(frame, *args, **kwargs)
+
+    def tracked_to_numpy(frame, *args, **kwargs):
+        if frame is activity and kwargs.get("copy") is True:
+            copy_true_shapes.append(frame.shape)
+        return original_to_numpy(frame, *args, **kwargs)
+
+    monkeypatch.setattr(pd.DataFrame, "copy", tracked_copy)
+    monkeypatch.setattr(pd.DataFrame, "to_numpy", tracked_to_numpy)
+    compute_scenic_rss(
+        adata,
+        portable,
+        max_output_rows=20,
+        _portable_artifact=True,
+        _worker_owned=True,
+    )
+    overrides = pd.DataFrame(
+        {"regulon": portable["regulons"], "threshold": [0.5] * len(portable["regulons"])}
+    )
+    binary, _thresholds, binary_summary = binarize_scenic_activity(
+        portable,
+        threshold_overrides=overrides,
+        max_dense_bytes=10_000,
+        _portable_artifact=True,
+        _worker_owned=True,
+    )
+
+    assert binary is None
+    assert len(binary_summary["key_results"]["binary_artifact_fingerprint_sha256"]) == 64
+    assert copied_shapes == []
+    assert copy_true_shapes == []
+
+
 def test_binarization_exact_transcription_matches_real_pyscenic_0121(monkeypatch):
     pyscenic = pytest.importorskip("pyscenic")
     assert pyscenic.__version__ == "0.12.1"
@@ -949,4 +1087,38 @@ def test_typed_artifact_rejects_forged_provenance_and_payload(pyscenic_bundle):
     portable["activity"][0][0] = 0.99
     with pytest.raises(ValueError, match="fingerprint"):
         compute_scenic_rss(adata, portable, _portable_artifact=True)
+
+
+def test_portable_scenic_validation_does_not_request_full_activity_copy(
+    pyscenic_bundle,
+    monkeypatch,
+):
+    from openbio_singlecell.scenic_artifact import validate_scenic_result_artifact
+
+    adata, manifest_path = pyscenic_bundle
+    _output, artifact, _summary = import_pyscenic_bundle(adata, manifest_path)
+    portable = artifact.to_portable()
+    portable["activity"] = pd.DataFrame(
+        portable["activity"],
+        index=portable["observations"],
+        columns=portable["regulons"],
+    )
+    copy_requests = []
+    original_to_numpy = pd.DataFrame.to_numpy
+
+    def tracked_to_numpy(frame, *args, **kwargs):
+        if frame is portable["activity"] and kwargs.get("copy") is True:
+            copy_requests.append(frame.shape)
+        return original_to_numpy(frame, *args, **kwargs)
+
+    monkeypatch.setattr(pd.DataFrame, "to_numpy", tracked_to_numpy)
+    validate_scenic_result_artifact(
+        portable,
+        exact_type=False,
+        numpy=np,
+        pandas=pd,
+        copy_result=False,
+    )
+
+    assert copy_requests == []
 

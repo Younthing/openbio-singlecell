@@ -58,19 +58,41 @@ def _canonical_axis(values: Any, *, name: str) -> tuple[str, ...]:
     return result
 
 
-def _activity_bytes(activity: DataFrame, *, numpy: Any, pandas: Any) -> tuple[tuple[str, ...], tuple[str, ...], bytes]:
+def _activity_bytes(
+    activity: DataFrame,
+    *,
+    numpy: Any,
+    pandas: Any,
+    materialize: bool = True,
+) -> tuple[tuple[str, ...], tuple[str, ...], Any]:
     if not isinstance(activity, pandas.DataFrame):
         raise TypeError("SCENIC activity must be a pandas DataFrame.")
     observations = _canonical_axis(activity.index.tolist(), name="SCENIC observation axis")
     regulons = _canonical_axis(activity.columns.tolist(), name="SCENIC regulon axis")
-    values = numpy.asarray(activity.to_numpy(dtype=numpy.float64, copy=True), dtype="<f8", order="C")
-    if values.shape != (len(observations), len(regulons)):
+    if activity.shape != (len(observations), len(regulons)):
         raise ValueError("SCENIC activity shape does not match its named axes.")
-    if not bool(numpy.isfinite(values).all()):
-        raise ValueError("SCENIC activity values must be finite.")
-    if bool(((values < 0.0) | (values > 1.0)).any()):
-        raise ValueError("SCENIC AUCell activity values must lie in [0, 1].")
-    return observations, regulons, values.tobytes(order="C")
+    if materialize:
+        values = numpy.asarray(
+            activity.to_numpy(dtype=numpy.float64, copy=False),
+            dtype="<f8",
+            order="C",
+        )
+        if not bool(numpy.isfinite(values).all()):
+            raise ValueError("SCENIC activity values must be finite.")
+        if bool(((values < 0.0) | (values > 1.0)).any()):
+            raise ValueError("SCENIC AUCell activity values must lie in [0, 1].")
+        return observations, regulons, values.tobytes(order="C")
+    for start in range(0, len(observations), 1024):
+        values = numpy.asarray(
+            activity.iloc[start : start + 1024].to_numpy(dtype=numpy.float64, copy=False),
+            dtype="<f8",
+            order="C",
+        )
+        if not bool(numpy.isfinite(values).all()):
+            raise ValueError("SCENIC activity values must be finite.")
+        if bool(((values < 0.0) | (values > 1.0)).any()):
+            raise ValueError("SCENIC AUCell activity values must lie in [0, 1].")
+    return observations, regulons, activity
 
 
 def _canonical_membership(
@@ -388,14 +410,24 @@ def _strict_provenance(
 def _result_fingerprint(
     observations: tuple[str, ...],
     regulons: tuple[str, ...],
-    activity_data: bytes,
+    activity_data: Any,
     membership_rows: tuple[dict[str, Any], ...],
     provenance: dict[str, Any],
 ) -> str:
     digest = hashlib.sha256()
     digest.update(_canonical_json({"observations": observations, "regulons": regulons}).encode("utf-8"))
     digest.update(b"\0")
-    digest.update(activity_data)
+    if isinstance(activity_data, bytes):
+        digest.update(activity_data)
+    else:
+        import numpy as np
+
+        for start in range(0, len(observations), 1024):
+            values = activity_data.iloc[start : start + 1024].to_numpy(
+                dtype=np.float64,
+                copy=False,
+            )
+            digest.update(np.ascontiguousarray(values, dtype="<f8").tobytes(order="C"))
     digest.update(b"\0")
     digest.update(_canonical_json(membership_rows).encode("utf-8"))
     digest.update(b"\0")
@@ -446,6 +478,55 @@ class SCENICResultArtifact:
         object.__setattr__(self, "_provenance_json", _canonical_json(checked_provenance))
         object.__setattr__(self, "artifact_fingerprint_sha256", fingerprint)
 
+    @classmethod
+    def _portable_from_owned(
+        cls,
+        activity: DataFrame,
+        membership: DataFrame,
+        provenance: dict[str, Any],
+    ) -> dict[str, Any]:
+        import numpy as np
+        import pandas as pd
+
+        observations, regulons, activity_data = _activity_bytes(
+            activity,
+            numpy=np,
+            pandas=pd,
+            materialize=False,
+        )
+        membership_rows = _canonical_membership(
+            membership,
+            regulons=regulons,
+            numpy=np,
+            pandas=pd,
+        )
+        checked_provenance = _strict_provenance(
+            provenance,
+            artifact_type=SCENIC_RESULT_ARTIFACT_TYPE,
+            schema_version=SCENIC_RESULT_ARTIFACT_SCHEMA_VERSION,
+            producer_node_id=SCENIC_RESULT_PRODUCER_NODE_ID,
+            producer_schema=SCENIC_RESULT_PRODUCER_SCHEMA,
+        )
+        if checked_provenance["input_dimensions"]["cells"] != len(observations):
+            raise ValueError("SCENIC result provenance cell count differs from the activity axis.")
+        fingerprint = _result_fingerprint(
+            observations,
+            regulons,
+            activity_data,
+            membership_rows,
+            checked_provenance,
+        )
+        return {
+            "artifact_type": SCENIC_RESULT_ARTIFACT_TYPE,
+            "artifact_schema_version": SCENIC_RESULT_ARTIFACT_SCHEMA_VERSION,
+            "observations": list(observations),
+            "regulons": list(regulons),
+            "activity": activity,
+            "membership": membership,
+            "provenance": checked_provenance,
+            "artifact_fingerprint_sha256": fingerprint,
+        }
+
     @property
     def observation_names(self) -> tuple[str, ...]:
         return self._observations
@@ -493,6 +574,7 @@ def validate_scenic_result_artifact(
     exact_type: bool,
     numpy: Any,
     pandas: Any,
+    copy_result: bool = True,
 ) -> tuple[DataFrame, DataFrame, dict[str, Any], dict[str, Any]]:
     if isinstance(value, SCENICResultArtifact):
         activity = value.activity
@@ -517,13 +599,26 @@ def validate_scenic_result_artifact(
             raise ValueError("Portable SCENIC result artifact schema is invalid.")
         observations = _canonical_axis(value["observations"], name="SCENIC observation axis")
         regulons = _canonical_axis(value["regulons"], name="SCENIC regulon axis")
-        activity = pandas.DataFrame(value["activity"], index=observations, columns=regulons)
-        membership = pandas.DataFrame(value["membership"], columns=SCENIC_MEMBERSHIP_COLUMNS)
+        if isinstance(value["activity"], pandas.DataFrame):
+            activity = value["activity"]
+            if activity.index.tolist() != list(observations) or activity.columns.tolist() != list(regulons):
+                raise ValueError("Portable SCENIC activity axes differ from their declared axes.")
+        else:
+            activity = pandas.DataFrame(value["activity"], index=observations, columns=regulons)
+        if isinstance(value["membership"], pandas.DataFrame):
+            membership = value["membership"]
+        else:
+            membership = pandas.DataFrame(value["membership"], columns=SCENIC_MEMBERSHIP_COLUMNS)
         provenance = copy.deepcopy(value["provenance"])
         claimed_fingerprint = value["artifact_fingerprint_sha256"]
     else:
         raise TypeError("SCENIC result must be the typed immutable artifact produced by the audited importer.")
-    observations, regulons, activity_data = _activity_bytes(activity, numpy=numpy, pandas=pandas)
+    observations, regulons, activity_data = _activity_bytes(
+        activity,
+        numpy=numpy,
+        pandas=pandas,
+        materialize=False,
+    )
     membership_rows = _canonical_membership(
         membership,
         regulons=regulons,
@@ -553,19 +648,31 @@ def validate_scenic_result_artifact(
         "regulons": regulons,
         "artifact_fingerprint_sha256": observed_fingerprint,
     }
-    return activity.copy(deep=True), membership.copy(deep=True), copy.deepcopy(provenance), metadata
+    return (
+        activity.copy(deep=True) if copy_result else activity,
+        membership.copy(deep=True) if copy_result else membership,
+        copy.deepcopy(provenance),
+        metadata,
+    )
 
 
 def _binary_fingerprint(
     observations: tuple[str, ...],
     regulons: tuple[str, ...],
-    binary_data: bytes,
+    binary_data: Any,
     provenance: dict[str, Any],
 ) -> str:
     digest = hashlib.sha256()
     digest.update(_canonical_json({"observations": observations, "regulons": regulons}).encode("utf-8"))
     digest.update(b"\0")
-    digest.update(binary_data)
+    if isinstance(binary_data, bytes):
+        digest.update(binary_data)
+    else:
+        import numpy as np
+
+        for start in range(0, len(observations), 1024):
+            values = binary_data.iloc[start : start + 1024].to_numpy(dtype=bool, copy=False)
+            digest.update(np.ascontiguousarray(values, dtype=np.bool_).tobytes(order="C"))
     digest.update(b"\0")
     digest.update(_canonical_json(provenance).encode("utf-8"))
     return digest.hexdigest()

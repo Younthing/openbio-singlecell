@@ -111,4 +111,15 @@ fi
 "$PYTHON_EXE" -c 'import sys; raise SystemExit(sys.version_info < (3, 12))'
 printf 'Using Python: %s\n' "$PYTHON_EXE"
 cd "$COMFY_ROOT"
+
+CACHE_MODE_SET=false
+for ARG in "$@"; do
+    case "$ARG" in
+        --cache-classic|--cache-none|--cache-lru|--cache-lru=*|--cache-ram|--cache-ram=*|--high-ram) CACHE_MODE_SET=true ;;
+    esac
+done
+if [ "$CACHE_MODE_SET" = false ]; then
+    set -- "$@" --cache-classic
+fi
+
 exec "$PYTHON_EXE" main.py --disable-api-nodes --enable-assets --front-end-root "$FRONTEND_DIST" "$@"

@@ -12,6 +12,7 @@ import pytest
 from openbio_singlecell.node_types import AnnDataType, SummaryResultType
 from openbio_singlecell.nodes_abundance import ABUNDANCE_NODE_CLASSES
 from openbio_singlecell.nodes_schist import SCHIST_NODE_CLASSES, OpenBioSingleCellSchistNestedModel
+from openbio_singlecell.operations_schist import schist_nested_model_owned
 from openbio_singlecell.schist_analysis import run_schist_nested_model, schist_nested_model_code
 
 
@@ -270,7 +271,7 @@ def _malform_named_graph(adata, science, case):
 
 
 def test_schist_schema_is_one_atomic_nested_hierarchy_analysis():
-    schema = OpenBioSingleCellSchistNestedModel.GET_SCHEMA()
+    schema = OpenBioSingleCellSchistNestedModel.define_schema()
 
     assert schema.node_id == "OpenBioSingleCellSchistNestedModel"
     assert schema.display_name == "Schist Nested-SBM Hierarchy"
@@ -286,7 +287,7 @@ def test_schist_schema_is_one_atomic_nested_hierarchy_analysis():
         "max_working_memory_gib",
     ]
     inputs = {item.id: item for item in schema.inputs}
-    assert list(inspect.signature(OpenBioSingleCellSchistNestedModel.execute).parameters) == [
+    assert list(inspect.signature(schist_nested_model_owned).parameters) == [
         item.id for item in schema.inputs
     ]
     assert all(getattr(item, "advanced", False) for item in schema.inputs[1:])
@@ -307,7 +308,7 @@ def test_schist_schema_is_one_atomic_nested_hierarchy_analysis():
 def test_schist_registry_ownership_is_clustering_not_abundance():
     assert SCHIST_NODE_CLASSES == [OpenBioSingleCellSchistNestedModel]
     assert all(
-        node.GET_SCHEMA().node_id != "OpenBioSingleCellSchistNestedModel" for node in ABUNDANCE_NODE_CLASSES
+        node.define_schema().node_id != "OpenBioSingleCellSchistNestedModel" for node in ABUNDANCE_NODE_CLASSES
     )
 
 
@@ -316,8 +317,8 @@ def test_schist_runs_exact_reviewed_model_and_generated_code_is_equivalent(scien
     original = adata.copy()
     calls = _install_fake_schist(science, monkeypatch)
 
-    output, report, code = OpenBioSingleCellSchistNestedModel.execute(
-        adata,
+    output, report, code = schist_nested_model_owned(
+        adata.copy(),
         random_seed=19,
         neighbors_key="custom_neighbors",
         key_added="hierarchy",
@@ -325,7 +326,7 @@ def test_schist_runs_exact_reviewed_model_and_generated_code_is_equivalent(scien
         degree_correction=False,
         overwrite_existing=False,
         max_working_memory_gib=1.0,
-    ).result
+    )
 
     assert len(calls) == 1
     call = calls[0]
@@ -454,7 +455,7 @@ def test_invalid_schist_settings_fail_before_copy_or_backend_import(
     parameters.update(overrides)
 
     with pytest.raises(error_type, match=message):
-        OpenBioSingleCellSchistNestedModel.execute(adata, **parameters)
+        schist_nested_model_owned(adata, **parameters)
 
     assert copied == []
     assert imported == []
@@ -505,7 +506,7 @@ def test_malformed_named_graph_fails_before_output_copy_or_backend(
     monkeypatch.setattr(importlib, "import_module", tracked_import)
 
     with pytest.raises(error_type, match=message):
-        OpenBioSingleCellSchistNestedModel.execute(
+        schist_nested_model_owned(
             adata,
             random_seed=19,
             neighbors_key="custom_neighbors",
@@ -531,14 +532,14 @@ def test_equivalent_sparse_graph_formats_have_one_canonical_fingerprint(science,
         adata = _graph_adata(science)
         adata.obsp["custom_connectivities"] = matrix
         calls = _install_fake_schist(science, monkeypatch)
-        _, report, _ = OpenBioSingleCellSchistNestedModel.execute(
+        _, report, _ = schist_nested_model_owned(
             adata,
             random_seed=19,
             neighbors_key="custom_neighbors",
             key_added="hierarchy",
             posterior_samples=120,
             max_working_memory_gib=1.0,
-        ).result
+        )
         fingerprints.append(report.summary["graph"]["fingerprint_sha256"])
         passed_matrices.append(calls[0]["adjacency"])
 
@@ -560,14 +561,14 @@ def test_disconnected_named_graph_is_preserved_and_disclosed(science, monkeypatc
     )
     _install_fake_schist(science, monkeypatch)
 
-    _, report, _ = OpenBioSingleCellSchistNestedModel.execute(
+    _, report, _ = schist_nested_model_owned(
         adata,
         random_seed=19,
         neighbors_key="custom_neighbors",
         key_added="hierarchy",
         posterior_samples=120,
         max_working_memory_gib=1.0,
-    ).result
+    )
 
     assert report.summary["graph"]["connected_components"] == 2
     assert report.summary["graph"]["component_sizes"] == [3, 3]
@@ -581,12 +582,12 @@ def test_default_scanpy_named_graph_is_explicitly_resolved(science, monkeypatch)
     adata.uns["neighbors"]["connectivities_key"] = "connectivities"
     calls = _install_fake_schist(science, monkeypatch)
 
-    _, report, _ = OpenBioSingleCellSchistNestedModel.execute(
+    _, report, _ = schist_nested_model_owned(
         adata,
         random_seed=19,
         posterior_samples=120,
         max_working_memory_gib=1.0,
-    ).result
+    )
 
     assert calls[0]["neighbors_key"] == "neighbors"
     assert report.summary["graph"]["connectivities_key"] == "connectivities"
@@ -605,14 +606,14 @@ def test_success_preserves_all_unowned_anndata_state(science, monkeypatch):
     original = adata.copy()
     _install_fake_schist(science, monkeypatch)
 
-    output, _, _ = OpenBioSingleCellSchistNestedModel.execute(
+    output, _, _ = schist_nested_model_owned(
         adata,
         random_seed=19,
         neighbors_key="custom_neighbors",
         key_added="hierarchy",
         posterior_samples=120,
         max_working_memory_gib=1.0,
-    ).result
+    )
 
     science.np.testing.assert_array_equal(output.X, original.X)
     science.pd.testing.assert_frame_equal(output.obs[["sample", "quality"]], original.obs)
@@ -631,14 +632,14 @@ def test_success_preserves_all_unowned_anndata_state(science, monkeypatch):
 def test_too_few_or_backed_observations_fail_before_backend(science, monkeypatch, tmp_path):
     too_small = _graph_adata(science)[:1].copy()
     with pytest.raises(ValueError, match="at least two"):
-        OpenBioSingleCellSchistNestedModel.execute(too_small)
+        schist_nested_model_owned(too_small)
 
     path = tmp_path / "backed.h5ad"
     _graph_adata(science).write_h5ad(path)
     backed = science.ad.read_h5ad(path, backed="r")
     try:
         with pytest.raises(ValueError, match="in-memory"):
-            OpenBioSingleCellSchistNestedModel.execute(backed)
+            schist_nested_model_owned(backed)
     finally:
         backed.file.close()
 
@@ -708,7 +709,7 @@ def test_schist_dependency_gate_fails_closed_before_output_copy(science, monkeyp
     monkeypatch.setattr(type(adata), "copy", forbidden_copy)
 
     with pytest.raises(RuntimeError) as captured:
-        OpenBioSingleCellSchistNestedModel.execute(
+        schist_nested_model_owned(
             adata,
             random_seed=19,
             neighbors_key="custom_neighbors",
@@ -752,7 +753,7 @@ def test_output_family_collision_fails_before_copy_or_backend(science, monkeypat
     monkeypatch.setattr(importlib, "import_module", tracked_import)
 
     with pytest.raises(ValueError, match="complete owned family"):
-        OpenBioSingleCellSchistNestedModel.execute(
+        schist_nested_model_owned(
             adata,
             random_seed=19,
             neighbors_key="custom_neighbors",
@@ -773,15 +774,15 @@ def test_overwrite_replaces_complete_owned_family_on_private_copy(science, monke
     original = adata.copy()
     _install_fake_schist(science, monkeypatch)
 
-    output, report, _ = OpenBioSingleCellSchistNestedModel.execute(
-        adata,
+    output, report, _ = schist_nested_model_owned(
+        adata.copy(),
         random_seed=19,
         neighbors_key="custom_neighbors",
         key_added="hierarchy",
         posterior_samples=120,
         overwrite_existing=True,
         max_working_memory_gib=1.0,
-    ).result
+    )
 
     assert "hierarchy_level_9" not in output.obs
     assert "CM_hierarchy_level_9" not in output.obsm
@@ -808,7 +809,7 @@ def test_noncanonical_vendor_prefix_collision_is_never_overwritten(science, cont
         adata.obsm[key] = science.np.ones((adata.n_obs, 1))
 
     with pytest.raises(ValueError, match="noncanonical prefix"):
-        OpenBioSingleCellSchistNestedModel.execute(
+        schist_nested_model_owned(
             adata,
             random_seed=19,
             neighbors_key="custom_neighbors",
@@ -869,9 +870,9 @@ def test_runtime_and_generated_code_reject_the_same_malformed_backend_state(
     exec(code, namespace)
 
     with pytest.raises(RuntimeError, match=message) as runtime_error:
-        run_schist_nested_model(adata, **parameters)
+        run_schist_nested_model(adata.copy(), **parameters)
     with pytest.raises(type(runtime_error.value), match=message) as generated_error:
-        namespace["run_schist_nsbm"](adata)
+        namespace["run_schist_nsbm"](adata.copy())
 
     assert str(generated_error.value) == str(runtime_error.value)
     science.np.testing.assert_array_equal(adata.X, original.X)

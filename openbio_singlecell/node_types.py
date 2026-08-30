@@ -12,11 +12,11 @@ PseudobulkType = io.Custom("OPENBIO_SINGLE_CELL_PSEUDOBULK")
 CNMFRunType = io.Custom("OPENBIO_CNMF_RUN")
 SCVIModelType = io.Custom("OPENBIO_SCVI_MODEL")
 SCENICResultArtifactType = io.Custom("OPENBIO_SCENIC_RESULT")
-SCENICBinaryArtifactType = io.Custom("OPENBIO_SCENIC_BINARY")
 CassiopeiaCharactersType = io.Custom("OPENBIO_CASSIOPEIA_CHARACTERS")
 CassiopeiaTreeType = io.Custom("OPENBIO_CASSIOPEIA_TREE")
 CNVStateType = io.Custom("OPENBIO_CNV_STATE")
 VelocityStateType = io.Custom("OPENBIO_VELOCITY_STATE")
+WorkerType = io.Custom("OPENBIO_WORKER")
 
 __all__ = [
     "AnnDataType",
@@ -30,10 +30,10 @@ __all__ = [
     "PlotResultType",
     "PseudobulkType",
     "SCVIModelType",
-    "SCENICBinaryArtifactType",
     "SCENICResultArtifactType",
     "SummaryResultType",
     "TableResultType",
     "TFActivityArtifactType",
     "VelocityStateType",
+    "WorkerType",
 ]

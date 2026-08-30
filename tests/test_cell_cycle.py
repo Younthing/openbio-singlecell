@@ -13,6 +13,7 @@ from openbio_singlecell.cell_cycle import (
 )
 from openbio_singlecell.node_types import AnnDataType, SummaryResultType
 from openbio_singlecell.nodes_trajectory import OpenBioSingleCellCellCycleScore
+from openbio_singlecell.operations_trajectory import cell_cycle_score_owned
 
 
 def _cell_cycle_adata(science, *, sparse=False, genes=None):
@@ -77,7 +78,7 @@ def test_bundled_cell_cycle_resource_has_exact_43_54_identity():
 
 
 def test_cell_cycle_schema_is_atomic_and_uses_transformed_source():
-    schema = OpenBioSingleCellCellCycleScore.GET_SCHEMA()
+    schema = OpenBioSingleCellCellCycleScore.define_schema()
     assert [input_.id for input_ in schema.inputs] == [
         "adata",
         "source",
@@ -94,10 +95,11 @@ def test_cell_cycle_schema_is_atomic_and_uses_transformed_source():
     ]
 
 
-def test_cell_cycle_matches_explicit_scanpy_call_and_preserves_input(science):
+def test_cell_cycle_matches_explicit_scanpy_call_on_worker_owned_input(science):
     adata = _cell_cycle_adata(science)
     before = adata.copy()
     output, summary = _run(adata)
+    assert output is adata
 
     work = science.ad.AnnData(
         adata.layers["log1p_norm"].copy(),
@@ -127,13 +129,13 @@ def test_cell_cycle_matches_explicit_scanpy_call_and_preserves_input(science):
     science.np.testing.assert_array_equal(adata.X, before.X)
     science.np.testing.assert_array_equal(adata.layers["counts"], before.layers["counts"])
     science.np.testing.assert_array_equal(adata.layers["log1p_norm"], before.layers["log1p_norm"])
-    science.pd.testing.assert_frame_equal(adata.obs, before.obs)
-    assert adata.uns == before.uns
+    assert adata.uns["sentinel"] == before.uns["sentinel"]
 
 
 def test_cell_cycle_node_and_generated_code_are_equivalent(science):
     adata = _cell_cycle_adata(science)
-    output, report, code = OpenBioSingleCellCellCycleScore.execute(
+    reproduction_input = adata.copy()
+    output, report, code = cell_cycle_score_owned(
         adata,
         source={"source": "layer", "layer_name": "log1p_norm"},
         gene_set_source={"gene_set_source": "regev_human_97"},
@@ -141,12 +143,12 @@ def test_cell_cycle_node_and_generated_code_are_equivalent(science):
         output_prefix="cc",
         overwrite_existing=False,
         random_seed=11,
-    ).result
+    )
     assert "from openbio_singlecell" not in code
     compile(code, "<cell-cycle-code>", "exec")
     namespace = {}
     exec(code, namespace)
-    reproduced, reproduced_summary = namespace["score_cell_cycle"](adata)
+    reproduced, reproduced_summary = namespace["score_cell_cycle"](reproduction_input)
     science.pd.testing.assert_series_equal(output.obs["cc_s_score"], reproduced.obs["cc_s_score"])
     science.pd.testing.assert_series_equal(output.obs["cc_g2m_score"], reproduced.obs["cc_g2m_score"])
     science.pd.testing.assert_series_equal(output.obs["cc_phase"], reproduced.obs["cc_phase"])
@@ -178,10 +180,11 @@ def test_cell_cycle_custom_program_and_collision_policy(science):
     assert summary["key_results"]["resource"]["organism"] == "mouse"
     assert output.obs["cell_cycle_phase"].notna().all()
 
-    _, override_summary = _run(adata, organism="mouse")
+    _, override_summary = _run(_cell_cycle_adata(science), organism="mouse")
     assert override_summary["key_results"]["resource"]["organism_compatibility"] == "nonhuman_expert_override"
     assert any("no orthology mapping" in warning for warning in override_summary["warnings"])
 
+    adata = _cell_cycle_adata(science)
     adata.obs["cell_cycle_s_score"] = 999.0
     with pytest.raises(ValueError, match="already exist"):
         _run(adata, gene_set_source="custom", s_genes=s_genes, g2m_genes=g2m_genes)
@@ -233,24 +236,25 @@ def test_cell_cycle_reports_low_coverage_and_cross_phase_overlap(science):
 
 def test_cell_cycle_accepts_explicit_raw_and_signed_expert_sources(science):
     adata = _cell_cycle_adata(science)
-    raw_output, raw_summary = _run(adata, source_kind="raw", layer_name=None)
+    raw_output, raw_summary = _run(adata.copy(), source_kind="raw", layer_name=None)
     assert raw_output.n_obs == adata.n_obs
     assert raw_summary["key_results"]["expression_source"] == "raw.X"
     assert raw_summary["key_results"]["expression_state_evidence"]["history_used"] is False
     assert any("Raw was selected explicitly" in warning for warning in raw_summary["warnings"])
 
-    node_output, node_report, raw_code = OpenBioSingleCellCellCycleScore.execute(
-        adata,
+    reproduction_input = adata.copy()
+    node_output, node_report, raw_code = cell_cycle_score_owned(
+        adata.copy(),
         source={"source": "raw"},
         gene_set_source={"gene_set_source": "regev_human_97"},
         organism="human",
         output_prefix="raw_cc",
         overwrite_existing=False,
         random_seed=7,
-    ).result
+    )
     namespace = {}
     exec(raw_code, namespace)
-    reproduced, reproduced_summary = namespace["score_cell_cycle"](adata)
+    reproduced, reproduced_summary = namespace["score_cell_cycle"](reproduction_input)
     science.pd.testing.assert_series_equal(node_output.obs["raw_cc_s_score"], reproduced.obs["raw_cc_s_score"])
     science.pd.testing.assert_series_equal(node_output.obs["raw_cc_phase"], reproduced.obs["raw_cc_phase"])
     assert reproduced_summary == node_report.summary

@@ -42,11 +42,15 @@ from openbio_singlecell.enrichment_artifacts import (
     generic_ranking_fingerprint,
     validate_enrichment_artifact_pair,
 )
+from openbio_singlecell.files import resolve_input_path
 from openbio_singlecell.nodes_enrichment import (
     OpenBioSingleCellDGIdbAnnotation,
-    OpenBioSingleCellDrugGSEA,
-    OpenBioSingleCellDrugHypergeometric,
-    OpenBioSingleCellDrugScores,
+)
+from openbio_singlecell.operations_enrichment import (
+    drug_gsea_owned,
+    drug_hypergeometric_owned,
+    drug_scores_owned,
+    load_dgidb_resource_owned,
 )
 
 
@@ -496,6 +500,27 @@ def test_dgidb_loader_allows_caller_declared_license_review_with_warning_and_gen
     assert generated_summary == summary
 
 
+def test_dgidb_loader_adopts_newly_parsed_table_without_defensive_copy(
+    tmp_path,
+    monkeypatch,
+):
+    import openbio_singlecell.dgidb_resource as dgidb
+
+    path = _write_resource(tmp_path / "dgidb.tsv")
+    copy_flags = []
+    original_validate = dgidb._standalone_validate_dgidb_table
+
+    def tracked_validate(table, copy_table=True):
+        copy_flags.append(copy_table)
+        return original_validate(table, copy_table=copy_table)
+
+    monkeypatch.setattr(dgidb, "_standalone_validate_dgidb_table", tracked_validate)
+    _load_resource(path)
+
+    assert copy_flags
+    assert not any(copy_flags)
+
+
 def test_dgidb_loader_rejects_width_collision_guards_and_pinned_hash(tmp_path):
     malformed = tmp_path / "malformed.tsv"
     malformed.write_text(
@@ -601,7 +626,7 @@ def test_drug_score_exact_pertpy_call_mean_and_generated_parity(science, tmp_pat
     )
     namespace = {}
     exec(compile(source, "<drug-score-code>", "exec"), namespace)
-    generated, generated_summary = namespace["run_drug_score"](adata.copy(), table.copy(), backend)
+    generated, generated_summary = namespace["run_drug_score"](original.copy(), table.copy(), backend)
     science.np.testing.assert_allclose(generated.obs["drug_target_score"], output.obs["drug_target_score"])
     assert generated_summary == summary
 
@@ -687,6 +712,7 @@ def test_drug_score_allows_count_like_and_all_zero_cells_with_cautious_generated
     else:
         adata.X = counts.copy()
         adata.uns.pop("log1p")
+    generated_input = adata.copy()
     backend = _fake_pertpy(science)
     parameters = {
         "drug": "DrugA",
@@ -713,7 +739,7 @@ def test_drug_score_allows_count_like_and_all_zero_cells_with_cautious_generated
     )
     namespace = {}
     exec(compile(source, f"<drug-score-{source_kind}-counts>", "exec"), namespace)
-    generated, generated_summary = namespace["run_drug_score"](adata.copy(), table.copy(), backend)
+    generated, generated_summary = namespace["run_drug_score"](generated_input, table.copy(), backend)
     science.np.testing.assert_allclose(generated.obs["score"], output.obs["score"])
     assert generated_summary == summary
 
@@ -992,12 +1018,13 @@ def test_drug_nodes_expose_atomic_typed_contracts_and_hash_resource(
 ):
     input_dir, _, _ = comfy_directories
     path = _write_resource(input_dir / "dgidb.tsv")
-    resource_output = OpenBioSingleCellDGIdbAnnotation.execute(
-        resource_file=path.name,
+    resource_output = load_dgidb_resource_owned(
+        str(resolve_input_path(path.name, extensions=(".csv", ".tsv"))),
+        requested_path=path.name,
         resource_metadata_json=_metadata_json(),
         max_file_bytes=1_000_000,
         max_rows=1_000,
-    ).result
+    )
     resource = resource_output[0]
     assert isinstance(resource, DGIdbResource)
     assert resource_output[1].kind == "summary"
@@ -1024,20 +1051,20 @@ def test_drug_nodes_expose_atomic_typed_contracts_and_hash_resource(
 
     score_backend = _fake_pertpy(science)
     monkeypatch.setitem(sys.modules, "pertpy", score_backend)
-    score_output = OpenBioSingleCellDrugScores.execute(
+    score_output = drug_scores_owned(
         _adata(science),
         resource,
         drug="DrugA",
         source={"source": "X"},
         output_key="score",
-    ).result
+    )
     assert len(score_output) == 3 and score_output[1].kind == "summary"
     compile(score_output[2], "<score-node-code>", "exec")
 
     decoupler = _fake_decoupler(science)
     monkeypatch.setitem(sys.modules, "decoupler", decoupler)
     selected, selected_universe = _generic_artifacts(science, purpose="selected")
-    ora_output = OpenBioSingleCellDrugHypergeometric.execute(
+    ora_output = drug_hypergeometric_owned(
         selected,
         selected_universe,
         resource,
@@ -1045,11 +1072,11 @@ def test_drug_nodes_expose_atomic_typed_contracts_and_hash_resource(
         min_targets=2,
         min_overlap=1,
         max_p_adjusted=1.0,
-    ).result
+    )
     assert len(ora_output) == 3 and ora_output[0].kind == "table" and ora_output[1].kind == "summary"
     compile(ora_output[2], "<ora-node-code>", "exec")
     ranked, ranked_universe = _generic_artifacts(science, purpose="ranked")
-    gsea_output = OpenBioSingleCellDrugGSEA.execute(
+    gsea_output = drug_gsea_owned(
         ranked,
         ranked_universe,
         resource,
@@ -1058,7 +1085,7 @@ def test_drug_nodes_expose_atomic_typed_contracts_and_hash_resource(
         max_targets=4,
         n_permutations=1000,
         random_seed=17,
-    ).result
+    )
     assert len(gsea_output) == 3 and gsea_output[0].kind == "table" and gsea_output[1].kind == "summary"
     compile(gsea_output[2], "<gsea-node-code>", "exec")
 

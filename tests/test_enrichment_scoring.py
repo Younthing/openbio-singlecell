@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from openbio_singlecell.files import resolve_input_path
 from openbio_singlecell.node_types import AnnDataType, SummaryResultType, TableResultType
 from openbio_singlecell.nodes_enrichment import (
     OpenBioSingleCellAUCellScores,
@@ -15,12 +16,40 @@ from openbio_singlecell.nodes_enrichment import (
     OpenBioSingleCellGSVAScores,
     OpenBioSingleCellPathwayScoreTTest,
 )
+from openbio_singlecell.operations_enrichment import (
+    aucell_scores_owned,
+    gene_panel_scores_owned,
+    gsva_scores_owned,
+    pathway_score_ttest_owned,
+)
 from openbio_singlecell.pathway_score_contrast import PATHWAY_SCORE_CONTRAST_COLUMNS
 from openbio_singlecell.score_artifact import build_score_artifact, store_score_artifact
 
 
 def _outputs(node_output):
-    return node_output.result
+    return node_output.result if hasattr(node_output, "result") else node_output
+
+
+def _score_owned(function, adata, *, gene_sets_file="", **parameters):
+    # Simulate the worker-owned H5AD instance while keeping the caller fixture available for parity checks.
+    return function(
+        adata.copy(),
+        gene_sets_path=resolve_input_path(gene_sets_file, extensions=(".csv", ".tsv", ".gmt")),
+        requested_resource_path=gene_sets_file,
+        **parameters,
+    )
+
+
+def _aucell(adata, **parameters):
+    return _score_owned(aucell_scores_owned, adata, **parameters)
+
+
+def _gsva(adata, **parameters):
+    return _score_owned(gsva_scores_owned, adata, **parameters)
+
+
+def _panel(adata, **parameters):
+    return _score_owned(gene_panel_scores_owned, adata, **parameters)
 
 
 def _metadata_json():
@@ -59,7 +88,7 @@ def _write_resource(path, *, genes=100):
 
 
 def test_scoring_and_pathway_schemas_are_atomic():
-    aucell = OpenBioSingleCellAUCellScores.GET_SCHEMA()
+    aucell = OpenBioSingleCellAUCellScores.define_schema()
     assert [item.id for item in aucell.inputs] == [
         "adata",
         "gene_sets_file",
@@ -80,7 +109,7 @@ def test_scoring_and_pathway_schemas_are_atomic():
         ("summary", SummaryResultType.io_type),
         ("code", "STRING"),
     ]
-    gsva = OpenBioSingleCellGSVAScores.GET_SCHEMA()
+    gsva = OpenBioSingleCellGSVAScores.define_schema()
     assert [item.id for item in gsva.inputs] == [
         "adata",
         "gene_sets_file",
@@ -99,7 +128,7 @@ def test_scoring_and_pathway_schemas_are_atomic():
         "output_key",
         "overwrite_existing",
     ]
-    panel = OpenBioSingleCellGenePanelScores.GET_SCHEMA()
+    panel = OpenBioSingleCellGenePanelScores.define_schema()
     assert [item.id for item in panel.inputs] == [
         "adata",
         "gene_sets_file",
@@ -114,7 +143,7 @@ def test_scoring_and_pathway_schemas_are_atomic():
         "random_seed",
         "overwrite_existing",
     ]
-    pathway = OpenBioSingleCellPathwayScoreTTest.GET_SCHEMA()
+    pathway = OpenBioSingleCellPathwayScoreTTest.define_schema()
     assert [item.id for item in pathway.inputs] == [
         "adata",
         "sample_key",
@@ -160,7 +189,7 @@ def test_scoring_cache_fingerprint_tracks_same_size_same_mtime_resource_bytes(
     assert before != after
 
 
-def test_real_aucell_22_generated_parity_provenance_and_immutability(
+def test_real_aucell_22_generated_parity_provenance_and_worker_isolation(
     science, comfy_directories
 ):
     pytest.importorskip("decoupler")
@@ -171,7 +200,7 @@ def test_real_aucell_22_generated_parity_provenance_and_immutability(
     original_uns = copy.deepcopy(adata.uns)
 
     output, report, code = _outputs(
-        OpenBioSingleCellAUCellScores.execute(
+        _aucell(
             adata,
             gene_sets_file="sets.csv",
             resource_metadata_json=_metadata_json(),
@@ -199,7 +228,11 @@ def test_real_aucell_22_generated_parity_provenance_and_immutability(
     compile(code, "<aucell-code>", "exec")
     namespace = {}
     exec(code, namespace)
+    assert (adata.X != original_x).nnz == 0
+    assert adata.uns == original_uns
+    assert "aucell_test" not in adata.obsm
     generated, generated_summary = namespace["score_aucell"](adata)
+    assert generated is adata
     science.pd.testing.assert_frame_equal(generated.obsm["aucell_test"], output.obsm["aucell_test"])
     assert generated.uns["openbio_singlecell_score_artifacts"] == output.uns[
         "openbio_singlecell_score_artifacts"
@@ -207,8 +240,6 @@ def test_real_aucell_22_generated_parity_provenance_and_immutability(
     assert generated_summary == report.summary
     assert "seed-0 feature permutation" in code
     assert (adata.X != original_x).nnz == 0
-    assert adata.uns == original_uns
-    assert "aucell_test" not in adata.obsm
 
 
 def test_aucell_uses_exact_reviewed_decoupler_public_arguments(
@@ -242,7 +273,7 @@ def test_aucell_uses_exact_reviewed_decoupler_public_arguments(
 
     monkeypatch.setattr(decoupler.mt, "aucell", fake_aucell)
     output, report, _ = _outputs(
-        OpenBioSingleCellAUCellScores.execute(
+        _aucell(
             adata,
             gene_sets_file="sets.csv",
             resource_metadata_json=_metadata_json(),
@@ -285,7 +316,7 @@ def test_aucell_public_wrapper_applies_decoupler_seed_zero_feature_tie_break(
 
     monkeypatch.setattr(decoupler_data, "_break_ties", observe_break_ties)
     _, report, _ = _outputs(
-        OpenBioSingleCellAUCellScores.execute(
+        _aucell(
             adata,
             gene_sets_file="sets.csv",
             resource_metadata_json=_metadata_json(),
@@ -301,14 +332,14 @@ def test_aucell_public_wrapper_applies_decoupler_seed_zero_feature_tie_break(
 
 
 @pytest.mark.parametrize(
-    ("node", "method_name"),
+    ("execute", "method_name"),
     [
-        (OpenBioSingleCellAUCellScores, "aucell"),
-        (OpenBioSingleCellGSVAScores, "gsva"),
+        (_aucell, "aucell"),
+        (_gsva, "gsva"),
     ],
 )
 def test_decoupler_scoring_rejects_unreviewed_version_and_missing_public_method(
-    science, comfy_directories, monkeypatch, node, method_name
+    science, comfy_directories, monkeypatch, execute, method_name
 ):
     input_dir, _, _ = comfy_directories
     _write_resource(input_dir / "sets.csv")
@@ -324,7 +355,7 @@ def test_decoupler_scoring_rejects_unreviewed_version_and_missing_public_method(
 
     replace_decoupler(SimpleNamespace(__version__="1.9.9", mt=SimpleNamespace()))
     with pytest.raises(RuntimeError, match="requires the reviewed decoupler 2.2 public mt API"):
-        node.execute(
+        execute(
             adata,
             gene_sets_file="sets.csv",
             resource_metadata_json=_metadata_json(),
@@ -334,7 +365,7 @@ def test_decoupler_scoring_rejects_unreviewed_version_and_missing_public_method(
 
     replace_decoupler(SimpleNamespace(__version__="2.2.0", mt=SimpleNamespace()))
     with pytest.raises(RuntimeError, match=rf"requires callable decoupler\.mt\.{method_name}"):
-        node.execute(
+        execute(
             adata,
             gene_sets_file="sets.csv",
             resource_metadata_json=_metadata_json(),
@@ -352,7 +383,7 @@ def test_real_gsva_22_official_defaults_memory_guard_and_generated_parity(
     adata = _logged_adata(science)
 
     output, report, code = _outputs(
-        OpenBioSingleCellGSVAScores.execute(
+        _gsva(
             adata,
             gene_sets_file="sets.csv",
             resource_metadata_json=_metadata_json(),
@@ -376,7 +407,7 @@ def test_real_gsva_22_official_defaults_memory_guard_and_generated_parity(
     assert generated_summary == report.summary
 
     with pytest.raises(ValueError, match="working-memory preflight"):
-        OpenBioSingleCellGSVAScores.execute(
+        _gsva(
             adata,
             gene_sets_file="sets.csv",
             resource_metadata_json=_metadata_json(),
@@ -419,7 +450,7 @@ def test_gsva_uses_exact_reviewed_decoupler_arguments_and_empirical_kernel(
 
     monkeypatch.setattr(decoupler.mt, "gsva", fake_gsva)
     output, report, _ = _outputs(
-        OpenBioSingleCellGSVAScores.execute(
+        _gsva(
             adata,
             gene_sets_file="sets.csv",
             resource_metadata_json=_metadata_json(),
@@ -459,7 +490,7 @@ def test_real_poisson_gsva_requires_and_uses_explicit_count_state(science, comfy
     science.sc.pp.normalize_total(adata, target_sum=10_000.0)
     science.sc.pp.log1p(adata)
     output, report, code = _outputs(
-        OpenBioSingleCellGSVAScores.execute(
+        _gsva(
             adata,
             gene_sets_file="sets.csv",
             resource_metadata_json=_metadata_json(),
@@ -479,7 +510,7 @@ def test_real_poisson_gsva_requires_and_uses_explicit_count_state(science, comfy
     assert generated_summary == report.summary
 
     with pytest.raises(ValueError, match="finite nonnegative integer count values"):
-        OpenBioSingleCellGSVAScores.execute(
+        _gsva(
             adata,
             gene_sets_file="sets.csv",
             resource_metadata_json=_metadata_json(),
@@ -495,7 +526,7 @@ def test_real_scanpy_one_panel_exact_arguments_and_generated_parity(science, com
     adata = _logged_adata(science)
 
     output, report, code = _outputs(
-        OpenBioSingleCellGenePanelScores.execute(
+        _panel(
             adata,
             gene_sets_file="sets.csv",
             resource_metadata_json=_metadata_json(),
@@ -519,10 +550,11 @@ def test_real_scanpy_one_panel_exact_arguments_and_generated_parity(science, com
     }
     namespace = {}
     exec(compile(code, "<panel-code>", "exec"), namespace)
+    assert "panel_test" not in adata.obs
     generated, generated_summary = namespace["score_gene_panel"](adata)
+    assert generated is adata
     science.pd.testing.assert_series_equal(generated.obs["panel_test"], output.obs["panel_test"])
     assert generated_summary == report.summary
-    assert "panel_test" not in adata.obs
 
 
 def test_panel_uses_exact_scanpy_arguments_and_isolates_global_rng(
@@ -569,7 +601,7 @@ def test_panel_uses_exact_scanpy_arguments_and_isolates_global_rng(
     monkeypatch.setattr(scanpy.tl, "score_genes", fake_score_genes)
     before = science.np.random.get_state()
     output, report, _ = _outputs(
-        OpenBioSingleCellGenePanelScores.execute(
+        _panel(
             adata,
             gene_sets_file="sets.csv",
             resource_metadata_json=_metadata_json(),
@@ -608,7 +640,7 @@ def test_score_output_collision_requires_opt_in_and_generated_code_pins_resource
     _write_resource(resource_path)
     adata = _logged_adata(science)
     output, _, code = _outputs(
-        OpenBioSingleCellAUCellScores.execute(
+        _aucell(
             adata,
             gene_sets_file="sets.csv",
             resource_metadata_json=_metadata_json(),
@@ -617,7 +649,7 @@ def test_score_output_collision_requires_opt_in_and_generated_code_pins_resource
         )
     )
     with pytest.raises(ValueError, match="overwrite_existing"):
-        OpenBioSingleCellAUCellScores.execute(
+        _aucell(
             output,
             gene_sets_file="sets.csv",
             resource_metadata_json=_metadata_json(),
@@ -625,7 +657,7 @@ def test_score_output_collision_requires_opt_in_and_generated_code_pins_resource
             output_key="scores",
         )
     replaced, replacement_report, _ = _outputs(
-        OpenBioSingleCellAUCellScores.execute(
+        _aucell(
             output,
             gene_sets_file="sets.csv",
             resource_metadata_json=_metadata_json(),
@@ -648,17 +680,17 @@ def test_score_output_collision_requires_opt_in_and_generated_code_pins_resource
 
 
 @pytest.mark.parametrize(
-    "node,extra,entrypoint,storage",
+    "execute,extra,entrypoint,storage",
     [
-        (OpenBioSingleCellAUCellScores, {"min_targets": 3}, "score_aucell", "obsm"),
+        (_aucell, {"min_targets": 3}, "score_aucell", "obsm"),
         (
-            OpenBioSingleCellGSVAScores,
+            _gsva,
             {"min_targets": 3, "kernel": "gaussian_normalized"},
             "score_gsva",
             "obsm",
         ),
         (
-            OpenBioSingleCellGenePanelScores,
+            _panel,
             {"panel": "panel_x"},
             "score_gene_panel",
             "obs",
@@ -667,7 +699,7 @@ def test_score_output_collision_requires_opt_in_and_generated_code_pins_resource
 )
 @pytest.mark.parametrize("source_kind", ["X", "raw"])
 def test_scoring_allows_explicit_count_like_expression_with_cautious_generated_parity(
-    science, comfy_directories, node, extra, entrypoint, storage, source_kind
+    science, comfy_directories, execute, extra, entrypoint, storage, source_kind
 ):
     input_dir, _, _ = comfy_directories
     _write_resource(input_dir / "sets.csv")
@@ -682,7 +714,7 @@ def test_scoring_allows_explicit_count_like_expression_with_cautious_generated_p
         adata.X = counts.copy()
     adata.uns.pop("log1p", None)
     output, report, code = _outputs(
-        node.execute(
+        execute(
             adata,
             gene_sets_file="sets.csv",
             resource_metadata_json=_metadata_json(),
@@ -765,11 +797,43 @@ def _pathway_adata_with_artifact(science):
     return adata
 
 
+def test_score_artifact_fingerprint_streams_owned_frame_without_full_copy(science, monkeypatch):
+    frame = science.pd.DataFrame(
+        {"score": [0.1, 0.2, 0.3]},
+        index=["cell_1", "cell_2", "cell_3"],
+    )
+    copy_requests = []
+    original_to_numpy = science.pd.DataFrame.to_numpy
+
+    def tracked_to_numpy(value, *args, **kwargs):
+        if kwargs.get("copy") is True:
+            copy_requests.append(value.shape)
+        return original_to_numpy(value, *args, **kwargs)
+
+    monkeypatch.setattr(science.pd.DataFrame, "to_numpy", tracked_to_numpy)
+    build_score_artifact(
+        frame=frame,
+        feature_names=["G1"],
+        producer_node="OpenBioSingleCellAUCellScores",
+        method="AUCell",
+        storage="obsm",
+        score_key="score",
+        resource={"sha256": "a" * 64},
+        expression={"source": "X"},
+        parameters={"min_targets": 1},
+        references=[{"citation": "fixture"}],
+        np=science.np,
+        pd=science.pd,
+    )
+
+    assert copy_requests == []
+
+
 def test_pathway_contrast_uses_sample_means_full_bh_family_and_generated_parity(science):
     adata = _pathway_adata_with_artifact(science)
     original = adata.copy()
     result, report, code = _outputs(
-        OpenBioSingleCellPathwayScoreTTest.execute(
+        pathway_score_ttest_owned(
             adata,
             population="T",
             condition_a="control",
@@ -837,7 +901,7 @@ def test_pathway_contrast_rejects_tampered_scores(science):
     adata = _pathway_adata_with_artifact(science)
     adata.obsm["scores"].iloc[0, 0] += 1.0
     with pytest.raises(ValueError, match="immutable provenance"):
-        OpenBioSingleCellPathwayScoreTTest.execute(
+        pathway_score_ttest_owned(
             adata,
             population="T",
             condition_a="control",
@@ -852,7 +916,7 @@ def test_pathway_contrast_reports_batch_confounding_and_sample_batch_multiplicit
     adata = _pathway_adata_with_artifact(science)
     adata.obs["confounded"] = adata.obs["condition"].map({"control": "b1", "treated": "b2"})
     result, report, code = _outputs(
-        OpenBioSingleCellPathwayScoreTTest.execute(
+        pathway_score_ttest_owned(
             adata,
             population="T",
             condition_a="control",
@@ -876,7 +940,7 @@ def test_pathway_contrast_reports_batch_confounding_and_sample_batch_multiplicit
     adata = _pathway_adata_with_artifact(science)
     adata.obs.loc[adata.obs["sample"] == "s0", "batch"] = ["b0"] * 9 + ["b9"]
     result, report, code = _outputs(
-        OpenBioSingleCellPathwayScoreTTest.execute(
+        pathway_score_ttest_owned(
             adata,
             population="T",
             condition_a="control",
@@ -926,7 +990,7 @@ def test_pathway_contrast_allows_two_samples_per_arm_with_warning_and_generated_
     )
     store_score_artifact(adata, artifact)
     result, report, code = _outputs(
-        OpenBioSingleCellPathwayScoreTTest.execute(
+        pathway_score_ttest_owned(
             adata,
             population="T",
             condition_a="control",
@@ -973,7 +1037,7 @@ def test_pathway_contrast_fails_closed_on_zero_variance_family_member(science):
     )
     store_score_artifact(adata, artifact)
     with pytest.raises(ValueError, match="zero Sample-level variance in both Conditions"):
-        OpenBioSingleCellPathwayScoreTTest.execute(
+        pathway_score_ttest_owned(
             adata,
             population="T",
             condition_a="control",
@@ -986,7 +1050,7 @@ def test_pathway_contrast_rejects_sample_mapping_conflicts_and_insufficient_popu
     adata = _pathway_adata_with_artifact(science)
     adata.obs.loc["s0_c0", "condition"] = "treated"
     with pytest.raises(ValueError, match="one Condition per Sample"):
-        OpenBioSingleCellPathwayScoreTTest.execute(
+        pathway_score_ttest_owned(
             adata,
             population="T",
             condition_a="control",
@@ -997,7 +1061,7 @@ def test_pathway_contrast_rejects_sample_mapping_conflicts_and_insufficient_popu
     adata = _pathway_adata_with_artifact(science)
     adata.obs.loc[adata.obs["sample"].isin(["s0", "s1"]), "cell_type"] = "B"
     with pytest.raises(ValueError, match="at least 3 retained Samples per Condition"):
-        OpenBioSingleCellPathwayScoreTTest.execute(
+        pathway_score_ttest_owned(
             adata,
             population="T",
             condition_a="control",

@@ -5,10 +5,8 @@ import json
 import pytest
 from scipy import stats
 
-from openbio_singlecell.nodes_results import (
-    PCA_METADATA_COLUMNS,
-    OpenBioSingleCellPCAMetadataAssociations,
-)
+from openbio_singlecell.nodes_results import OpenBioSingleCellPCAMetadataAssociations
+from openbio_singlecell.operations_results import PCA_METADATA_COLUMNS, pca_metadata_associations_owned
 
 
 def _adata(science):
@@ -63,7 +61,7 @@ def _execute(adata, **overrides):
         "alpha": 0.05,
     }
     arguments.update(overrides)
-    return OpenBioSingleCellPCAMetadataAssociations.execute(adata, **arguments).result
+    return pca_metadata_associations_owned(adata, **arguments)
 
 
 def _sample_means(adata, science):
@@ -77,7 +75,7 @@ def _sample_means(adata, science):
 
 
 def test_schema_exposes_atomic_sample_level_contract():
-    schema = OpenBioSingleCellPCAMetadataAssociations.GET_SCHEMA()
+    schema = OpenBioSingleCellPCAMetadataAssociations.define_schema()
 
     assert [item.id for item in schema.inputs] == [
         "adata",

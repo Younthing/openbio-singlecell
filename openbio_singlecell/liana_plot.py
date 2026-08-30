@@ -533,12 +533,22 @@ def _liana_plot_impl(
 
 def render_liana_dot_plot(
     result: Any,
+    *,
+    exact_type: bool = True,
     **parameters: Any,
 ) -> tuple[bytes, dict[str, Any]]:
-    table, provenance, metadata = validate_liana_result(result)
+    table, provenance, metadata = validate_liana_result(
+        result,
+        exact_type=exact_type,
+        copy_result=False,
+    )
     fingerprint = metadata["artifact_fingerprint_sha256"]
     png, summary = _liana_plot_impl(table, provenance, **parameters)
-    _table_after, _provenance_after, metadata_after = validate_liana_result(result)
+    _table_after, _provenance_after, metadata_after = validate_liana_result(
+        result,
+        exact_type=exact_type,
+        copy_result=False,
+    )
     if metadata_after["artifact_fingerprint_sha256"] != fingerprint:
         raise RuntimeError("LIANA typed result changed during plotting.")
     return png, summary

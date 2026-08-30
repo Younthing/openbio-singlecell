@@ -3,21 +3,43 @@ from __future__ import annotations
 import json
 import sys
 import types
+import uuid
 
 import pytest
 
+from openbio_singlecell.artifact_codecs import ANNDATA_PAYLOAD, read_table, write_anndata
 from openbio_singlecell.node_types import PseudobulkType, SummaryResultType
 from openbio_singlecell.nodes_differential import (
-    OpenBioSingleCellPseudobulk,
-    OpenBioSingleCellPseudobulkDESeq2,
-    OpenBioSingleCellPseudobulkEdgeR,
+    OpenBioSingleCellPseudobulk as _PseudobulkSchema,
+)
+from openbio_singlecell.nodes_differential import (
+    OpenBioSingleCellPseudobulkDESeq2 as _PseudobulkDESeq2Schema,
+)
+from openbio_singlecell.nodes_differential import (
+    OpenBioSingleCellPseudobulkEdgeR as _PseudobulkEdgeRSchema,
+)
+from openbio_singlecell.operations_differential import (
+    pseudobulk as pseudobulk_operation,
+)
+from openbio_singlecell.operations_differential import (
+    pseudobulk_deseq2 as pseudobulk_deseq2_operation,
+)
+from openbio_singlecell.operations_differential import (
+    pseudobulk_edger as pseudobulk_edger_operation,
+)
+from openbio_singlecell.operations_differential import (
+    run_pseudobulk_deseq2_owned,
+    run_pseudobulk_edger_owned,
+    run_pseudobulk_owned,
 )
 from openbio_singlecell.pseudobulk import PseudobulkArtifact, validate_pseudobulk_artifact
+from openbio_singlecell.pseudobulk_artifact_codec import (
+    PSEUDOBULK_METADATA,
+    read_pseudobulk,
+    write_pseudobulk,
+)
 from openbio_singlecell.sample_design import EDGER_COLUMNS, PYDESEQ2_COLUMNS, prepare_pseudobulk_design
-
-
-def _outputs(node_output):
-    return tuple(node_output.result)
+from openbio_singlecell.worker_protocol import OperationContext
 
 
 def _matrix_values(matrix, science):
@@ -217,22 +239,86 @@ def _run_aggregation(
     adata = adata if adata is not None else _fixture_adata(science, sparse_source=sparse_source)
     backend = _fake_decoupler(science, qc_name=qc_name)
     monkeypatch.setitem(sys.modules, "decoupler", backend)
-    artifact, report, code = _outputs(
-        OpenBioSingleCellPseudobulk.execute(
-            adata,
-            sample_key="sample",
-            population_key="cell_type",
-            condition_key="condition",
-            technical_batch_key=technical_batch_key,
-            categorical_covariate_keys=categorical_covariate_keys,
-            continuous_covariate_keys=continuous_covariate_keys,
-            source=source or {"source": "raw"},
-            inference_mode=inference_mode,
-            min_cells=min_cells,
-            min_counts=min_counts,
-        )
+    artifact, report, code = run_pseudobulk_owned(
+        adata,
+        sample_key="sample",
+        population_key="cell_type",
+        condition_key="condition",
+        technical_batch_key=technical_batch_key,
+        categorical_covariate_keys=categorical_covariate_keys,
+        continuous_covariate_keys=continuous_covariate_keys,
+        source=source or {"source": "raw"},
+        inference_mode=inference_mode,
+        min_cells=min_cells,
+        min_counts=min_counts,
     )
     return adata, backend, artifact, report, code
+
+
+def test_pseudobulk_worker_operation_publishes_portable_state_without_mutating_input(
+    science, monkeypatch, tmp_path
+):
+    adata = _fixture_adata(science)
+    monkeypatch.setitem(sys.modules, "decoupler", _fake_decoupler(science))
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    write_anndata(input_root, adata)
+    input_path = input_root / ANNDATA_PAYLOAD
+    input_bytes = input_path.read_bytes()
+    staging = tmp_path / "run.partial"
+    staging.mkdir()
+    context = OperationContext.from_request_path(staging / "request.json", str(uuid.uuid4()))
+
+    records = pseudobulk_operation(
+        context,
+        {
+            "adata": {
+                "type": "artifact",
+                "path": str(input_root.resolve()),
+                "kind": "OPENBIO_ANNDATA",
+                "codec": "anndata-h5ad-v1",
+            }
+        },
+        {
+            "sample_key": "sample",
+            "population_key": "cell_type",
+            "condition_key": "condition",
+            "technical_batch_key": "batch",
+            "categorical_covariate_keys": "",
+            "continuous_covariate_keys": "age",
+            "source": {"source": "raw"},
+            "inference_mode": "formal",
+            "min_cells": 2,
+            "min_counts": 1,
+        },
+    )
+
+    assert input_path.read_bytes() == input_bytes
+    assert [record["name"] for record in records] == ["pseudobulk", "summary", "code"]
+    assert records[0] == {
+        "type": "artifact",
+        "name": "pseudobulk",
+        "kind": "OPENBIO_SINGLE_CELL_PSEUDOBULK",
+        "codec": "pseudobulk-h5ad-v1",
+        "payload": "outputs/pseudobulk",
+    }
+    output_root = staging / records[0]["payload"]
+    assert output_root != input_root
+    assert (output_root / ANNDATA_PAYLOAD).is_file()
+    assert json.loads((output_root / PSEUDOBULK_METADATA).read_text(encoding="utf-8"))
+    restored = read_pseudobulk(output_root)
+    restored_adata, restored_metadata = validate_pseudobulk_artifact(restored)
+    assert restored_adata.shape == (8, 4)
+    assert restored_metadata["role_keys"] == {
+        "sample": "sample",
+        "population": "cell_type",
+        "condition": "condition",
+        "technical_batch": "batch",
+    }
+    assert records[1]["type"] == "summary"
+    assert isinstance(records[1]["value"], dict)
+    assert records[2]["type"] == "string"
+    assert "def run_pseudobulk" in records[2]["value"]
 
 
 def _fake_pertpy(science, *, engine, malformed=None):
@@ -421,10 +507,70 @@ def _fake_pertpy(science, *, engine, malformed=None):
     return module
 
 
+@pytest.mark.parametrize(
+    ("operation", "engine", "expected_columns"),
+    [
+        (pseudobulk_edger_operation, "edger", EDGER_COLUMNS),
+        (pseudobulk_deseq2_operation, "pydeseq2", PYDESEQ2_COLUMNS),
+    ],
+)
+def test_pseudobulk_engine_worker_operations_publish_jsonl_tables(
+    science,
+    monkeypatch,
+    tmp_path,
+    operation,
+    engine,
+    expected_columns,
+):
+    _, _, artifact, _, _ = _run_aggregation(science, monkeypatch)
+    input_root = tmp_path / "pseudobulk"
+    input_root.mkdir()
+    write_pseudobulk(input_root, artifact)
+    monkeypatch.setitem(sys.modules, "pertpy", _fake_pertpy(science, engine=engine))
+    staging = tmp_path / "run.partial"
+    staging.mkdir()
+    context = OperationContext.from_request_path(staging / "request.json", str(uuid.uuid4()))
+    parameters = {
+        "population": "T",
+        "reference_condition": "control",
+        "comparison_condition": "treated",
+        "categorical_covariate_keys": "",
+        "continuous_covariate_keys": "",
+        "fdr_threshold": 0.05,
+        "min_abs_log2_fold_change": 0.0,
+        "min_count": 0,
+        "min_total_count": 1,
+        "large_n": 10,
+        "min_prop": 0.7,
+    }
+    if engine == "pydeseq2":
+        parameters["n_cpus"] = 1
+
+    records = operation(
+        context,
+        {
+            "pseudobulk": {
+                "type": "artifact",
+                "path": str(input_root.resolve()),
+                "kind": "OPENBIO_SINGLE_CELL_PSEUDOBULK",
+                "codec": "pseudobulk-h5ad-v1",
+            }
+        },
+        parameters,
+    )
+
+    assert [record["name"] for record in records] == ["table", "summary", "code"]
+    assert records[0]["kind"] == "OPENBIO_SINGLE_CELL_TABLE"
+    assert records[0]["codec"] == "table-jsonl-v1"
+    table, metadata = read_table(staging / records[0]["payload"])
+    assert table.columns.tolist() == expected_columns
+    assert metadata["source"]["operation"] in {"pseudobulk_edger", "pseudobulk_deseq2"}
+
+
 def test_pseudobulk_schemas_are_typed():
-    aggregation = OpenBioSingleCellPseudobulk.GET_SCHEMA()
-    edger = OpenBioSingleCellPseudobulkEdgeR.GET_SCHEMA()
-    pydeseq2 = OpenBioSingleCellPseudobulkDESeq2.GET_SCHEMA()
+    aggregation = _PseudobulkSchema.define_schema()
+    edger = _PseudobulkEdgeRSchema.define_schema()
+    pydeseq2 = _PseudobulkDESeq2Schema.define_schema()
 
     assert [item.id for item in aggregation.inputs] == [
         "adata",
@@ -654,7 +800,7 @@ def test_pseudobulk_exact_profile_total_avoids_false_int64_overflow_and_rejects_
     )
     calls_before = len(backend.calls)
     with pytest.raises(OverflowError) as runtime_error:
-        OpenBioSingleCellPseudobulk.execute(
+        run_pseudobulk_owned(
             overflowing,
             sample_key="sample",
             population_key="cell_type",
@@ -707,7 +853,7 @@ def test_pseudobulk_uses_the_selected_raw_axis_and_rejects_duplicate_selected_id
     duplicate_names[1] = duplicate_names[0]
     duplicate_cells.obs_names = duplicate_names
     with pytest.raises(ValueError, match="unique cell and gene identifiers"):
-        OpenBioSingleCellPseudobulk.execute(
+        run_pseudobulk_owned(
             duplicate_cells,
             population_key="cell_type",
             condition_key="condition",
@@ -723,7 +869,7 @@ def test_pseudobulk_uses_the_selected_raw_axis_and_rejects_duplicate_selected_id
     duplicate_raw.var_names = duplicate_gene_names
     duplicate_genes.raw = duplicate_raw
     with pytest.raises(ValueError, match="unique cell and gene identifiers"):
-        OpenBioSingleCellPseudobulk.execute(
+        run_pseudobulk_owned(
             duplicate_genes,
             population_key="cell_type",
             condition_key="condition",
@@ -770,7 +916,7 @@ def test_pseudobulk_rejects_invalid_raw_counts_before_backend(science, monkeypat
     backend = _fake_decoupler(science)
     monkeypatch.setitem(sys.modules, "decoupler", backend)
     with pytest.raises(ValueError, match=message):
-        OpenBioSingleCellPseudobulk.execute(
+        run_pseudobulk_owned(
             adata,
             source={"source": "raw"},
             population_key="cell_type",
@@ -787,7 +933,7 @@ def test_pseudobulk_rejects_sample_mapping_conflicts_and_string_collisions(scien
     conflicting = _fixture_adata(science)
     conflicting.obs.iloc[1, conflicting.obs.columns.get_loc("condition")] = "treated"
     with pytest.raises(ValueError, match="one Condition/batch/covariate mapping.*s1"):
-        OpenBioSingleCellPseudobulk.execute(
+        run_pseudobulk_owned(
             conflicting,
             source={"source": "raw"},
             population_key="cell_type",
@@ -801,7 +947,7 @@ def test_pseudobulk_rejects_sample_mapping_conflicts_and_string_collisions(scien
     collision.obs.iloc[0, collision.obs.columns.get_loc("sample")] = 1
     collision.obs.iloc[1, collision.obs.columns.get_loc("sample")] = "1"
     with pytest.raises(ValueError, match="collapse after string conversion"):
-        OpenBioSingleCellPseudobulk.execute(
+        run_pseudobulk_owned(
             collision,
             source={"source": "raw"},
             population_key="cell_type",
@@ -821,17 +967,15 @@ def test_pseudobulk_reports_qc_that_erases_a_population_condition_stratum_withou
     original = adata.copy()
     backend = _fake_decoupler(science)
     monkeypatch.setitem(sys.modules, "decoupler", backend)
-    artifact, report, _ = _outputs(
-        OpenBioSingleCellPseudobulk.execute(
-            adata,
-            sample_key="sample",
-            population_key="cell_type",
-            condition_key="condition",
-            technical_batch_key="batch",
-            source={"source": "raw"},
-            min_cells=2,
-            min_counts=1,
-        )
+    artifact, report, _ = run_pseudobulk_owned(
+        adata,
+        sample_key="sample",
+        population_key="cell_type",
+        condition_key="condition",
+        technical_batch_key="batch",
+        source={"source": "raw"},
+        min_cells=2,
+        min_counts=1,
     )
     validate_pseudobulk_artifact(artifact)
     assert report.summary["key_results"]["lost_strata"] == [["B", "treated"]]
@@ -847,7 +991,7 @@ def test_pseudobulk_rejects_malformed_backend_without_mutating_input(science, mo
     backend = _fake_decoupler(science, malformed=malformed)
     monkeypatch.setitem(sys.modules, "decoupler", backend)
     with pytest.raises(RuntimeError, match="backend|profile-filter"):
-        OpenBioSingleCellPseudobulk.execute(
+        run_pseudobulk_owned(
             adata,
             source={"source": "raw"},
             population_key="cell_type",
@@ -870,23 +1014,21 @@ def test_pseudobulk_generated_code_matches_runtime_backend_failure_and_preserves
     original = adata.copy()
     good = _fake_decoupler(science)
     monkeypatch.setitem(sys.modules, "decoupler", good)
-    _, _, code = _outputs(
-        OpenBioSingleCellPseudobulk.execute(
-            adata,
-            sample_key="sample",
-            population_key="cell_type",
-            condition_key="condition",
-            technical_batch_key="batch",
-            continuous_covariate_keys="age",
-            source={"source": "raw"},
-            min_cells=2,
-            min_counts=1,
-        )
+    _, _, code = run_pseudobulk_owned(
+        adata,
+        sample_key="sample",
+        population_key="cell_type",
+        condition_key="condition",
+        technical_batch_key="batch",
+        continuous_covariate_keys="age",
+        source={"source": "raw"},
+        min_cells=2,
+        min_counts=1,
     )
     bad = _fake_decoupler(science, malformed=malformed)
     monkeypatch.setitem(sys.modules, "decoupler", bad)
     with pytest.raises(RuntimeError) as runtime_error:
-        OpenBioSingleCellPseudobulk.execute(
+        run_pseudobulk_owned(
             adata,
             sample_key="sample",
             population_key="cell_type",
@@ -912,7 +1054,7 @@ def test_pseudobulk_backend_version_and_public_signature_drift_fail_closed(scien
     wrong_version.__version__ = "1.9.2"
     monkeypatch.setitem(sys.modules, "decoupler", wrong_version)
     with pytest.raises(RuntimeError, match="requires Decoupler 2.x.*1.9.2"):
-        OpenBioSingleCellPseudobulk.execute(
+        run_pseudobulk_owned(
             adata,
             population_key="cell_type",
             condition_key="condition",
@@ -925,7 +1067,7 @@ def test_pseudobulk_backend_version_and_public_signature_drift_fail_closed(scien
     wrong_signature.pp.filter_samples = lambda adata: adata.obs_names.to_numpy(dtype=str)
     monkeypatch.setitem(sys.modules, "decoupler", wrong_signature)
     with pytest.raises(RuntimeError, match="filter_samples interface is incompatible"):
-        OpenBioSingleCellPseudobulk.execute(
+        run_pseudobulk_owned(
             adata,
             population_key="cell_type",
             condition_key="condition",
@@ -1066,15 +1208,13 @@ def test_incomplete_but_full_rank_batch_overlap_warns_instead_of_blocking(scienc
     assert prepared["diagnostics"]["design"]["categorical_condition_overlap"][0]["key"] == "batch"
     backend = _fake_pertpy(science, engine="edger")
     monkeypatch.setitem(sys.modules, "pertpy", backend)
-    _, report, _ = _outputs(
-        OpenBioSingleCellPseudobulkEdgeR.execute(
-            artifact,
-            population="T",
-            reference_condition="control",
-            comparison_condition="treated",
-            min_count=0,
-            min_total_count=1,
-        )
+    _, report, _ = run_pseudobulk_edger_owned(
+        artifact,
+        population="T",
+        reference_condition="control",
+        comparison_condition="treated",
+        min_count=0,
+        min_total_count=1,
     )
     assert any("incomplete Condition overlap" in warning for warning in report.summary["warnings"])
     assert report.summary["key_results"]["formal_interpretation_invalid"] is True
@@ -1133,17 +1273,15 @@ def test_edger_full_table_summary_backend_controls_generated_parity_and_input_im
     original, original_metadata = validate_pseudobulk_artifact(artifact)
     backend = _fake_pertpy(science, engine="edger")
     monkeypatch.setitem(sys.modules, "pertpy", backend)
-    result, report, code = _outputs(
-        OpenBioSingleCellPseudobulkEdgeR.execute(
-            artifact,
-            population="T",
-            reference_condition="control",
-            comparison_condition="treated",
-            fdr_threshold=0.05,
-            min_abs_log2_fold_change=1.0,
-            min_count=0,
-            min_total_count=1,
-        )
+    result, report, code = run_pseudobulk_edger_owned(
+        artifact,
+        population="T",
+        reference_condition="control",
+        comparison_condition="treated",
+        fdr_threshold=0.05,
+        min_abs_log2_fold_change=1.0,
+        min_count=0,
+        min_total_count=1,
     )
     assert result.table.columns.tolist() == EDGER_COLUMNS
     assert len(result.table) == 4
@@ -1202,20 +1340,18 @@ def test_edger_malformed_backend_fails_runtime_and_generated(science, monkeypatc
     _, _, artifact, _, _ = _run_aggregation(science, monkeypatch)
     good = _fake_pertpy(science, engine="edger")
     monkeypatch.setitem(sys.modules, "pertpy", good)
-    _, _, code = _outputs(
-        OpenBioSingleCellPseudobulkEdgeR.execute(
-            artifact,
-            population="T",
-            reference_condition="control",
-            comparison_condition="treated",
-            min_count=0,
-            min_total_count=1,
-        )
+    _, _, code = run_pseudobulk_edger_owned(
+        artifact,
+        population="T",
+        reference_condition="control",
+        comparison_condition="treated",
+        min_count=0,
+        min_total_count=1,
     )
     bad = _fake_pertpy(science, engine="edger", malformed=malformed)
     monkeypatch.setitem(sys.modules, "pertpy", bad)
     with pytest.raises(RuntimeError) as runtime_error:
-        OpenBioSingleCellPseudobulkEdgeR.execute(
+        run_pseudobulk_edger_owned(
             artifact,
             population="T",
             reference_condition="control",
@@ -1234,18 +1370,16 @@ def test_pydeseq2_null_preservation_summary_controls_generated_parity_and_no_r_c
     _, _, artifact, _, _ = _run_aggregation(science, monkeypatch)
     backend = _fake_pertpy(science, engine="pydeseq2")
     monkeypatch.setitem(sys.modules, "pertpy", backend)
-    result, report, code = _outputs(
-        OpenBioSingleCellPseudobulkDESeq2.execute(
-            artifact,
-            population="T",
-            reference_condition="control",
-            comparison_condition="treated",
-            fdr_threshold=0.05,
-            min_abs_log2_fold_change=1.0,
-            min_count=0,
-            min_total_count=1,
-            n_cpus=1,
-        )
+    result, report, code = run_pseudobulk_deseq2_owned(
+        artifact,
+        population="T",
+        reference_condition="control",
+        comparison_condition="treated",
+        fdr_threshold=0.05,
+        min_abs_log2_fold_change=1.0,
+        min_count=0,
+        min_total_count=1,
+        n_cpus=1,
     )
     assert result.table.columns.tolist() == PYDESEQ2_COLUMNS
     assert len(result.table) == 4
@@ -1325,16 +1459,14 @@ def test_pydeseq2_minimal_backend_state_avoids_reserved_obs_var_collisions(scien
 
     backend = _fake_pertpy(science, engine="pydeseq2")
     monkeypatch.setitem(sys.modules, "pertpy", backend)
-    result, report, code = _outputs(
-        OpenBioSingleCellPseudobulkDESeq2.execute(
-            artifact,
-            population="T",
-            reference_condition="control",
-            comparison_condition="treated",
-            min_count=0,
-            min_total_count=1,
-            n_cpus=1,
-        )
+    result, report, code = run_pseudobulk_deseq2_owned(
+        artifact,
+        population="T",
+        reference_condition="control",
+        comparison_condition="treated",
+        min_count=0,
+        min_total_count=1,
+        n_cpus=1,
     )
     backend_input = backend.calls[0][1]
     assert backend_input.obs.columns.tolist() == ["__openbio_sample_identity__"]
@@ -1363,16 +1495,14 @@ def test_pydeseq2_reports_realized_iterative_size_factor_fallback_with_generated
     )
     backend = _fake_pertpy(science, engine="pydeseq2")
     monkeypatch.setitem(sys.modules, "pertpy", backend)
-    result, report, code = _outputs(
-        OpenBioSingleCellPseudobulkDESeq2.execute(
-            artifact,
-            population="T",
-            reference_condition="control",
-            comparison_condition="treated",
-            min_count=0,
-            min_total_count=1,
-            n_cpus=1,
-        )
+    result, report, code = run_pseudobulk_deseq2_owned(
+        artifact,
+        population="T",
+        reference_condition="control",
+        comparison_condition="treated",
+        min_count=0,
+        min_total_count=1,
+        n_cpus=1,
     )
 
     assert report.summary["parameters"]["requested_policy"]["size_factors_fit_type"] == "ratio"
@@ -1393,16 +1523,16 @@ def test_pydeseq2_reports_realized_iterative_size_factor_fallback_with_generated
 
 
 @pytest.mark.parametrize(
-    ("node", "engine", "function_name"),
+    ("owned_operation", "engine", "function_name"),
     [
-        (OpenBioSingleCellPseudobulkEdgeR, "edger", "run_pseudobulk_edger"),
-        (OpenBioSingleCellPseudobulkDESeq2, "pydeseq2", "run_pseudobulk_pydeseq2"),
+        (run_pseudobulk_edger_owned, "edger", "run_pseudobulk_edger"),
+        (run_pseudobulk_deseq2_owned, "pydeseq2", "run_pseudobulk_pydeseq2"),
     ],
 )
 def test_engines_run_one_versus_two_samples_with_warning_and_generated_parity(
     science,
     monkeypatch,
-    node,
+    owned_operation,
     engine,
     function_name,
 ):
@@ -1428,7 +1558,7 @@ def test_engines_run_one_versus_two_samples_with_warning_and_generated_parity(
     }
     if engine == "pydeseq2":
         kwargs["n_cpus"] = 1
-    result, report, code = _outputs(node.execute(artifact, **kwargs))
+    result, report, code = owned_operation(artifact, **kwargs)
     assert report.summary["key_results"]["condition_counts"] == {"control": 1, "treated": 2}
     assert report.summary["key_results"]["design"]["residual_df"] == 1
     assert report.summary["key_results"]["formal_interpretation_invalid"] is True
@@ -1486,21 +1616,19 @@ def test_pydeseq2_malformed_backend_fails_runtime_and_generated(science, monkeyp
     )
     good = _fake_pertpy(science, engine="pydeseq2")
     monkeypatch.setitem(sys.modules, "pertpy", good)
-    _, _, code = _outputs(
-        OpenBioSingleCellPseudobulkDESeq2.execute(
-            artifact,
-            population="T",
-            reference_condition="control",
-            comparison_condition="treated",
-            min_count=0,
-            min_total_count=1,
-            n_cpus=1,
-        )
+    _, _, code = run_pseudobulk_deseq2_owned(
+        artifact,
+        population="T",
+        reference_condition="control",
+        comparison_condition="treated",
+        min_count=0,
+        min_total_count=1,
+        n_cpus=1,
     )
     bad = _fake_pertpy(science, engine="pydeseq2", malformed=malformed)
     monkeypatch.setitem(sys.modules, "pertpy", bad)
     with pytest.raises(RuntimeError) as runtime_error:
-        OpenBioSingleCellPseudobulkDESeq2.execute(
+        run_pseudobulk_deseq2_owned(
             artifact,
             population="T",
             reference_condition="control",
@@ -1521,7 +1649,7 @@ def test_active_engines_reject_generic_anndata_before_backend(science, monkeypat
     backend = _fake_pertpy(science, engine="edger")
     monkeypatch.setitem(sys.modules, "pertpy", backend)
     with pytest.raises(TypeError, match="OPENBIO_SINGLE_CELL_PSEUDOBULK"):
-        OpenBioSingleCellPseudobulkEdgeR.execute(
+        run_pseudobulk_edger_owned(
             generic,
             population="T",
             reference_condition="control",
@@ -1537,7 +1665,7 @@ def test_active_engines_reject_unaudited_pertpy_and_pydeseq2_versions(science, m
     wrong_pertpy.__version__ = "1.4.0"
     monkeypatch.setitem(sys.modules, "pertpy", wrong_pertpy)
     with pytest.raises(RuntimeError, match="requires audited Pertpy >=1.3,<1.4"):
-        OpenBioSingleCellPseudobulkEdgeR.execute(
+        run_pseudobulk_edger_owned(
             artifact,
             population="T",
             reference_condition="control",
@@ -1550,7 +1678,7 @@ def test_active_engines_reject_unaudited_pertpy_and_pydeseq2_versions(science, m
     wrong_pydeseq2._openbio_backend_versions["pydeseq2"] = "0.6.0"
     monkeypatch.setitem(sys.modules, "pertpy", wrong_pydeseq2)
     with pytest.raises(RuntimeError, match="requires audited pydeseq2 >=0.5,<0.6"):
-        OpenBioSingleCellPseudobulkDESeq2.execute(
+        run_pseudobulk_deseq2_owned(
             artifact,
             population="T",
             reference_condition="control",
@@ -1569,7 +1697,7 @@ def test_pseudobulk_rejects_non_scalar_role_metadata_before_backend(science, mon
     monkeypatch.setitem(sys.modules, "decoupler", backend)
 
     with pytest.raises(TypeError, match="Sample labels value at position 0 must be scalar"):
-        OpenBioSingleCellPseudobulk.execute(
+        run_pseudobulk_owned(
             adata,
             sample_key="sample",
             population_key="cell_type",
@@ -1588,16 +1716,14 @@ def test_pydeseq2_reports_requested_and_realized_dispersion_and_captured_warning
     backend = _fake_pertpy(science, engine="pydeseq2", malformed="dispersion_fallback")
     monkeypatch.setitem(sys.modules, "pertpy", backend)
 
-    result, report, code = _outputs(
-        OpenBioSingleCellPseudobulkDESeq2.execute(
-            artifact,
-            population="T",
-            reference_condition="control",
-            comparison_condition="treated",
-            min_count=0,
-            min_total_count=1,
-            n_cpus=1,
-        )
+    result, report, code = run_pseudobulk_deseq2_owned(
+        artifact,
+        population="T",
+        reference_condition="control",
+        comparison_condition="treated",
+        min_count=0,
+        min_total_count=1,
+        n_cpus=1,
     )
 
     assert report.summary["parameters"]["requested_policy"]["dispersion_fit_type"] == "parametric"

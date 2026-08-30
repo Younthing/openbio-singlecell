@@ -77,6 +77,7 @@ def scenic_regulon_membership(
         exact_type=not _portable_artifact,
         numpy=np,
         pandas=pd,
+        copy_result=not _portable_artifact,
     )
     complete_rows = len(membership)
     complete_regulons = membership["regulon"].nunique()

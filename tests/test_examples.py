@@ -10,7 +10,6 @@ import pytest
 from comfy_api.latest import io
 
 from openbio_singlecell.extension import NODE_CLASSES
-from openbio_singlecell.nodes_preprocess import OpenBioSingleCellNormalizeToLayer
 from scripts.generate_example_workflows import _node as generated_node
 from scripts.generate_example_workflows import main as generate_example_workflows
 from tests.workflow_helpers import selected_widget_names, workflow_execute_kwargs
@@ -40,12 +39,15 @@ WIRE_TYPES = {
     "OPENBIO_CNMF_RUN",
     "OPENBIO_SCVI_MODEL",
     "OPENBIO_SCENIC_RESULT",
-    "OPENBIO_SCENIC_BINARY",
+    "OPENBIO_WORKER",
     "OPENBIO_CNV_STATE",
     "OPENBIO_CASSIOPEIA_CHARACTERS",
     "OPENBIO_CASSIOPEIA_TREE",
     "OPENBIO_VELOCITY_STATE",
 }
+NORMALIZE_TO_LAYER_NODE = next(
+    node for node in NODE_CLASSES if node.GET_SCHEMA().node_id == "OpenBioSingleCellNormalizeToLayer"
+)
 
 
 def _input_wire_type(item) -> str:
@@ -57,6 +59,8 @@ def _is_widget_input(item) -> bool:
 
 
 def _is_wire_input(item, wired_input_names: set[str]) -> bool:
+    if item.id == "worker" and item.optional and item.id not in wired_input_names:
+        return False
     return not _is_widget_input(item) or item.id in wired_input_names
 
 
@@ -217,7 +221,7 @@ def test_workflow_generator_rejects_inactive_or_unnamespaced_dynamic_overrides()
     )
     assert node["widgets"][:2] == [("source", "layer"), ("source.source_layer", "counts")]
     kwargs = workflow_execute_kwargs(
-        OpenBioSingleCellNormalizeToLayer,
+        NORMALIZE_TO_LAYER_NODE,
         {"widgets_values_named": dict(node["widgets"])},
     )
     assert kwargs["source"] == {"source": "layer", "source_layer": "counts"}
@@ -229,7 +233,7 @@ def test_workflow_generator_rejects_inactive_or_unnamespaced_dynamic_overrides()
         {"source": "X"},
     )
     x_kwargs = workflow_execute_kwargs(
-        OpenBioSingleCellNormalizeToLayer,
+        NORMALIZE_TO_LAYER_NODE,
         {"widgets_values_named": dict(x_node["widgets"])},
     )
     assert x_kwargs["source"] == {"source": "X"}
@@ -238,7 +242,7 @@ def test_workflow_generator_rejects_inactive_or_unnamespaced_dynamic_overrides()
     invalid_x_values["source.source_layer"] = "counts"
     with pytest.raises(ValueError, match="unknown or inactive widget values"):
         workflow_execute_kwargs(
-            OpenBioSingleCellNormalizeToLayer,
+            NORMALIZE_TO_LAYER_NODE,
             {"widgets_values_named": invalid_x_values},
         )
 
@@ -246,7 +250,7 @@ def test_workflow_generator_rejects_inactive_or_unnamespaced_dynamic_overrides()
     unknown_values["unknown"] = "value"
     with pytest.raises(ValueError, match="unknown or inactive widget values"):
         workflow_execute_kwargs(
-            OpenBioSingleCellNormalizeToLayer,
+            NORMALIZE_TO_LAYER_NODE,
             {"widgets_values_named": unknown_values},
         )
 
@@ -254,7 +258,7 @@ def test_workflow_generator_rejects_inactive_or_unnamespaced_dynamic_overrides()
     del missing_values["target_sum"]
     with pytest.raises(ValueError, match="missing active widget values"):
         workflow_execute_kwargs(
-            OpenBioSingleCellNormalizeToLayer,
+            NORMALIZE_TO_LAYER_NODE,
             {"widgets_values_named": missing_values},
         )
 

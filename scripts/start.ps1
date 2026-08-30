@@ -136,6 +136,10 @@ $Arguments = @(
     "--front-end-root",
     $FrontendDist
 )
+$HasCacheMode = @($ComfyArgs | Where-Object { $_ -match '^--(cache-(classic|none|lru|ram)|high-ram)(=|$)' }).Count -gt 0
+if (-not $HasCacheMode) {
+    $Arguments += "--cache-classic"
+}
 $Arguments += $ComfyArgs
 
 Write-Host "Using Python: $PythonExe"

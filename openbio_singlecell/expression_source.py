@@ -4,10 +4,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from comfy_api.latest import io
-
 if TYPE_CHECKING:
     from anndata import AnnData
+    from comfy_api.latest import io
 
 
 ExpressionSourceKind = Literal["X", "raw", "layer"]
@@ -100,6 +99,8 @@ class ExpressionSourceSpec:
             raise ValueError(f"Unsupported default expression source: {self.default!r}")
 
     def input(self, *, optional: bool = False) -> io.DynamicCombo.Input:
+        from comfy_api.latest import io
+
         choices = self._choices()
         ordered_choices = (self.default, *(choice for choice in choices if choice != self.default))
         return io.DynamicCombo.Input(

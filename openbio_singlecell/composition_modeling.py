@@ -216,6 +216,7 @@ class _PinnedPertpyBackend:
             raise RuntimeError(f"{context['operation']} Pertpy.load changed the biological Sample identities.")
         if set(observed_cell_types) != set(context["cell_types"]):
             raise RuntimeError(f"{context['operation']} Pertpy.load changed the modeled cell-type identities.")
+        # Materialize the canonical Sample-by-cell-type model matrix required by the Pertpy backend.
         sample_adata = sample_adata[context["sample_internal_order"], context["cell_types"]].copy()
         mdata.mod["coda"] = sample_adata
         backend_counts = self.np.asarray(sample_adata.X)
@@ -1026,7 +1027,8 @@ def _standalone_composition_model_impl(
             "fingerprint": hierarchy_digest.hexdigest(),
         }
 
-    working_adata = adata.copy()
+    # The one-shot worker owns this AnnData; backend-only observation columns can be added in place.
+    working_adata = adata
     working_adata.obs[internal_sample_key] = [sample_internal[value] for value in sample_identities]
     working_adata.obs[internal_annotation_key] = annotation_values
     working_adata.obs[focal_column] = cell_metadata["sample_internal"].map(focal_by_sample).to_numpy(dtype=float)

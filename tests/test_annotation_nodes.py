@@ -12,6 +12,7 @@ from dataclasses import replace
 import pytest
 
 from openbio_singlecell.analysis_utils import make_table_result
+from openbio_singlecell.files import resolve_input_path
 from openbio_singlecell.marker_evidence import MARKER_COLUMNS, MARKER_UNIVERSE_COLUMNS
 from openbio_singlecell.node_types import AnnDataType, SummaryResultType, TableResultType
 from openbio_singlecell.nodes_annotation import (
@@ -20,11 +21,22 @@ from openbio_singlecell.nodes_annotation import (
     OpenBioSingleCellMapClusterAnnotations,
     OpenBioSingleCellMarkerORAEvidence,
 )
+from openbio_singlecell.operations_annotation import (
+    celltypist_owned,
+    map_cluster_annotations_owned,
+    marker_ora_owned,
+)
 from openbio_singlecell.ora_evidence import ORA_EVIDENCE_COLUMNS
 
 
-def _output_values(node_output):
-    return node_output.result
+def _marker_ora_owned(table, universe, *, resource_csv: str = "", **kwargs):
+    return marker_ora_owned(
+        table,
+        universe,
+        resource_path=resolve_input_path(resource_csv, extensions=(".csv",)),
+        requested_resource_path=resource_csv.strip(),
+        **kwargs,
+    )
 
 
 def _matrix_values(matrix, science):
@@ -420,8 +432,8 @@ def _fake_decoupler(science, *, malformed=None, version="2.2.0"):
 
 
 def test_annotation_schemas_expose_explicit_semantics_summary_and_code():
-    celltypist = OpenBioSingleCellCellTypistAnnotation.GET_SCHEMA()
-    mapping = OpenBioSingleCellMapClusterAnnotations.GET_SCHEMA()
+    celltypist = OpenBioSingleCellCellTypistAnnotation.define_schema()
+    mapping = OpenBioSingleCellMapClusterAnnotations.define_schema()
 
     assert [(item.display_name, item.io_type) for item in celltypist.outputs] == [
         ("adata", AnnDataType.io_type),
@@ -432,6 +444,14 @@ def test_annotation_schemas_expose_explicit_semantics_summary_and_code():
     assert cell_inputs["majority_voting"].default is False
     assert cell_inputs["expression_state"].default == "verified_cp10k_log1p"
     assert [option.key for option in cell_inputs["source"].options] == ["X", "raw", "layer"]
+    assert all(
+        "execute" not in node_class.__dict__
+        for node_class in (
+            OpenBioSingleCellCellTypistAnnotation,
+            OpenBioSingleCellMapClusterAnnotations,
+            OpenBioSingleCellMarkerORAEvidence,
+        )
+    )
 
     assert [item.display_name for item in mapping.outputs] == ["adata", "summary", "code"]
     map_inputs = {item.id: item for item in mapping.inputs}
@@ -449,14 +469,12 @@ def test_celltypist_transforms_counts_once_and_preserves_verified_logged_input(s
     fake = _fake_celltypist(science, model_path)
     monkeypatch.setitem(sys.modules, "celltypist", fake)
 
-    output, report, code = _output_values(
-        OpenBioSingleCellCellTypistAnnotation.execute(
-            adata,
-            source={"source": "X"},
-            expression_state="verified_cp10k_log1p" if logged else "verified_counts",
-            model=str(model_path),
-            store_decision_matrix=True,
-        )
+    output, report, code = celltypist_owned(
+        adata.copy(),
+        source={"source": "X"},
+        expression_state="verified_cp10k_log1p" if logged else "verified_counts",
+        model=str(model_path),
+        store_decision_matrix=True,
     )
 
     science.np.testing.assert_allclose(fake.calls[0]["inverse_totals"], 10_000.0, rtol=5e-3)
@@ -516,12 +534,10 @@ def test_celltypist_named_model_resolution_never_enumerates_or_downloads(science
     fake.models.download_models = forbidden_network_side_effect
     monkeypatch.setitem(sys.modules, "celltypist", fake)
 
-    output, report, code = _output_values(
-        OpenBioSingleCellCellTypistAnnotation.execute(
-            adata,
-            expression_state="verified_counts",
-            model="fake.pkl",
-        )
+    output, report, code = celltypist_owned(
+        adata.copy(),
+        expression_state="verified_counts",
+        model="fake.pkl",
     )
 
     assert fake.loads == [str(model_path.resolve())]
@@ -529,9 +545,7 @@ def test_celltypist_named_model_resolution_never_enumerates_or_downloads(science
     assert report.summary["parameters"]["model"] == "fake.pkl"
 
 
-def test_celltypist_model_fingerprint_tracks_explicit_and_named_local_artifact(
-    science, tmp_path, monkeypatch
-):
+def test_celltypist_model_fingerprint_tracks_explicit_and_named_local_artifact(science, tmp_path, monkeypatch):
     model_path = tmp_path / "fake.pkl"
     model_path.write_bytes(b"trusted fake model v1")
     fake = _fake_celltypist(science, model_path)
@@ -559,9 +573,7 @@ def test_celltypist_model_fingerprint_tracks_explicit_and_named_local_artifact(
     assert changed[4] != named[4]
 
 
-def test_celltypist_missing_model_fingerprint_is_stable_and_execution_is_actionable(
-    science, tmp_path, monkeypatch
-):
+def test_celltypist_missing_model_fingerprint_is_stable_and_execution_is_actionable(science, tmp_path, monkeypatch):
     missing_path = tmp_path / "missing.pkl"
     fake = _fake_celltypist(science, missing_path)
 
@@ -577,7 +589,7 @@ def test_celltypist_missing_model_fingerprint_is_stable_and_execution_is_actiona
     second = OpenBioSingleCellCellTypistAnnotation.fingerprint_inputs("missing.pkl")
     assert first == second == ("openbio-celltypist-model-v1", "missing", "missing.pkl")
     with pytest.raises(FileNotFoundError) as error:
-        OpenBioSingleCellCellTypistAnnotation.execute(
+        celltypist_owned(
             _annotation_adata(science),
             expression_state="verified_counts",
             model="missing.pkl",
@@ -591,9 +603,7 @@ def test_celltypist_missing_model_fingerprint_is_stable_and_execution_is_actiona
     assert fake.calls == []
 
 
-def test_celltypist_model_load_failure_discloses_pickle_trust_boundary(
-    science, tmp_path, monkeypatch
-):
+def test_celltypist_model_load_failure_discloses_pickle_trust_boundary(science, tmp_path, monkeypatch):
     adata = _annotation_adata(science)
     original_obs = adata.obs.copy(deep=True)
     model_path = tmp_path / "unloadable.pkl"
@@ -606,8 +616,8 @@ def test_celltypist_model_load_failure_discloses_pickle_trust_boundary(
     fake.models.Model.load = staticmethod(fail_load)
     monkeypatch.setitem(sys.modules, "celltypist", fake)
     with pytest.raises(RuntimeError) as error:
-        OpenBioSingleCellCellTypistAnnotation.execute(
-            adata,
+        celltypist_owned(
+            adata.copy(),
             expression_state="verified_counts",
             model=str(model_path),
         )
@@ -628,14 +638,14 @@ def test_celltypist_rejects_contradictory_expression_state_before_backend(scienc
 
     logged = _annotation_adata(science, logged=True)
     with pytest.raises(ValueError, match="verified_counts.*non-integer"):
-        OpenBioSingleCellCellTypistAnnotation.execute(
+        celltypist_owned(
             logged,
             expression_state="verified_counts",
             model=str(model_path),
         )
     counts = _annotation_adata(science, logged=False)
     with pytest.raises(ValueError, match="verified_cp10k_log1p"):
-        OpenBioSingleCellCellTypistAnnotation.execute(
+        celltypist_owned(
             counts,
             expression_state="verified_cp10k_log1p",
             model=str(model_path),
@@ -644,9 +654,7 @@ def test_celltypist_rejects_contradictory_expression_state_before_backend(scienc
     assert fake.loads == []
 
 
-def test_celltypist_cp10k_validation_uses_official_absolute_one_count_boundary(
-    science, tmp_path, monkeypatch
-):
+def test_celltypist_cp10k_validation_uses_official_absolute_one_count_boundary(science, tmp_path, monkeypatch):
     model_path = tmp_path / "fake.pkl"
     model_path.write_bytes(b"trusted fake model")
     fake = _fake_celltypist(science, model_path)
@@ -658,7 +666,7 @@ def test_celltypist_cp10k_validation_uses_official_absolute_one_count_boundary(
     science.sc.pp.log1p(invalid)
     invalid_values = _matrix_values(invalid.X, science).copy()
     with pytest.raises(ValueError, match="every cell must be within 1 count of 10,000"):
-        OpenBioSingleCellCellTypistAnnotation.execute(
+        celltypist_owned(
             invalid,
             expression_state="verified_cp10k_log1p",
             model=str(model_path),
@@ -672,12 +680,10 @@ def test_celltypist_cp10k_validation_uses_official_absolute_one_count_boundary(
     valid.X = valid.X.astype(science.np.float32)
     science.sc.pp.normalize_total(valid, target_sum=10_000.0, inplace=True)
     science.sc.pp.log1p(valid)
-    output, report, _ = _output_values(
-        OpenBioSingleCellCellTypistAnnotation.execute(
-            valid,
-            expression_state="verified_cp10k_log1p",
-            model=str(model_path),
-        )
+    output, report, _ = celltypist_owned(
+        valid,
+        expression_state="verified_cp10k_log1p",
+        model=str(model_path),
     )
     assert report.summary["parameters"]["target_sum"] is None
     assert report.summary["key_results"]["expression_transform"] == "none"
@@ -691,12 +697,10 @@ def test_celltypist_feature_overlap_model_provenance_and_collision_preflight(sci
     fake = _fake_celltypist(science, model_path, model_features=["G2", "absent"])
     monkeypatch.setitem(sys.modules, "celltypist", fake)
 
-    output, report, _ = _output_values(
-        OpenBioSingleCellCellTypistAnnotation.execute(
-            adata,
-            expression_state="verified_counts",
-            model=str(model_path),
-        )
+    output, report, _ = celltypist_owned(
+        adata.copy(),
+        expression_state="verified_counts",
+        model=str(model_path),
     )
     overlap = report.summary["key_results"]["feature_overlap"]
     assert overlap == {
@@ -712,8 +716,8 @@ def test_celltypist_feature_overlap_model_provenance_and_collision_preflight(sci
     no_overlap = _fake_celltypist(science, model_path, model_features=["absent"])
     monkeypatch.setitem(sys.modules, "celltypist", no_overlap)
     with pytest.raises(ValueError, match="zero feature overlap"):
-        OpenBioSingleCellCellTypistAnnotation.execute(
-            adata,
+        celltypist_owned(
+            adata.copy(),
             expression_state="verified_counts",
             model=str(model_path),
         )
@@ -723,7 +727,7 @@ def test_celltypist_feature_overlap_model_provenance_and_collision_preflight(sci
     collision.obs["celltypist_cell_type"] = "prior"
     no_overlap.loads.clear()
     with pytest.raises(ValueError, match="output keys already exist"):
-        OpenBioSingleCellCellTypistAnnotation.execute(
+        celltypist_owned(
             collision,
             expression_state="verified_counts",
             model=str(model_path),
@@ -731,21 +735,17 @@ def test_celltypist_feature_overlap_model_provenance_and_collision_preflight(sci
     assert no_overlap.loads == []
 
 
-def test_celltypist_complete_label_count_maps_include_unobserved_model_classes(
-    science, tmp_path, monkeypatch
-):
+def test_celltypist_complete_label_count_maps_include_unobserved_model_classes(science, tmp_path, monkeypatch):
     adata = _annotation_adata(science)
     model_path = tmp_path / "three-classes.pkl"
     model_path.write_bytes(b"trusted fake model")
     fake = _fake_celltypist(science, model_path, model_classes=["A", "B", "C"])
     monkeypatch.setitem(sys.modules, "celltypist", fake)
 
-    output, report, code = _output_values(
-        OpenBioSingleCellCellTypistAnnotation.execute(
-            adata,
-            expression_state="verified_counts",
-            model=str(model_path),
-        )
+    output, report, code = celltypist_owned(
+        adata.copy(),
+        expression_state="verified_counts",
+        model=str(model_path),
     )
     key_results = report.summary["key_results"]
     assert key_results["class_order"] == ["A", "B", "C"]
@@ -767,15 +767,13 @@ def test_celltypist_majority_labels_support_and_selected_probability_are_distinc
     fake = _fake_celltypist(science, model_path)
     monkeypatch.setitem(sys.modules, "celltypist", fake)
 
-    output, report, code = _output_values(
-        OpenBioSingleCellCellTypistAnnotation.execute(
-            adata,
-            expression_state="verified_counts",
-            model=str(model_path),
-            majority_voting=True,
-            over_clustering_key="over",
-            min_prop=0.6,
-        )
+    output, report, code = celltypist_owned(
+        adata.copy(),
+        expression_state="verified_counts",
+        model=str(model_path),
+        majority_voting=True,
+        over_clustering_key="over",
+        min_prop=0.6,
     )
 
     # cell_20 is individually B in a majority-A group: selected probability must look up A (0.1), not row max (0.9).
@@ -803,44 +801,38 @@ def test_celltypist_majority_labels_support_and_selected_probability_are_distinc
     assert reproduced_summary == report.summary
 
 
-def test_celltypist_overwrite_removes_only_verified_stale_optional_artifacts(
-    science, tmp_path, monkeypatch
-):
+def test_celltypist_overwrite_removes_only_verified_stale_optional_artifacts(science, tmp_path, monkeypatch):
     adata = _annotation_adata(science)
     model_path = tmp_path / "fake.pkl"
     model_path.write_bytes(b"trusted fake model")
     fake = _fake_celltypist(science, model_path)
     monkeypatch.setitem(sys.modules, "celltypist", fake)
 
-    first, _, _ = _output_values(
-        OpenBioSingleCellCellTypistAnnotation.execute(
-            adata,
-            expression_state="verified_counts",
-            model=str(model_path),
-            majority_voting=True,
-            over_clustering_key="over",
-            min_prop=0.6,
-            store_decision_matrix=True,
-        )
+    first, _, _ = celltypist_owned(
+        adata.copy(),
+        expression_state="verified_counts",
+        model=str(model_path),
+        majority_voting=True,
+        over_clustering_key="over",
+        min_prop=0.6,
+        store_decision_matrix=True,
     )
     first_obs = first.obs.copy(deep=True)
     first_uns = copy.deepcopy(first.uns)
     first_obsm = {key: science.np.asarray(value).copy() for key, value in first.obsm.items() if key is not None}
     first_x = _matrix_values(first.X, science).copy()
 
-    second, report, code = _output_values(
-        OpenBioSingleCellCellTypistAnnotation.execute(
-            first,
-            expression_state="verified_counts",
-            model=str(model_path),
-            majority_voting=False,
-            label_column="celltypist_cell_type_v2",
-            confidence_column="celltypist_confidence_v2",
-            probability_key="celltypist_probabilities_v2",
-            store_decision_matrix=False,
-            decision_key="celltypist_decision_scores_v2",
-            overwrite_existing=True,
-        )
+    second, report, code = celltypist_owned(
+        first.copy(),
+        expression_state="verified_counts",
+        model=str(model_path),
+        majority_voting=False,
+        label_column="celltypist_cell_type_v2",
+        confidence_column="celltypist_confidence_v2",
+        probability_key="celltypist_probabilities_v2",
+        store_decision_matrix=False,
+        decision_key="celltypist_decision_scores_v2",
+        overwrite_existing=True,
     )
     assert "celltypist_cell_type" not in second.obs
     assert "celltypist_confidence" not in second.obs
@@ -879,7 +871,7 @@ def test_celltypist_overwrite_removes_only_verified_stale_optional_artifacts(
 
     namespace = {}
     exec(code, namespace)
-    reproduced, reproduced_summary = namespace["run_celltypist_annotation"](first)
+    reproduced, reproduced_summary = namespace["run_celltypist_annotation"](first.copy())
     assert "celltypist_cell_type" not in reproduced.obs
     assert "celltypist_confidence" not in reproduced.obs
     assert "celltypist_majority_label" not in reproduced.obs
@@ -903,7 +895,7 @@ def test_celltypist_overwrite_removes_only_verified_stale_optional_artifacts(
     loads_before = len(fake.loads)
     calls_before = len(fake.calls)
     with pytest.raises(ValueError, match="value does not match the verified prior CellTypist provenance"):
-        OpenBioSingleCellCellTypistAnnotation.execute(
+        celltypist_owned(
             tampered,
             expression_state="verified_counts",
             model=str(model_path),
@@ -916,9 +908,7 @@ def test_celltypist_overwrite_removes_only_verified_stale_optional_artifacts(
     assert len(fake.calls) == calls_before
 
 
-def test_celltypist_overwrite_refuses_unowned_collisions_before_backend(
-    science, tmp_path, monkeypatch
-):
+def test_celltypist_overwrite_refuses_unowned_collisions_before_backend(science, tmp_path, monkeypatch):
     adata = _annotation_adata(science)
     adata.obs["celltypist_cell_type"] = "user-owned"
     original_obs = adata.obs.copy(deep=True)
@@ -929,8 +919,8 @@ def test_celltypist_overwrite_refuses_unowned_collisions_before_backend(
     monkeypatch.setitem(sys.modules, "celltypist", fake)
 
     with pytest.raises(ValueError, match="ownership of existing outputs could not be verified"):
-        OpenBioSingleCellCellTypistAnnotation.execute(
-            adata,
+        celltypist_owned(
+            adata.copy(),
             expression_state="verified_counts",
             model=str(model_path),
             overwrite_existing=True,
@@ -948,7 +938,7 @@ def test_celltypist_majority_preflight_and_malformed_backend_are_atomic(science,
     fake = _fake_celltypist(science, model_path)
     monkeypatch.setitem(sys.modules, "celltypist", fake)
     with pytest.raises(ValueError, match="more than 50 cells"):
-        OpenBioSingleCellCellTypistAnnotation.execute(
+        celltypist_owned(
             small,
             expression_state="verified_counts",
             model=str(model_path),
@@ -956,7 +946,7 @@ def test_celltypist_majority_preflight_and_malformed_backend_are_atomic(science,
             over_clustering_key="over",
         )
     with pytest.raises(ValueError, match="explicit categorical over_clustering_key"):
-        OpenBioSingleCellCellTypistAnnotation.execute(
+        celltypist_owned(
             _annotation_adata(science),
             expression_state="verified_counts",
             model=str(model_path),
@@ -989,18 +979,16 @@ def test_celltypist_rejects_malformed_backend_without_partial_writes(
         kwargs = {"majority_voting": True, "over_clustering_key": "over", "min_prop": 0.6}
     good = _fake_celltypist(science, model_path)
     monkeypatch.setitem(sys.modules, "celltypist", good)
-    _, _, code = _output_values(
-        OpenBioSingleCellCellTypistAnnotation.execute(
-            adata,
-            expression_state="verified_counts",
-            model=str(model_path),
-            **kwargs,
-        )
+    _, _, code = celltypist_owned(
+        adata.copy(),
+        expression_state="verified_counts",
+        model=str(model_path),
+        **kwargs,
     )
     fake = _fake_celltypist(science, model_path, malformed=malformed)
     monkeypatch.setitem(sys.modules, "celltypist", fake)
     with pytest.raises(RuntimeError, match=message):
-        OpenBioSingleCellCellTypistAnnotation.execute(
+        celltypist_owned(
             adata,
             expression_state="verified_counts",
             model=str(model_path),
@@ -1036,7 +1024,7 @@ def test_celltypist_rejects_malformed_backend_without_partial_writes(
 )
 def test_map_cluster_annotations_strict_json(science, mapping_json, message):
     with pytest.raises((TypeError, ValueError), match=message):
-        OpenBioSingleCellMapClusterAnnotations.execute(
+        map_cluster_annotations_owned(
             _mapping_adata(science),
             mapping_json=mapping_json,
             unmapped_policy="set_missing",
@@ -1051,15 +1039,13 @@ def test_map_cluster_annotation_policies_order_categories_provenance_and_code(sc
     mapping_json = '{"0":"T cell","1":"T cell","unused":"Unused target"}'
 
     with pytest.raises(ValueError, match="observed unmapped levels"):
-        OpenBioSingleCellMapClusterAnnotations.execute(adata, mapping_json=mapping_json)
+        map_cluster_annotations_owned(adata, mapping_json=mapping_json)
 
-    output, report, code = _output_values(
-        OpenBioSingleCellMapClusterAnnotations.execute(
-            adata,
-            mapping_json=mapping_json,
-            unmapped_policy="preserve_cluster_label",
-            annotation_status="curated",
-        )
+    output, report, code = map_cluster_annotations_owned(
+        adata.copy(),
+        mapping_json=mapping_json,
+        unmapped_policy="preserve_cluster_label",
+        annotation_status="curated",
     )
     assert output.obs["cell_type"].cat.categories.tolist() == ["2", "T cell"]
     assert output.obs["cell_type"].cat.ordered is False
@@ -1086,7 +1072,7 @@ def test_map_cluster_annotation_policies_order_categories_provenance_and_code(sc
 
     namespace = {}
     exec(code, namespace)
-    reproduced = namespace["map_cluster_annotations"](adata)
+    reproduced = namespace["map_cluster_annotations"](adata.copy())
     science.pd.testing.assert_series_equal(reproduced.obs["cell_type"], output.obs["cell_type"])
     assert (
         reproduced.uns["openbio_singlecell"]["annotations"]["cell_type"]
@@ -1096,12 +1082,10 @@ def test_map_cluster_annotation_policies_order_categories_provenance_and_code(sc
     science.pd.testing.assert_frame_equal(adata.obs, original_obs)
     assert adata.uns == original_uns
 
-    missing_output, _, _ = _output_values(
-        OpenBioSingleCellMapClusterAnnotations.execute(
-            adata,
-            mapping_json=mapping_json,
-            unmapped_policy="set_missing",
-        )
+    missing_output, _, _ = map_cluster_annotations_owned(
+        adata.copy(),
+        mapping_json=mapping_json,
+        unmapped_policy="set_missing",
     )
     assert missing_output.obs["cell_type"].cat.categories.tolist() == ["T cell"]
     assert int(missing_output.obs["cell_type"].isna().sum()) == 2
@@ -1122,12 +1106,10 @@ def test_map_cluster_annotation_policies_order_categories_provenance_and_code(sc
 def test_map_cluster_annotation_results_disclose_each_unmapped_policy(
     science, unmapped_policy, mapping_json, expected_fragment
 ):
-    _, report, _ = _output_values(
-        OpenBioSingleCellMapClusterAnnotations.execute(
-            _mapping_adata(science),
-            mapping_json=mapping_json,
-            unmapped_policy=unmapped_policy,
-        )
+    _, report, _ = map_cluster_annotations_owned(
+        _mapping_adata(science),
+        mapping_json=mapping_json,
+        unmapped_policy=unmapped_policy,
     )
 
     results = report.summary["results"]
@@ -1142,19 +1124,19 @@ def test_map_cluster_annotation_results_disclose_each_unmapped_policy(
 def test_map_cluster_annotation_rejects_unknown_colliding_and_ambiguous_labels(science):
     adata = _mapping_adata(science)
     with pytest.raises(ValueError, match="unknown to observed or declared"):
-        OpenBioSingleCellMapClusterAnnotations.execute(
-            adata,
+        map_cluster_annotations_owned(
+            adata.copy(),
             mapping_json='{"typo":"T"}',
             unmapped_policy="set_missing",
         )
     with pytest.raises(ValueError, match="collide with preserved"):
-        OpenBioSingleCellMapClusterAnnotations.execute(
+        map_cluster_annotations_owned(
             adata,
             mapping_json='{"0":"2"}',
             unmapped_policy="preserve_cluster_label",
         )
     with pytest.raises(ValueError, match="cannot overwrite the groupby"):
-        OpenBioSingleCellMapClusterAnnotations.execute(
+        map_cluster_annotations_owned(
             adata,
             mapping_json='{"0":"T"}',
             output_column="leiden",
@@ -1164,7 +1146,7 @@ def test_map_cluster_annotation_rejects_unknown_colliding_and_ambiguous_labels(s
     collision = adata.copy()
     collision.obs["cell_type"] = "prior"
     with pytest.raises(ValueError, match="already exists"):
-        OpenBioSingleCellMapClusterAnnotations.execute(
+        map_cluster_annotations_owned(
             collision,
             mapping_json='{"0":"T"}',
             unmapped_policy="set_missing",
@@ -1178,7 +1160,7 @@ def test_map_cluster_annotation_rejects_unknown_colliding_and_ambiguous_labels(s
     # Build with aligned Series data; the constructor above aligns a default integer index to a/b as missing.
     ambiguous.obs["leiden"] = science.pd.Series([1, "1"], index=ambiguous.obs_names, dtype=object)
     with pytest.raises(ValueError, match="distinct source labels.*collapse"):
-        OpenBioSingleCellMapClusterAnnotations.execute(
+        map_cluster_annotations_owned(
             ambiguous,
             mapping_json='{"1":"T"}',
             unmapped_policy="set_missing",
@@ -1198,12 +1180,10 @@ def test_map_cluster_annotation_overwrite_is_explicit_and_replaces_provenance(sc
         "analysis_history": {},
         "annotations": {"cell_type": {"operation": "prior"}},
     }
-    output, report, _ = _output_values(
-        OpenBioSingleCellMapClusterAnnotations.execute(
-            adata,
-            mapping_json='{"0":"A","1":"B","2":"C"}',
-            overwrite_existing=True,
-        )
+    output, report, _ = map_cluster_annotations_owned(
+        adata.copy(),
+        mapping_json='{"0":"A","1":"B","2":"C"}',
+        overwrite_existing=True,
     )
     provenance = output.uns["openbio_singlecell"]["annotations"]["cell_type"]
     assert provenance["operation"] == "map_cluster_annotations"
@@ -1214,7 +1194,7 @@ def test_map_cluster_annotation_overwrite_is_explicit_and_replaces_provenance(sc
 
 
 def test_marker_ora_evidence_schema_is_explicit():
-    evidence = OpenBioSingleCellMarkerORAEvidence.GET_SCHEMA()
+    evidence = OpenBioSingleCellMarkerORAEvidence.define_schema()
 
     assert [item.id for item in evidence.inputs] == [
         "table",
@@ -1244,16 +1224,14 @@ def test_marker_ora_evidence_gold_statistics_resource_accounting_and_code(scienc
     fake = _fake_decoupler(science)
     monkeypatch.setitem(sys.modules, "decoupler", fake)
 
-    result, report, code = _output_values(
-        OpenBioSingleCellMarkerORAEvidence.execute(
-            marker,
-            universe,
-            resource_csv="ora_resource.csv",
-            resource_metadata_json=_resource_metadata(),
-            min_targets=2,
-            min_overlap=2,
-            max_p_adjusted=1.0,
-        )
+    result, report, code = _marker_ora_owned(
+        marker,
+        universe,
+        resource_csv="ora_resource.csv",
+        resource_metadata_json=_resource_metadata(),
+        min_targets=2,
+        min_overlap=2,
+        max_p_adjusted=1.0,
     )
 
     evidence = result.table
@@ -1339,7 +1317,7 @@ def test_marker_ora_evidence_gold_statistics_resource_accounting_and_code(scienc
     tampered_marker_frame = marker.table.copy(deep=True)
     tampered_marker_frame.loc[0, "score"] += 0.25
     with pytest.raises(ValueError, match="current-content fingerprint"):
-        OpenBioSingleCellMarkerORAEvidence.execute(
+        _marker_ora_owned(
             replace(marker, table=tampered_marker_frame),
             universe,
             resource_csv="ora_resource.csv",
@@ -1368,16 +1346,14 @@ def test_marker_ora_retains_groups_without_selected_markers_as_unresolved(scienc
     fake = _fake_decoupler(science)
     monkeypatch.setitem(sys.modules, "decoupler", fake)
 
-    result, report, code = _output_values(
-        OpenBioSingleCellMarkerORAEvidence.execute(
-            marker,
-            universe,
-            resource_csv="ora_resource.csv",
-            resource_metadata_json=_resource_metadata(),
-            min_targets=2,
-            min_overlap=2,
-            max_p_adjusted=1.0,
-        )
+    result, report, code = _marker_ora_owned(
+        marker,
+        universe,
+        resource_csv="ora_resource.csv",
+        resource_metadata_json=_resource_metadata(),
+        min_targets=2,
+        min_overlap=2,
+        max_p_adjusted=1.0,
     )
 
     unresolved = result.table.loc[result.table["group"] == "B"]
@@ -1424,7 +1400,7 @@ def test_marker_ora_resource_metadata_is_strict_before_backend(
     monkeypatch.setitem(sys.modules, "decoupler", fake)
 
     with pytest.raises((TypeError, ValueError), match=message):
-        OpenBioSingleCellMarkerORAEvidence.execute(
+        _marker_ora_owned(
             marker,
             universe,
             resource_csv="ora_resource.csv",
@@ -1466,21 +1442,19 @@ def test_marker_ora_rejects_ragged_resource_rows_in_runtime_and_generated_code(
     marker, universe = _marker_artifacts(science)
     fake = _fake_decoupler(science)
     monkeypatch.setitem(sys.modules, "decoupler", fake)
-    _, report, code = _output_values(
-        OpenBioSingleCellMarkerORAEvidence.execute(
-            marker,
-            universe,
-            resource_csv="ora_resource.csv",
-            resource_metadata_json=_resource_metadata(),
-            min_targets=2,
-        )
+    _, report, code = _marker_ora_owned(
+        marker,
+        universe,
+        resource_csv="ora_resource.csv",
+        resource_metadata_json=_resource_metadata(),
+        min_targets=2,
     )
     old_sha256 = report.summary["key_results"]["resource"]["sha256"]
 
     resource_path.write_text(malformed_csv, encoding="utf-8")
     new_sha256 = hashlib.sha256(resource_path.read_bytes()).hexdigest()
     with pytest.raises(ValueError, match=message) as runtime_error:
-        OpenBioSingleCellMarkerORAEvidence.execute(
+        _marker_ora_owned(
             marker,
             universe,
             resource_csv="ora_resource.csv",
@@ -1496,9 +1470,7 @@ def test_marker_ora_rejects_ragged_resource_rows_in_runtime_and_generated_code(
     assert fake.calls
 
 
-def test_marker_ora_accepts_quoted_commas_without_treating_the_row_as_ragged(
-    science, comfy_directories, monkeypatch
-):
+def test_marker_ora_accepts_quoted_commas_without_treating_the_row_as_ragged(science, comfy_directories, monkeypatch):
     input_dir, _, _ = comfy_directories
     resource_path = input_dir / "quoted_ora_resource.csv"
     resource_path.write_text(
@@ -1509,15 +1481,13 @@ def test_marker_ora_accepts_quoted_commas_without_treating_the_row_as_ragged(
     fake = _fake_decoupler(science)
     monkeypatch.setitem(sys.modules, "decoupler", fake)
 
-    result, _, _ = _output_values(
-        OpenBioSingleCellMarkerORAEvidence.execute(
-            marker,
-            universe,
-            resource_csv="quoted_ora_resource.csv",
-            resource_metadata_json=_resource_metadata(),
-            min_targets=1,
-            min_overlap=1,
-        )
+    result, _, _ = _marker_ora_owned(
+        marker,
+        universe,
+        resource_csv="quoted_ora_resource.csv",
+        resource_metadata_json=_resource_metadata(),
+        min_targets=1,
+        min_overlap=1,
     )
 
     assert result.table["source"].unique().tolist() == ["Type,A"]
@@ -1535,7 +1505,7 @@ def test_marker_ora_rejects_upstream_and_resource_contract_failures_before_backe
     changed_marker = marker.table.copy()
     changed_marker.loc[0, "score"] += 0.25
     with pytest.raises(ValueError, match="current-content fingerprint"):
-        OpenBioSingleCellMarkerORAEvidence.execute(
+        _marker_ora_owned(
             replace(marker, table=changed_marker),
             universe,
             resource_csv="ora_resource.csv",
@@ -1545,7 +1515,7 @@ def test_marker_ora_rejects_upstream_and_resource_contract_failures_before_backe
     changed_universe = universe.table.copy()
     changed_universe.loc[0, "gene"] = "DIFFERENT"
     with pytest.raises(ValueError, match="universe content does not match"):
-        OpenBioSingleCellMarkerORAEvidence.execute(
+        _marker_ora_owned(
             marker,
             replace(universe, table=changed_universe),
             resource_csv="ora_resource.csv",
@@ -1565,7 +1535,7 @@ def test_marker_ora_rejects_upstream_and_resource_contract_failures_before_backe
         started_at=time.perf_counter(),
     )
     with pytest.raises(ValueError, match="ranking fingerprints do not match"):
-        OpenBioSingleCellMarkerORAEvidence.execute(
+        _marker_ora_owned(
             marker,
             foreign_universe,
             resource_csv="ora_resource.csv",
@@ -1574,7 +1544,7 @@ def test_marker_ora_rejects_upstream_and_resource_contract_failures_before_backe
         )
     truncated_marker, truncated_universe = _marker_artifacts(science, ranking_truncated=True)
     with pytest.raises(ValueError, match="non-truncated upstream ranking"):
-        OpenBioSingleCellMarkerORAEvidence.execute(
+        _marker_ora_owned(
             truncated_marker,
             truncated_universe,
             resource_csv="ora_resource.csv",
@@ -1584,7 +1554,7 @@ def test_marker_ora_rejects_upstream_and_resource_contract_failures_before_backe
     unfiltered_source = dict(marker.source)
     unfiltered_source["operation"] = "marker_genes"
     with pytest.raises(ValueError, match="requires table operation.*filter_marker_genes"):
-        OpenBioSingleCellMarkerORAEvidence.execute(
+        _marker_ora_owned(
             replace(marker, source=unfiltered_source),
             universe,
             resource_csv="ora_resource.csv",
@@ -1593,7 +1563,7 @@ def test_marker_ora_rejects_upstream_and_resource_contract_failures_before_backe
         )
     resource_path.write_text("source,target\nWrong,NOT_IN_UNIVERSE\n", encoding="utf-8")
     with pytest.raises(ValueError, match="zero target overlap"):
-        OpenBioSingleCellMarkerORAEvidence.execute(
+        _marker_ora_owned(
             marker,
             universe,
             resource_csv="ora_resource.csv",
@@ -1622,20 +1592,18 @@ def test_marker_ora_rejects_malformed_decoupler_results(science, comfy_directori
     original_universe = universe.table.copy(deep=True)
     good_fake = _fake_decoupler(science)
     monkeypatch.setitem(sys.modules, "decoupler", good_fake)
-    _, _, code = _output_values(
-        OpenBioSingleCellMarkerORAEvidence.execute(
-            marker,
-            universe,
-            resource_csv="ora_resource.csv",
-            resource_metadata_json=_resource_metadata(),
-            min_targets=2,
-        )
+    _, _, code = _marker_ora_owned(
+        marker,
+        universe,
+        resource_csv="ora_resource.csv",
+        resource_metadata_json=_resource_metadata(),
+        min_targets=2,
     )
     fake = _fake_decoupler(science, malformed=malformed)
     monkeypatch.setitem(sys.modules, "decoupler", fake)
 
     with pytest.raises(RuntimeError, match=message) as runtime_error:
-        OpenBioSingleCellMarkerORAEvidence.execute(
+        _marker_ora_owned(
             marker,
             universe,
             resource_csv="ora_resource.csv",
@@ -1659,7 +1627,7 @@ def test_marker_ora_requires_decoupler_2_query_set_after_preflight(science, comf
     legacy = _fake_decoupler(science, version="1.9.2")
     monkeypatch.setitem(sys.modules, "decoupler", legacy)
     with pytest.raises(RuntimeError, match="requires decoupler 2.x"):
-        OpenBioSingleCellMarkerORAEvidence.execute(
+        _marker_ora_owned(
             marker,
             universe,
             resource_csv="ora_resource.csv",
@@ -1672,7 +1640,7 @@ def test_marker_ora_requires_decoupler_2_query_set_after_preflight(science, comf
     missing_api.mt = types.SimpleNamespace()
     monkeypatch.setitem(sys.modules, "decoupler", missing_api)
     with pytest.raises(RuntimeError, match="mt.query_set API"):
-        OpenBioSingleCellMarkerORAEvidence.execute(
+        _marker_ora_owned(
             marker,
             universe,
             resource_csv="ora_resource.csv",

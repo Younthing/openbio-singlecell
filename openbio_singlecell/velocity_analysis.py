@@ -108,6 +108,22 @@ class VelocityState:
         object.__setattr__(self, "_summary", copy.deepcopy(dict(summary)))
         object.__setattr__(self, "_metadata", copy.deepcopy(dict(metadata)))
 
+    @classmethod
+    def _from_owned(
+        cls,
+        *,
+        adata: AnnData,
+        summary: Mapping[str, Any],
+        metadata: Mapping[str, Any],
+    ) -> VelocityState:
+        """Build worker-private state without copying its exclusively owned AnnData."""
+
+        result = object.__new__(cls)
+        object.__setattr__(result, "_adata", adata)
+        object.__setattr__(result, "_summary", copy.deepcopy(dict(summary)))
+        object.__setattr__(result, "_metadata", copy.deepcopy(dict(metadata)))
+        return result
+
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError("VelocityState is immutable; create a new validated stage instead.")
 
@@ -130,8 +146,18 @@ class VelocityState:
     def portable_adata(self) -> AnnData:
         return self._adata.copy()
 
+    def _owned_adata(self) -> AnnData:
+        """Return the private payload for one-shot worker encoding/consumption only."""
 
-def _build_velocity_state(adata: AnnData, summary: Mapping[str, Any]) -> VelocityState:
+        return self._adata
+
+
+def _build_velocity_state(
+    adata: AnnData,
+    summary: Mapping[str, Any],
+    *,
+    _owned: bool = False,
+) -> VelocityState:
     state = validate_portable_velocity_state(adata)
     normalized_summary = _validate_summary(summary, state=state)
     metadata: dict[str, Any] = {
@@ -144,8 +170,12 @@ def _build_velocity_state(adata: AnnData, summary: Mapping[str, Any]) -> Velocit
         "summary_fingerprint_sha256": _canonical_json_sha256(normalized_summary),
     }
     metadata["artifact_fingerprint_sha256"] = _canonical_json_sha256(metadata)
-    result = VelocityState(adata=adata, summary=normalized_summary, metadata=metadata)
-    validate_velocity_state(result)
+    result = (
+        VelocityState._from_owned(adata=adata, summary=normalized_summary, metadata=metadata)
+        if _owned
+        else VelocityState(adata=adata, summary=normalized_summary, metadata=metadata)
+    )
+    validate_velocity_state(result, _owned=_owned)
     return result
 
 
@@ -153,6 +183,7 @@ def validate_velocity_state(
     result: Any,
     *,
     allowed_stages: tuple[str, ...] | None = None,
+    _owned: bool = False,
 ) -> tuple[AnnData, dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Return defensive payload, strict summary, metadata, and portable-state metadata."""
 
@@ -172,7 +203,7 @@ def validate_velocity_state(
         raise ValueError("Velocity artifact type identity is invalid.")
     if metadata["portable_schema"] != VELOCITY_PORTABLE_SCHEMA:
         raise ValueError("Velocity artifact portable schema is unsupported.")
-    payload = result.portable_adata()
+    payload = result._owned_adata() if _owned else result.portable_adata()
     state = validate_portable_velocity_state(payload, allowed_stages=allowed_stages)
     if metadata["stage"] != state["stage"] or result.stage != state["stage"]:
         raise ValueError("Velocity artifact stage identity is invalid.")
@@ -203,73 +234,82 @@ def run_velocity_prepare(
     adata: AnnData,
     *,
     scvelo_module: Any | None = None,
+    _owned: bool = False,
     **parameters: Any,
 ) -> VelocityState:
     output, summary = prepare_velocity_abundances(
-        adata, scvelo_module=scvelo_module, **parameters
+        adata, scvelo_module=scvelo_module, _worker_owned=_owned, **parameters
     )
-    return _build_velocity_state(output, summary)
+    return _build_velocity_state(output, summary, _owned=_owned)
 
 
 def run_velocity_moments(
     velocity_state: VelocityState,
     *,
     scvelo_module: Any | None = None,
+    _owned: bool = False,
     **parameters: Any,
 ) -> VelocityState:
-    adata, _, _, _ = validate_velocity_state(velocity_state, allowed_stages=("prepared",))
-    output, summary = compute_velocity_moments(
-        adata, scvelo_module=scvelo_module, **parameters
+    adata, _, _, _ = validate_velocity_state(
+        velocity_state, allowed_stages=("prepared",), _owned=_owned
     )
-    return _build_velocity_state(output, summary)
+    output, summary = compute_velocity_moments(
+        adata, scvelo_module=scvelo_module, _worker_owned=_owned, **parameters
+    )
+    return _build_velocity_state(output, summary, _owned=_owned)
 
 
 def run_velocity_estimate(
     velocity_state: VelocityState,
     *,
     scvelo_module: Any | None = None,
+    _owned: bool = False,
     **parameters: Any,
 ) -> VelocityState:
-    adata, _, _, _ = validate_velocity_state(velocity_state)
+    adata, _, _, _ = validate_velocity_state(velocity_state, _owned=_owned)
     output, summary = estimate_rna_velocity(
-        adata, scvelo_module=scvelo_module, **parameters
+        adata, scvelo_module=scvelo_module, _worker_owned=_owned, **parameters
     )
-    return _build_velocity_state(output, summary)
+    return _build_velocity_state(output, summary, _owned=_owned)
 
 
 def run_velocity_recover(
     velocity_state: VelocityState,
     *,
     scvelo_module: Any | None = None,
+    _owned: bool = False,
     **parameters: Any,
 ) -> VelocityState:
-    adata, _, _, _ = validate_velocity_state(velocity_state)
+    adata, _, _, _ = validate_velocity_state(velocity_state, _owned=_owned)
     output, summary = recover_velocity_dynamics(
-        adata, scvelo_module=scvelo_module, **parameters
+        adata, scvelo_module=scvelo_module, _worker_owned=_owned, **parameters
     )
-    return _build_velocity_state(output, summary)
+    return _build_velocity_state(output, summary, _owned=_owned)
 
 
 def run_velocity_graph(
     velocity_state: VelocityState,
     *,
     scvelo_module: Any | None = None,
+    _owned: bool = False,
     **parameters: Any,
 ) -> VelocityState:
     adata, _, _, _ = validate_velocity_state(
-        velocity_state, allowed_stages=("velocity_estimated",)
+        velocity_state, allowed_stages=("velocity_estimated",), _owned=_owned
     )
     output, summary = build_velocity_graph(
-        adata, scvelo_module=scvelo_module, **parameters
+        adata, scvelo_module=scvelo_module, _worker_owned=_owned, **parameters
     )
-    return _build_velocity_state(output, summary)
+    return _build_velocity_state(output, summary, _owned=_owned)
 
 
 def run_velocity_ranking(
     velocity_state: VelocityState,
+    *,
+    _owned: bool = False,
     **parameters: Any,
 ) -> tuple[DataFrame, dict[str, Any]]:
-    adata, _, _, _ = validate_velocity_state(velocity_state)
+    adata, _, _, _ = validate_velocity_state(velocity_state, _owned=_owned)
     return rank_recovered_dynamics(adata, **parameters)
 
 
@@ -277,12 +317,15 @@ def run_velocity_stream(
     velocity_state: VelocityState,
     *,
     scvelo_module: Any | None = None,
+    _owned: bool = False,
     **parameters: Any,
 ) -> tuple[bytes, dict[str, Any]]:
     adata, _, _, _ = validate_velocity_state(
-        velocity_state, allowed_stages=("velocity_graph",)
+        velocity_state, allowed_stages=("velocity_graph",), _owned=_owned
     )
-    return render_velocity_stream(adata, scvelo_module=scvelo_module, **parameters)
+    return render_velocity_stream(
+        adata, scvelo_module=scvelo_module, _worker_owned=_owned, **parameters
+    )
 
 
 _CODE_OPERATIONS = {

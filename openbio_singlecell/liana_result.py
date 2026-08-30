@@ -364,6 +364,20 @@ class LianaResult:
         object.__setattr__(self, "_provenance", copy.deepcopy(dict(provenance)))
         object.__setattr__(self, "_metadata", copy.deepcopy(dict(metadata)))
 
+    @classmethod
+    def _from_owned(
+        cls,
+        *,
+        table: Any,
+        provenance: dict[str, Any],
+        metadata: dict[str, Any],
+    ) -> LianaResult:
+        result = object.__new__(cls)
+        object.__setattr__(result, "_table", table)
+        object.__setattr__(result, "_provenance", provenance)
+        object.__setattr__(result, "_metadata", metadata)
+        return result
+
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError("LianaResult is immutable; create a new validated artifact instead.")
 
@@ -399,7 +413,10 @@ def build_liana_result(
     provenance: Mapping[str, Any],
     numpy: Any,
     pandas: Any,
+    copy_table: bool = True,
 ) -> LianaResult:
+    if not isinstance(copy_table, bool):
+        raise TypeError("copy_table must be a boolean.")
     if not isinstance(provenance, Mapping) or not provenance:
         raise ValueError("LIANA result provenance must be a nonempty mapping.")
     table_identity = _liana_result_table_identity(
@@ -423,18 +440,34 @@ def build_liana_result(
         "provenance_sha256": _liana_json_sha256(provenance_copy),
     }
     metadata["artifact_fingerprint_sha256"] = _liana_json_sha256(metadata)
-    result = LianaResult(table=table, provenance=provenance_copy, metadata=metadata)
+    result = (
+        LianaResult(table=table, provenance=provenance_copy, metadata=metadata)
+        if copy_table
+        else LianaResult._from_owned(table=table, provenance=provenance_copy, metadata=metadata)
+    )
     validate_liana_result(result, numpy=numpy, pandas=pandas)
     return result
 
 
-def _portable_liana_result_payload(result: Any, *, exact_type: bool) -> dict[str, Any]:
+def _portable_liana_result_payload(
+    result: Any,
+    *,
+    exact_type: bool,
+    copy_payload: bool = True,
+) -> dict[str, Any]:
     if exact_type:
         if type(result) is not LianaResult:
             raise TypeError("LIANA consumers require an exact OPENBIO_LIANA_RESULT artifact from LIANA Communication.")
-        return result.portable()
+        if copy_payload:
+            return result.portable()
+        return {
+            "artifact_type": LIANA_RESULT_ARTIFACT_TYPE,
+            "table": object.__getattribute__(result, "_table"),
+            "provenance": object.__getattribute__(result, "_provenance"),
+            "metadata": object.__getattribute__(result, "_metadata"),
+        }
     if isinstance(result, Mapping):
-        return copy.deepcopy(dict(result))
+        return copy.deepcopy(dict(result)) if copy_payload else dict(result)
     if getattr(result, "artifact_type", None) == LIANA_RESULT_ARTIFACT_TYPE and callable(
         getattr(result, "portable", None)
     ):
@@ -448,6 +481,7 @@ def validate_liana_result(
     exact_type: bool = True,
     numpy: Any | None = None,
     pandas: Any | None = None,
+    copy_result: bool = True,
 ) -> tuple[Any, dict[str, Any], dict[str, Any]]:
     if numpy is None or pandas is None:
         import numpy as np
@@ -455,7 +489,11 @@ def validate_liana_result(
 
         numpy = np
         pandas = pd
-    payload = _portable_liana_result_payload(result, exact_type=exact_type)
+    payload = _portable_liana_result_payload(
+        result,
+        exact_type=exact_type,
+        copy_payload=copy_result,
+    )
     if set(payload) != {"artifact_type", "table", "provenance", "metadata"}:
         raise ValueError("LIANA portable result schema is invalid.")
     if payload["artifact_type"] != LIANA_RESULT_ARTIFACT_TYPE:
@@ -511,7 +549,11 @@ def validate_liana_result(
         method=method,
         table_identity=table_identity,
     )
-    return table.copy(deep=True), provenance_copy, copy.deepcopy(dict(metadata))
+    return (
+        table.copy(deep=True) if copy_result else table,
+        provenance_copy,
+        copy.deepcopy(dict(metadata)),
+    )
 
 
 def liana_result_portable_code() -> str:

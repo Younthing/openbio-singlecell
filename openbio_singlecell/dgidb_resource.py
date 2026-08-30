@@ -168,7 +168,7 @@ def _standalone_validate_dgidb_metadata(value):
     return metadata
 
 
-def _standalone_validate_dgidb_table(table):
+def _standalone_validate_dgidb_table(table, copy_table=True):
     import json
 
     import pandas as pd
@@ -182,7 +182,7 @@ def _standalone_validate_dgidb_table(table):
         raise ValueError(f"DGIdb resource table columns must be exactly {columns} in order.")
     if list(table.index) != list(range(len(table))):
         raise ValueError("DGIdb resource table must use a canonical zero-based RangeIndex.")
-    canonical = table.copy(deep=True)
+    canonical = table.copy(deep=True) if copy_table else table
     for column in ("drug", "gene"):
         values = canonical[column].tolist()
         for row_index, value in enumerate(values, start=1):
@@ -221,8 +221,8 @@ def _standalone_validate_dgidb_table(table):
     return canonical
 
 
-def _standalone_dgidb_table_fingerprint(table):
-    canonical = _standalone_validate_dgidb_table(table)
+def _standalone_dgidb_table_fingerprint(table, copy_table=True):
+    canonical = _standalone_validate_dgidb_table(table, copy_table=copy_table)
     rows = canonical.loc[:, ["drug", "gene", "sources", "evidence"]].values.tolist()
     return _standalone_dgidb_json_sha256(
         {
@@ -374,7 +374,9 @@ def _standalone_validate_dgidb_accounting(accounting, table):
     return result
 
 
-def _standalone_build_dgidb_artifact_metadata(table, metadata, accounting, raw_sha256, raw_size_bytes):
+def _standalone_build_dgidb_artifact_metadata(
+    table, metadata, accounting, raw_sha256, raw_size_bytes, copy_table=True
+):
     if not (
         isinstance(raw_sha256, str)
         and len(raw_sha256) == 64
@@ -383,7 +385,7 @@ def _standalone_build_dgidb_artifact_metadata(table, metadata, accounting, raw_s
         raise ValueError("DGIdb raw file SHA-256 must be 64 lowercase hexadecimal characters.")
     if isinstance(raw_size_bytes, bool) or not isinstance(raw_size_bytes, int) or raw_size_bytes < 1:
         raise ValueError("DGIdb raw file size must be a positive integer.")
-    canonical = _standalone_validate_dgidb_table(table)
+    canonical = _standalone_validate_dgidb_table(table, copy_table=copy_table)
     validated_metadata = _standalone_validate_dgidb_metadata(metadata)
     validated_accounting = _standalone_validate_dgidb_accounting(accounting, canonical)
     if validated_accounting["size_bytes"] != raw_size_bytes:
@@ -395,7 +397,9 @@ def _standalone_build_dgidb_artifact_metadata(table, metadata, accounting, raw_s
         "producer_schema": "openbio-dgidb-resource/v1",
         "raw_file_sha256": raw_sha256,
         "raw_size_bytes": raw_size_bytes,
-        "canonical_content_fingerprint_sha256": _standalone_dgidb_table_fingerprint(canonical),
+        "canonical_content_fingerprint_sha256": _standalone_dgidb_table_fingerprint(
+            canonical, copy_table=False
+        ),
         "metadata_fingerprint_sha256": _standalone_dgidb_json_sha256(validated_metadata),
         "accounting_fingerprint_sha256": _standalone_dgidb_json_sha256(validated_accounting),
         "canonical_rows": len(canonical),
@@ -404,7 +408,9 @@ def _standalone_build_dgidb_artifact_metadata(table, metadata, accounting, raw_s
     return artifact
 
 
-def _standalone_validate_portable_dgidb_resource(table, metadata, accounting, artifact_metadata):
+def _standalone_validate_portable_dgidb_resource(
+    table, metadata, accounting, artifact_metadata, copy_table=True
+):
     from collections.abc import Mapping
 
     expected_fields = {
@@ -428,21 +434,25 @@ def _standalone_validate_portable_dgidb_resource(table, metadata, accounting, ar
             "DGIdb artifact metadata schema mismatch; "
             f"missing={sorted(expected_fields - actual)}, unknown={sorted(actual - expected_fields)}."
         )
+    canonical = _standalone_validate_dgidb_table(table, copy_table=copy_table)
+    validated_metadata = _standalone_validate_dgidb_metadata(metadata)
+    validated_accounting = _standalone_validate_dgidb_accounting(accounting, canonical)
     supplied = dict(artifact_metadata)
     rebuilt = _standalone_build_dgidb_artifact_metadata(
-        table,
-        metadata,
-        accounting,
+        canonical,
+        validated_metadata,
+        validated_accounting,
         supplied["raw_file_sha256"],
         supplied["raw_size_bytes"],
+        copy_table=False,
     )
     if supplied != rebuilt:
         mismatched = sorted(key for key in expected_fields if supplied.get(key) != rebuilt.get(key))
         raise ValueError(f"DGIdb artifact is tampered or internally inconsistent: {mismatched}.")
     return (
-        _standalone_validate_dgidb_table(table),
-        _standalone_validate_dgidb_metadata(metadata),
-        _standalone_validate_dgidb_accounting(accounting, table),
+        canonical,
+        validated_metadata,
+        validated_accounting,
         rebuilt,
     )
 
@@ -631,7 +641,7 @@ def _standalone_load_dgidb_snapshot(
             }
         )
     table = pd.DataFrame.from_records(records, columns=["drug", "gene", "sources", "evidence"])
-    table = _standalone_validate_dgidb_table(table)
+    table = _standalone_validate_dgidb_table(table, copy_table=False)
     accounting = {
         "extension": extension,
         "requested_path": requested_path,
@@ -657,7 +667,7 @@ def _standalone_load_dgidb_snapshot(
     }
     accounting = _standalone_validate_dgidb_accounting(accounting, table)
     artifact_metadata = _standalone_build_dgidb_artifact_metadata(
-        table, metadata, accounting, sha_before, size_bytes
+        table, metadata, accounting, sha_before, size_bytes, copy_table=False
     )
     return {
         "table": table,
@@ -679,7 +689,7 @@ def _standalone_prepare_dgidb_for_universe(
     import pandas as pd
 
     table, metadata, accounting, artifact_metadata = _standalone_validate_portable_dgidb_resource(
-        table, metadata, accounting, artifact_metadata
+        table, metadata, accounting, artifact_metadata, copy_table=False
     )
     if isinstance(min_targets, bool) or not isinstance(min_targets, int) or min_targets < 1:
         raise ValueError(f"{operation} min_targets must be a positive integer.")
@@ -781,6 +791,7 @@ def _standalone_build_dgidb_resource_summary(payload, openbio_version):
         payload["metadata"],
         payload["accounting"],
         payload["artifact_metadata"],
+        copy_table=False,
     )
     del table
 
@@ -912,6 +923,22 @@ class DGIdbResource:
         object.__setattr__(self, "_accounting", copy.deepcopy(dict(accounting)))
         object.__setattr__(self, "_artifact_metadata", copy.deepcopy(dict(artifact_metadata)))
 
+    @classmethod
+    def _from_owned(
+        cls,
+        *,
+        table: Any,
+        metadata: Mapping[str, Any],
+        accounting: Mapping[str, Any],
+        artifact_metadata: Mapping[str, Any],
+    ) -> DGIdbResource:
+        resource = object.__new__(cls)
+        object.__setattr__(resource, "_table", table)
+        object.__setattr__(resource, "_metadata", dict(metadata))
+        object.__setattr__(resource, "_accounting", dict(accounting))
+        object.__setattr__(resource, "_artifact_metadata", dict(artifact_metadata))
+        return resource
+
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError("DGIdbResource is immutable; load a new validated artifact instead.")
 
@@ -937,6 +964,8 @@ class DGIdbResource:
 
 def validate_dgidb_resource(
     resource: Any,
+    *,
+    copy_payload: bool = True,
 ) -> tuple[DataFrame, dict[str, Any], dict[str, Any], dict[str, Any]]:
     if type(resource) is not DGIdbResource:
         raise TypeError(
@@ -944,11 +973,20 @@ def validate_dgidb_resource(
         )
     if resource.artifact_type != DGIDB_ARTIFACT_TYPE:
         raise ValueError("DGIdb resource type identity is invalid.")
+    if not isinstance(copy_payload, bool):
+        raise TypeError("DGIdb copy_payload must be boolean.")
+    if copy_payload:
+        payload = (resource.table(), resource.metadata, resource.accounting, resource.artifact_metadata)
+    else:
+        payload = (
+            object.__getattribute__(resource, "_table"),
+            object.__getattribute__(resource, "_metadata"),
+            object.__getattribute__(resource, "_accounting"),
+            object.__getattribute__(resource, "_artifact_metadata"),
+        )
     table, metadata, accounting, artifact = _standalone_validate_portable_dgidb_resource(
-        resource.table(),
-        resource.metadata,
-        resource.accounting,
-        resource.artifact_metadata,
+        *payload,
+        copy_table=copy_payload,
     )
     if resource.fingerprint != artifact["artifact_fingerprint_sha256"]:
         raise ValueError("DGIdb resource fingerprint identity is invalid.")
@@ -981,8 +1019,8 @@ def load_dgidb_resource(
         max_rows=max_rows,
         expected_sha256=expected_sha256,
     )
-    resource = DGIdbResource(**payload)
-    validate_dgidb_resource(resource)
+    resource = DGIdbResource._from_owned(**payload)
+    validate_dgidb_resource(resource, copy_payload=False)
     summary = _standalone_build_dgidb_resource_summary(payload, openbio_version)
     return resource, summary
 

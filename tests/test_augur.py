@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import uuid
 import warnings
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from openbio_singlecell import augur as augur_core
+from openbio_singlecell.artifact_codecs import read_table, write_anndata
 from openbio_singlecell.augur import (
     AUGUR_ARTIFACT_TYPE,
     AUGUR_CLASSIFIERS,
@@ -16,11 +19,20 @@ from openbio_singlecell.augur import (
     PRIORITY_COLUMNS,
     AugurResult,
     run_augur_analysis,
+    run_augur_artifact,
     select_augur_view,
     validate_augur_result,
 )
+from openbio_singlecell.augur_codec import AUGUR_CODEC, read_augur, write_augur
 from openbio_singlecell.node_types import AugurResultType, SummaryResultType, TableResultType
 from openbio_singlecell.nodes_population import OpenBioSingleCellAugur, OpenBioSingleCellAugurResults
+from openbio_singlecell.operations_population import augur as augur_operation
+from openbio_singlecell.operations_population import (
+    augur_legacy_owned,
+    augur_results,
+    augur_results_legacy_owned,
+)
+from openbio_singlecell.worker_protocol import OperationContext, WorkerResponse
 
 
 def _make_augur_adata(
@@ -261,7 +273,7 @@ def _fake_pertpy(science, *, backend_mutator=None):
     return SimpleNamespace(__version__="1.3.0", tl=SimpleNamespace(Augur=FakeAugur), calls=calls)
 
 
-def _run(adata, science, *, pertpy_module=None, **overrides):
+def _run(adata, science, *, pertpy_module=None, _runner=run_augur_analysis, **overrides):
     parameters = {
         "sample_key": "sample",
         "population_key": "population",
@@ -283,13 +295,127 @@ def _run(adata, science, *, pertpy_module=None, **overrides):
         "pertpy_module": pertpy_module or _fake_pertpy(science),
     }
     parameters.update(overrides)
-    return run_augur_analysis(adata, **parameters)
+    return _runner(adata, **parameters)
 
 
 def _replace_obs_column(adata, column, values):
     obs = adata.obs.copy()
     obs[column] = values
     adata.obs = obs
+
+
+def test_augur_portable_codec_round_trips_the_validated_table_family(tmp_path: Path, augur_adata, science):
+    result = _run(augur_adata, science)
+    tables, summary, metadata = validate_augur_result(result)
+    root = tmp_path / "augur"
+    root.mkdir()
+
+    write_augur(root, tables, summary, metadata)
+    restored_tables, restored_summary, restored_metadata = read_augur(root)
+
+    assert AUGUR_CODEC == "augur-jsonl-v1"
+    assert restored_summary == summary
+    assert restored_metadata == metadata
+    for view in AUGUR_VIEWS:
+        science.pd.testing.assert_frame_equal(restored_tables[view], tables[view])
+
+
+def test_augur_artifact_path_does_not_construct_the_legacy_live_result(monkeypatch, augur_adata, science):
+    def reject_live_result(*_args, **_kwargs):
+        raise AssertionError("worker artifact encoding must not construct AugurResult")
+
+    monkeypatch.setattr(AugurResult, "__init__", reject_live_result)
+    tables, summary, metadata = _run(augur_adata, science, _runner=run_augur_artifact)
+
+    assert list(tables) == list(AUGUR_VIEWS)
+    assert summary["node_id"] == "OpenBioSingleCellAugur"
+    assert metadata["artifact_type"] == AUGUR_ARTIFACT_TYPE
+
+
+def test_augur_results_operation_reads_portable_artifact_without_a_live_result(
+    tmp_path: Path, augur_adata, science
+):
+    live = _run(augur_adata, science)
+    tables, summary, metadata = validate_augur_result(live)
+    input_root = tmp_path / "augur-input"
+    input_root.mkdir()
+    write_augur(input_root, tables, summary, metadata)
+    staging = tmp_path / "run.partial"
+    staging.mkdir()
+    context = OperationContext.from_request_path(staging / "request.json", str(uuid.uuid4()))
+
+    records = augur_results(
+        context,
+        {
+            "result": {
+                "type": "artifact",
+                "kind": AUGUR_ARTIFACT_TYPE,
+                "codec": AUGUR_CODEC,
+                "path": str(input_root.resolve()),
+            }
+        },
+        {"view": "priorities"},
+    )
+    WorkerResponse.success(context.request_id, records)
+
+    assert [record["name"] for record in records] == ["table", "summary", "code"]
+    restored, _ = read_table(staging / records[0]["payload"])
+    science.pd.testing.assert_frame_equal(restored, tables["priorities"])
+
+
+def test_augur_operation_publishes_the_portable_codec(
+    tmp_path: Path, monkeypatch, augur_adata, science
+):
+    live = _run(augur_adata, science)
+    tables, summary, metadata = validate_augur_result(live)
+    monkeypatch.setattr(
+        "openbio_singlecell.operations_population.run_augur_artifact",
+        lambda _adata, **_parameters: (tables, summary, metadata),
+    )
+    input_root = tmp_path / "adata-input"
+    input_root.mkdir()
+    write_anndata(input_root, augur_adata)
+    staging = tmp_path / "run.partial"
+    staging.mkdir()
+    context = OperationContext.from_request_path(staging / "request.json", str(uuid.uuid4()))
+
+    records = augur_operation(
+        context,
+        {
+            "adata": {
+                "type": "artifact",
+                "kind": "OPENBIO_ANNDATA",
+                "codec": "anndata-h5ad-v1",
+                "path": str(input_root.resolve()),
+            }
+        },
+        {
+            "sample_key": "sample",
+            "population_key": "population",
+            "condition_key": "condition",
+            "control": "control",
+            "treatment": "treatment",
+            "classifier": "random_forest_classifier",
+            "source": {"source": "raw"},
+            "annotation_status": "provisional",
+            "technical_batch_key": "technical_batch",
+            "n_subsamples": 2,
+            "subsample_size": 3,
+            "folds": 2,
+            "n_threads": 1,
+            "random_seed": 17,
+            "max_result_rows": 10_000,
+            "max_result_mib": 10.0,
+        },
+    )
+    WorkerResponse.success(context.request_id, records)
+
+    assert [record["name"] for record in records] == ["result", "summary", "code"]
+    assert records[0]["codec"] == AUGUR_CODEC
+    restored_tables, restored_summary, restored_metadata = read_augur(staging / records[0]["payload"])
+    assert restored_summary == summary
+    assert restored_metadata == metadata
+    science.pd.testing.assert_frame_equal(restored_tables["priorities"], tables["priorities"])
 
 
 def _set_raw_value(adata, value):
@@ -335,7 +461,7 @@ def _make_population_specific_perfect_confounding(adata):
 
 
 def test_augur_schemas_are_atomic_and_typed():
-    schema = OpenBioSingleCellAugur.GET_SCHEMA()
+    schema = OpenBioSingleCellAugur.define_schema()
     assert [item.id for item in schema.inputs] == [
         "adata",
         "sample_key",
@@ -374,7 +500,7 @@ def test_augur_schemas_are_atomic_and_typed():
         ("code", "STRING"),
     ]
 
-    result_schema = OpenBioSingleCellAugurResults.GET_SCHEMA()
+    result_schema = OpenBioSingleCellAugurResults.define_schema()
     assert [item.id for item in result_schema.inputs] == ["result", "view"]
     assert result_schema.inputs[0].io_type == AUGUR_ARTIFACT_TYPE
     assert result_schema.inputs[1].options == list(AUGUR_VIEWS)
@@ -509,7 +635,7 @@ def test_generated_augur_code_handles_absent_technical_batch(augur_adata, scienc
 
 def test_augur_nodes_return_reports_code_and_pure_views(augur_adata, science, monkeypatch):
     monkeypatch.setattr(augur_core, "_require_pertpy", lambda: _fake_pertpy(science))
-    result, report, code = OpenBioSingleCellAugur.execute(
+    result, report, code = augur_legacy_owned(
         augur_adata,
         sample_key="sample",
         population_key="population",
@@ -525,16 +651,16 @@ def test_augur_nodes_return_reports_code_and_pure_views(augur_adata, science, mo
         random_seed=17,
         max_result_rows=10_000,
         max_result_mib=10.0,
-    ).result
+    )
     assert isinstance(result, AugurResult)
     assert report.summary == result.summary
     assert report.source["operation"] == "augur"
     compile(code, "<augur-node-code>", "exec")
 
     for view in AUGUR_VIEWS:
-        table_result, view_report, view_code = OpenBioSingleCellAugurResults.execute(
+        table_result, view_report, view_code = augur_results_legacy_owned(
             result, view=view
-        ).result
+        )
         assert table_result.source["operation"] == "augur_results"
         science.pd.testing.assert_frame_equal(table_result.table, result.table(view))
         assert view_report.summary["selected_view"]["view"] == view

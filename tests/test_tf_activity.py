@@ -87,6 +87,35 @@ def _activity_artifact(science):
     )
 
 
+def test_tf_activity_file_codec_round_trip_uses_h5ad_and_json(science, tmp_path):
+    from openbio_singlecell.regulatory_artifact_codecs import (
+        read_tf_activity,
+        write_tf_activity,
+    )
+
+    artifact = _activity_artifact(science)
+    root = tmp_path / "tf-activity"
+    root.mkdir()
+
+    write_tf_activity(root, artifact)
+    portable = read_tf_activity(root)
+    scores, adjusted, provenance, metadata = validate_tf_activity_artifact(
+        portable,
+        exact_type=False,
+        numpy=science.np,
+        pandas=science.pd,
+        copy_result=False,
+    )
+
+    expected_scores, expected_adjusted = _activity_frames(science)
+    science.pd.testing.assert_frame_equal(scores, expected_scores)
+    science.pd.testing.assert_frame_equal(adjusted, expected_adjusted)
+    assert provenance == artifact.provenance
+    assert metadata == artifact.metadata
+    assert (root / "data.h5ad").is_file()
+    assert (root / "result.json").is_file()
+
+
 def _resource_metadata_json() -> str:
     return json.dumps(
         {
@@ -423,11 +452,120 @@ def _run_local_ulm(adata, network_path, science, *, decoupler_module=None, **ove
     )
 
 
+def test_worker_owned_collectri_updates_one_private_anndata_without_full_copy(science, tmp_path):
+    from openbio_singlecell.operations_regulatory import collectri_ulm_owned
+
+    network_path = tmp_path / "toy_collectri.csv"
+    _write_signed_network(network_path)
+    adata = _logged_adata(science)
+
+    output, artifact, report, code = collectri_ulm_owned(
+        adata,
+        resource_mode="local_network",
+        network_path=network_path,
+        resource_metadata_json=_resource_metadata_json(),
+        source={"source": "X"},
+        affiliation_license="academic",
+        allow_network_access=False,
+        complex_policy="retain",
+        min_targets=3,
+        batch_size=17,
+        max_output_rows=10_000,
+        max_working_memory_gib=1.0,
+        overwrite_existing=False,
+        decoupler_module=_fake_decoupler(science),
+    )
+
+    assert output is adata
+    validate_tf_activity_artifact(artifact, copy_result=False)
+    assert report.summary["node_id"] == "OpenBioSingleCellCollecTRIULM"
+    assert "decoupler.mt.ulm" in code
+
+
+def test_collectri_worker_operation_writes_new_files_without_rewriting_input(
+    science,
+    tmp_path,
+    monkeypatch,
+):
+    import uuid
+
+    import openbio_singlecell.operations_regulatory as operations
+    from openbio_singlecell.artifact_codecs import read_anndata, write_anndata
+    from openbio_singlecell.regulatory_artifact_codecs import read_tf_activity
+    from openbio_singlecell.worker_protocol import OperationContext
+
+    network_path = tmp_path / "toy_collectri.csv"
+    _write_signed_network(network_path)
+    owned = _logged_adata(science)
+    result = operations.collectri_ulm_owned(
+        owned,
+        resource_mode="local_network",
+        network_path=network_path,
+        resource_metadata_json=_resource_metadata_json(),
+        source={"source": "X"},
+        affiliation_license="academic",
+        allow_network_access=False,
+        complex_policy="retain",
+        min_targets=3,
+        batch_size=17,
+        max_output_rows=10_000,
+        max_working_memory_gib=1.0,
+        overwrite_existing=False,
+        decoupler_module=_fake_decoupler(science),
+    )
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    write_anndata(input_root, _logged_adata(science))
+    input_bytes = (input_root / "data.h5ad").read_bytes()
+    staging = tmp_path / "run.partial"
+    staging.mkdir()
+    context = OperationContext(staging, str(uuid.uuid4()))
+    monkeypatch.setattr(operations, "collectri_ulm_owned", lambda *_args, **_kwargs: result)
+
+    records = operations.collectri_ulm(
+        context,
+        {
+            "adata": {
+                "type": "artifact",
+                "path": str(input_root.resolve()),
+                "kind": "OPENBIO_ANNDATA",
+                "codec": "anndata-h5ad-v1",
+            },
+            "network_csv": {
+                "type": "file",
+                "path": str(network_path.resolve()),
+                "provenance": {},
+            },
+        },
+        {
+            "resource_mode": "local_network",
+            "resource_metadata_json": _resource_metadata_json(),
+            "source": {"source": "X"},
+            "affiliation_license": "academic",
+            "allow_network_access": False,
+            "complex_policy": "retain",
+            "min_targets": 3,
+            "batch_size": 17,
+            "max_output_rows": 10_000,
+            "max_working_memory_gib": 1.0,
+            "overwrite_existing": False,
+        },
+    )
+
+    assert [record["name"] for record in records] == ["adata", "activities", "summary", "code"]
+    assert (input_root / "data.h5ad").read_bytes() == input_bytes
+    written = read_anndata(staging / records[0]["payload"])
+    portable = read_tf_activity(staging / records[1]["payload"])
+    assert COLLECTRI_SCORE_KEY in written.obsm
+    validate_tf_activity_artifact(portable, exact_type=False, copy_result=False)
+
+
 def test_collectri_ulm_local_contract_exact_call_full_bh_and_generated_parity(science, tmp_path):
     network_path = tmp_path / "toy_collectri.csv"
     _write_signed_network(network_path)
     adata = _logged_adata(science)
     before = _adata_snapshot(adata)
+    generated_input = _logged_adata(science)
     fake = _fake_decoupler(science)
 
     output, artifact, summary = _run_local_ulm(
@@ -483,7 +621,14 @@ def test_collectri_ulm_local_contract_exact_call_full_bh_and_generated_parity(sc
     assert len(summary["references"]) >= 3
     json.dumps(summary, ensure_ascii=False, allow_nan=False)
     assert output.uns[COLLECTRI_UNS_KEY]["artifact_fingerprint_sha256"] == artifact.fingerprint
-    _assert_adata_unchanged(adata, before, science)
+    assert output is adata
+    if science.sparse.issparse(adata.X):
+        assert (adata.X != before["X"]).nnz == 0
+    else:
+        science.np.testing.assert_array_equal(adata.X, before["X"])
+    science.pd.testing.assert_frame_equal(adata.obs, before["obs"])
+    science.pd.testing.assert_frame_equal(adata.var, before["var"])
+    assert adata.uns["log1p"] == before["uns"]["log1p"]
 
     parameters = {
         **summary["parameters"],
@@ -499,7 +644,7 @@ def test_collectri_ulm_local_contract_exact_call_full_bh_and_generated_parity(sc
     namespace: dict[str, object] = {}
     exec(code, namespace)
     generated_output, generated_artifact, generated_summary = namespace["infer_collectri_ulm"](
-        adata,
+        generated_input,
         decoupler_module=_fake_decoupler(science),
     )
     science.pd.testing.assert_frame_equal(
@@ -536,7 +681,7 @@ def test_collectri_ulm_complex_policy_official_access_and_license_are_explicit(s
     offline_fake = _fake_decoupler(science, network=official)
     with pytest.raises(RuntimeError, match="direct network access"):
         run_collectri_ulm(
-            adata,
+            _logged_adata(science),
             resource_mode="official_collectri",
             affiliation_license="commercial",
             allow_network_access=False,
@@ -547,7 +692,7 @@ def test_collectri_ulm_complex_policy_official_access_and_license_are_explicit(s
 
     online_fake = _fake_decoupler(science, network=official)
     _, _, official_summary = run_collectri_ulm(
-        adata,
+        _logged_adata(science),
         resource_mode="official_collectri",
         affiliation_license="commercial",
         allow_network_access=True,
@@ -624,7 +769,7 @@ def test_official_collectri_generated_code_uses_materialized_network_without_dow
     exec(code, namespace)
     generated_fake = _fake_decoupler(science)
     generated_output, generated_artifact, generated_summary = namespace["infer_collectri_ulm"](
-        adata,
+        _logged_adata(science),
         str(materialized_path),
         decoupler_module=generated_fake,
     )
@@ -651,7 +796,7 @@ def test_official_collectri_generated_code_uses_materialized_network_without_dow
     changed_fake = _fake_decoupler(science)
     with pytest.raises(ValueError, match="does not match the runtime-resolved canonical SHA-256"):
         namespace["infer_collectri_ulm"](
-            adata,
+            _logged_adata(science),
             str(changed_path),
             decoupler_module=changed_fake,
         )
@@ -766,7 +911,7 @@ def test_real_decoupler_2_2_collectri_ulm_toy_smoke_and_generated_parity(science
     namespace: dict[str, object] = {}
     exec(collectri_ulm_code(parameters=parameters), namespace)
     generated_output, generated_artifact, generated_summary = namespace["infer_collectri_ulm"](
-        adata,
+        _logged_adata(science),
         decoupler_module=decoupler,
     )
     science.pd.testing.assert_frame_equal(
@@ -879,6 +1024,37 @@ def test_tf_activity_ranking_all_methods_complete_bh_ties_and_generated_parity(
     )
     science.pd.testing.assert_frame_equal(generated_table, table)
     assert generated_summary == summary
+
+
+def test_worker_owned_tf_ranking_reuses_decoded_activity_frame(science, monkeypatch):
+    adata, artifact = _ranking_input(science)
+    portable = artifact.portable()
+    scores = portable["scores"]
+    copied_shapes = []
+    original_copy = science.pd.DataFrame.copy
+
+    def tracked_copy(frame, *args, **kwargs):
+        if frame is scores:
+            copied_shapes.append(frame.shape)
+        return original_copy(frame, *args, **kwargs)
+
+    monkeypatch.setattr(science.pd.DataFrame, "copy", tracked_copy)
+    rank_tf_activities(
+        adata,
+        portable,
+        annotation_key="cell_type",
+        annotation_status="curated",
+        reference="rest",
+        method="t-test_overestim_var",
+        report_p_adjusted=0.05,
+        max_output_rows=10_000,
+        decoupler_module=_fake_decoupler(science),
+        openbio_version="test-version",
+        _portable_artifact=True,
+        _worker_owned=True,
+    )
+
+    assert copied_shapes == []
 
 
 @pytest.mark.parametrize(
@@ -1077,6 +1253,38 @@ def test_tf_activity_artifact_is_exact_typed_defensive_and_strict_json(science):
     science.pd.testing.assert_frame_equal(validated_adjusted, artifact.adjusted_pvalues)
     assert validated_provenance == artifact.provenance
     assert validated_metadata == artifact.metadata
+
+
+def test_owned_tf_activity_fingerprint_does_not_request_full_frame_copies(
+    science,
+    monkeypatch,
+):
+    scores, adjusted = _activity_frames(science)
+    copy_requests = []
+    original_to_numpy = science.pd.DataFrame.to_numpy
+
+    def tracked_to_numpy(frame, *args, **kwargs):
+        if kwargs.get("copy") is True:
+            copy_requests.append(frame.shape)
+        return original_to_numpy(frame, *args, **kwargs)
+
+    monkeypatch.setattr(science.pd.DataFrame, "to_numpy", tracked_to_numpy)
+    artifact = build_tf_activity_artifact(
+        scores=scores,
+        adjusted_pvalues=adjusted,
+        provenance=_artifact_provenance(),
+        numpy=science.np,
+        pandas=science.pd,
+        copy_frames=False,
+    )
+    validate_tf_activity_artifact(
+        artifact,
+        numpy=science.np,
+        pandas=science.pd,
+        copy_result=False,
+    )
+
+    assert copy_requests == []
 
 
 def test_tf_activity_artifact_detects_private_content_and_provenance_tampering(science):

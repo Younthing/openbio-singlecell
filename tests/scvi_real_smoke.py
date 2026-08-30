@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import warnings
-from importlib import metadata
+from importlib import import_module, metadata
+from pathlib import Path
 
 import anndata as ad
 import numpy as np
 import pandas as pd
 
+from openbio_singlecell.artifact_codecs import ANNDATA_PAYLOAD, read_anndata, write_anndata
+from openbio_singlecell.artifact_envelope import summary_from_metadata
 from openbio_singlecell.contracts import ensure_metadata
-from openbio_singlecell.nodes_integration import OpenBioSingleCellSCVIIntegration
+from openbio_singlecell.operations_input import ANNDATA_CODEC, ANNDATA_KIND
+from openbio_singlecell.operations_integration import scvi_integration
+from openbio_singlecell.worker_protocol import OperationContext
 
 
 def _require(condition: object, message: str) -> None:
@@ -44,21 +50,60 @@ def main() -> None:
     }
     adata.uns["openbio_singlecell"] = openbio_metadata
 
-    output, model, report, code = OpenBioSingleCellSCVIIntegration.execute(
-        adata,
-        source={"source": "layer", "counts_layer": "counts"},
-        n_latent=8,
-        epochs={"epochs": "fixed", "max_epochs": 1},
-        train_size=1.0,
-        batch_size=16,
-        accelerator="cpu",
-        random_seed=11,
-    ).result
+    with tempfile.TemporaryDirectory(prefix="openbio-real-scvi-") as directory:
+        root = Path(directory)
+        input_root = root / "input"
+        input_root.mkdir()
+        write_anndata(input_root, adata)
+        input_payload = input_root / ANNDATA_PAYLOAD
+        before = input_payload.read_bytes()
+        staging = root / "run.partial"
+        staging.mkdir()
+        records = scvi_integration(
+            OperationContext(staging, "00000000-0000-4000-8000-000000000003"),
+            {
+                "adata": {
+                    "type": "artifact",
+                    "path": str(input_root.resolve()),
+                    "kind": ANNDATA_KIND,
+                    "codec": ANNDATA_CODEC,
+                }
+            },
+            {
+                "source": {"source": "layer", "counts_layer": "counts"},
+                "technical_batch_key": "batch",
+                "categorical_covariates": "",
+                "continuous_covariates": "",
+                "n_latent": 8,
+                "gene_likelihood": "zinb",
+                "n_layers": 1,
+                "dispersion": "gene",
+                "dropout_rate": 0.1,
+                "epochs": {"epochs": "fixed", "max_epochs": 1},
+                "early_stopping": False,
+                "train_size": 1.0,
+                "batch_size": 16,
+                "size_factor_key": "",
+                "accelerator": "cpu",
+                "output_key": "X_scVI",
+                "overwrite_existing": False,
+                "random_seed": 11,
+            },
+        )
+        output = read_anndata(staging / records[0]["payload"])
+        model_root = staging / records[1]["payload"]
+        report = summary_from_metadata(records[2]["value"])
+        code = records[3]["value"]
+        model = import_module("scvi.model").SCVI.load(str(model_root), adata=output)
+
+        _require(input_payload.read_bytes() == before, "Real scVI operation modified its input artifact.")
+        _require(model_root.is_dir(), "Real scVI operation did not publish its native model directory.")
+        json.dumps(records, allow_nan=False)
 
     latent = output.obsm["X_scVI"]
     _require(latent.shape == (32, 8), "Real scVI smoke returned an unexpected latent shape.")
     _require(np.isfinite(latent).all(), "Real scVI smoke returned non-finite latent values.")
-    _require(model.evidence["model_class"].endswith("SCVI"), "Real scVI smoke returned the wrong model class.")
+    _require(type(model).__name__.endswith("SCVI"), "Real scVI smoke returned the wrong model class.")
     _require(report.summary["key_results"]["zero_total_genes"] == 1, "Zero-total gene accounting drifted.")
     _require(report.summary["parameters"]["n_latent"] == 8, "n_latent reporting drifted.")
     _require(report.summary["parameters"]["train_size"] == 1.0, "train_size reporting drifted.")

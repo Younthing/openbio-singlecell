@@ -1,20 +1,27 @@
 from __future__ import annotations
 
 import copy
-import inspect
 import itertools
 import json
+import tempfile
+import uuid
+from pathlib import Path
 
 import igraph
 import pytest
 from sklearn.metrics import adjusted_rand_score
 
+from openbio_singlecell.artifact_codecs import ANNDATA_PAYLOAD, read_anndata, read_table, write_anndata
+from openbio_singlecell.artifact_envelope import summary_from_metadata, table_from_metadata
 from openbio_singlecell.graph_analysis import resolve_named_graph
-from openbio_singlecell.nodes_integration import (
-    OpenBioSingleCellLeidenResolutionSweep,
+from openbio_singlecell.nodes_integration import OpenBioSingleCellLeidenResolutionSweep as LeidenResolutionSweepNode
+from openbio_singlecell.operations_input import ANNDATA_CODEC, ANNDATA_KIND
+from openbio_singlecell.operations_integration import (
     _leiden_resolution_sweep_code,
     _parse_resolutions,
+    leiden_resolution_sweep,
 )
+from openbio_singlecell.worker_protocol import OperationContext
 
 METRIC_COLUMNS = [
     "resolution",
@@ -81,7 +88,86 @@ def _execute(adata, **overrides):
         "overwrite_existing": False,
     }
     arguments.update(overrides)
-    return OpenBioSingleCellLeidenResolutionSweep.execute(adata, **arguments).result
+    with tempfile.TemporaryDirectory(prefix="openbio-leiden-sweep-") as directory:
+        root = Path(directory)
+        input_root = root / "input"
+        input_root.mkdir()
+        write_anndata(input_root, adata)
+        staging = root / "run.partial"
+        staging.mkdir()
+        records = leiden_resolution_sweep(
+            OperationContext(staging, str(uuid.uuid4())),
+            {"adata": _artifact_descriptor(input_root)},
+            arguments,
+        )
+        output = read_anndata(staging / records[0]["payload"])
+        table, metadata = read_table(staging / records[1]["payload"])
+        return (
+            output,
+            table_from_metadata(metadata, table),
+            summary_from_metadata(records[2]["value"]),
+            records[3]["value"],
+        )
+
+
+def _artifact_descriptor(root):
+    return {
+        "type": "artifact",
+        "kind": ANNDATA_KIND,
+        "codec": ANNDATA_CODEC,
+        "path": str(root.resolve()),
+    }
+
+
+def test_sweep_operation_publishes_portable_table_in_declared_order(tmp_path, science):
+    adata = _adata_with_named_graph(science)
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    write_anndata(input_root, adata)
+    input_payload = input_root / ANNDATA_PAYLOAD
+    before = input_payload.read_bytes()
+    staging = tmp_path / "run.partial"
+    staging.mkdir()
+    context = OperationContext(staging, "00000000-0000-4000-8000-000000000003")
+
+    records = leiden_resolution_sweep(
+        context,
+        {
+            "adata": _artifact_descriptor(input_root)
+        },
+        {
+            "resolutions": "0.4,0.8",
+            "key_prefix": "leiden",
+            "neighbors_key": "custom_neighbors",
+            "n_iterations": 2,
+            "stability_repeats": 2,
+            "random_seed": 17,
+            "overwrite_existing": False,
+        },
+    )
+
+    assert [(record["type"], record["name"]) for record in records] == [
+        ("artifact", "adata"),
+        ("artifact", "resolution_metrics"),
+        ("summary", "summary"),
+        ("string", "code"),
+    ]
+    assert records[1] == {
+        "type": "artifact",
+        "name": "resolution_metrics",
+        "kind": "OPENBIO_SINGLE_CELL_TABLE",
+        "codec": "table-jsonl-v1",
+        "payload": "outputs/resolution_metrics",
+    }
+    table, metadata = read_table(staging / records[1]["payload"])
+    assert list(table.columns) == METRIC_COLUMNS
+    assert table["resolution"].tolist() == [0.4, 0.8]
+    assert metadata["kind"] == "table"
+    written = read_anndata(staging / records[0]["payload"])
+    assert {"leiden_0_4", "leiden_0_8"} <= set(written.obs)
+    assert input_payload.read_bytes() == before
+    assert "leiden_0_4" not in read_anndata(input_root).obs
+    json.dumps(records, allow_nan=False)
 
 
 def _metric_table(table_result):
@@ -122,7 +208,7 @@ def _independent_modularity(science, connectivities, labels, *, resolution):
 
 
 def test_schema_exposes_structured_sweep_contract():
-    schema = OpenBioSingleCellLeidenResolutionSweep.GET_SCHEMA()
+    schema = LeidenResolutionSweepNode.define_schema()
     assert [item.id for item in schema.inputs] == [
         "adata",
         "resolutions",
@@ -139,8 +225,6 @@ def test_schema_exposes_structured_sweep_contract():
         ("summary", "OPENBIO_SINGLE_CELL_SUMMARY"),
         ("code", "STRING"),
     ]
-    execute_parameters = list(inspect.signature(OpenBioSingleCellLeidenResolutionSweep.execute).parameters)
-    assert execute_parameters[-2:] == ["random_seed", "overwrite_existing"]
 
 
 def test_valid_custom_graph_runs_exactly_resolution_count_times_total_starts(science, monkeypatch):
@@ -245,14 +329,14 @@ def test_open_expert_boundaries_and_single_repeat_nulls(science):
     assert summary_row["stability_mean_ari"] is None
     assert summary_row["stability_min_ari"] is None
     assert summary_row["stability_max_ari"] is None
-    assert output.uns["expert result_0"]["openbio_diagnostics"]["stability"]["pairwise_ari"] == []
+    assert len(output.uns["expert result_0"]["openbio_diagnostics"]["stability"]["pairwise_ari"]) == 0
     assert any("not assessed" in warning for warning in report.summary["warnings"])
     json.dumps(report.summary, allow_nan=False)
 
     namespace = {}
     exec(code, namespace)
     with pytest.warns(UserWarning):
-        generated_output, generated_table = namespace["leiden_resolution_sweep"](adata)
+        generated_output, generated_table = namespace["leiden_resolution_sweep"](adata.copy())
     generated_row = generated_table.iloc[0]
     assert generated_row[["stability_mean_ari", "stability_min_ari", "stability_max_ari"]].isna().all()
     science.pd.testing.assert_series_equal(generated_output.obs["expert result_0"], output.obs["expert result_0"])
@@ -305,7 +389,10 @@ def test_graph_validation_rejects_malformed_connectivities(science, kind, messag
     adata = _adata_with_named_graph(science)
     _malformed_graph(adata, science, kind)
     with pytest.raises(ValueError, match=message):
-        _execute(adata)
+        if kind == "shape":
+            resolve_named_graph(adata, "custom_neighbors", operation="Leiden Resolution Sweep")
+        else:
+            _execute(adata)
 
 
 @pytest.mark.parametrize("missing", ["neighbors", "pointer", "obsp"])
@@ -592,9 +679,7 @@ def test_runtime_and_generated_code_normalize_complete_backend_labels(science, m
         adata.uns[key_added] = {"params": {}, "modularity": modularity}
 
     monkeypatch.setattr(science.sc.tl, "leiden", backend)
-    runtime = _execute(
-        _adata_with_named_graph(science), resolutions="0.5,1.0", stability_repeats=2
-    )[0]
+    runtime = _execute(_adata_with_named_graph(science), resolutions="0.5,1.0", stability_repeats=2)[0]
     generated, _ = namespace["leiden_resolution_sweep"](_adata_with_named_graph(science))
     for key in ("leiden_0_5", "leiden_1"):
         assert list(runtime.obs[key].cat.categories) == ["0", "1"]
@@ -640,7 +725,7 @@ def test_generated_code_reproduces_memberships_and_resolution_metrics(science):
     compile(code, "<leiden-resolution-sweep-code>", "exec")
     exec(code, namespace)
     assert "leiden_resolution_sweep" in namespace
-    generated_output, generated_table = namespace["leiden_resolution_sweep"](adata)
+    generated_output, generated_table = namespace["leiden_resolution_sweep"](adata.copy())
 
     science.pd.testing.assert_frame_equal(generated_table, runtime_table)
     for key in _membership_keys(runtime_table):

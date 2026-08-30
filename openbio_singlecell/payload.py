@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from typing import Any, Literal, TypedDict, cast
 
@@ -134,5 +135,48 @@ def result_to_payload(result: SingleCellResult) -> SingleCellResultPayload:
             "summary": _bounded_value(summary),
             "warnings": warnings[:MAX_WARNINGS],
             "elapsed_seconds": elapsed if math.isfinite(elapsed) else None,
+        },
+    )
+
+
+def artifact_metadata_to_payload(
+    metadata: Mapping[str, Any],
+    *,
+    columns: Sequence[Any] = (),
+    rows: Sequence[Sequence[Any]] = (),
+    total_rows: int = 0,
+) -> TableResultPayload | PlotResultPayload:
+    kind = metadata.get("kind")
+    if kind not in {"table", "plot"}:
+        raise ValueError("Artifact preview metadata must describe a table or plot result.")
+    if not isinstance(metadata.get("title"), str) or not isinstance(metadata.get("description"), str):
+        raise ValueError("Artifact preview metadata is missing its title or description.")
+    warnings_value = metadata.get("warnings")
+    if not isinstance(warnings_value, list):
+        raise ValueError("Artifact preview metadata warnings must be a list.")
+    bounded_columns = [_bounded_string(value) for value in list(columns)[:MAX_COLUMNS]]
+    bounded_rows = [
+        [_json_scalar(value) for value in list(row)[:MAX_COLUMNS]]
+        for row in list(rows)[:MAX_ROWS]
+    ]
+    warnings = [_bounded_string(value) for value in warnings_value[:MAX_WARNINGS]]
+    if kind == "table" and (len(columns) > MAX_COLUMNS or total_rows > MAX_ROWS):
+        warnings.append(
+            f"Preview limited to {MAX_ROWS} rows and {MAX_COLUMNS} columns; Export CSV for the complete table."
+        )
+    elapsed_value = metadata.get("elapsed_seconds")
+    elapsed = float(elapsed_value) if isinstance(elapsed_value, (int, float)) else None
+    return cast(
+        TableResultPayload | PlotResultPayload,
+        {
+            "schema_version": SCHEMA_VERSION,
+            "kind": kind,
+            "title": _bounded_string(metadata["title"]),
+            "columns": bounded_columns,
+            "rows": bounded_rows,
+            "total_rows": int(total_rows),
+            "summary": _bounded_value({"description": metadata["description"]}),
+            "warnings": warnings[:MAX_WARNINGS],
+            "elapsed_seconds": elapsed if elapsed is not None and math.isfinite(elapsed) else None,
         },
     )

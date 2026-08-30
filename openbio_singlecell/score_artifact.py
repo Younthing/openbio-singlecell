@@ -39,21 +39,21 @@ def score_frame_fingerprint(frame: Any, *, np: Any, pd: Any) -> dict[str, Any]:
         raise ValueError("Canonical score artifact data must contain at least one observation.")
     if not scores:
         raise ValueError("Canonical score artifact data must contain at least one named score.")
-    try:
-        values = frame.to_numpy(dtype=float, copy=True)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("Canonical score artifact data must contain only numeric values.") from exc
-    if values.shape != (len(observations), len(scores)):
+    if frame.shape != (len(observations), len(scores)):
         raise RuntimeError("Canonical score artifact matrix shape does not match its named axes.")
-    if not bool(np.isfinite(values).all()):
-        raise ValueError("Canonical score artifact data contains non-finite values.")
-    canonical_values = np.ascontiguousarray(values, dtype="<f8")
     digest = hashlib.sha256()
     digest.update(b"openbio-singlecell/score-frame/v1\0")
     digest.update(observation_fingerprint.encode("ascii"))
     digest.update(score_axis_fingerprint.encode("ascii"))
-    digest.update(str(canonical_values.shape).encode("ascii"))
-    digest.update(canonical_values.tobytes(order="C"))
+    digest.update(str(frame.shape).encode("ascii"))
+    for start in range(0, len(observations), 1024):
+        try:
+            values = frame.iloc[start : start + 1024].to_numpy(dtype=float, copy=False)
+        except (TypeError, ValueError) as exc:
+            raise TypeError("Canonical score artifact data must contain only numeric values.") from exc
+        if not bool(np.isfinite(values).all()):
+            raise ValueError("Canonical score artifact data contains non-finite values.")
+        digest.update(np.ascontiguousarray(values, dtype="<f8").tobytes(order="C"))
     return {
         "observation_count": len(observations),
         "observation_axis_sha256": observation_fingerprint,

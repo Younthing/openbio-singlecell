@@ -25,6 +25,7 @@ from openbio_singlecell.enrichment_artifacts import (
     validate_enrichment_artifact_pair,
 )
 from openbio_singlecell.enrichment_resource import load_gene_set_resource
+from openbio_singlecell.files import resolve_input_path
 from openbio_singlecell.generic_ora import (
     GENERIC_ORA_COLUMNS,
     build_generic_ora_summary,
@@ -40,6 +41,10 @@ from openbio_singlecell.nodes_enrichment import (
     OpenBioSingleCellGeneSetOverrepresentation,
     OpenBioSingleCellRankedGSEA,
 )
+from openbio_singlecell.operations_enrichment import (
+    gene_set_overrepresentation_owned,
+    ranked_gsea_owned,
+)
 from openbio_singlecell.ranked_enrichment import (
     RANKED_GSEA_COLUMNS,
     build_ranked_gsea_summary,
@@ -49,7 +54,7 @@ from openbio_singlecell.ranked_enrichment import (
 
 
 def _output_values(node_output):
-    return node_output.result
+    return node_output.result if hasattr(node_output, "result") else node_output
 
 
 def _metadata_json() -> str:
@@ -976,10 +981,11 @@ def test_nodes_expose_table_summary_code_and_hash_resource(
     monkeypatch.setitem(sys.modules, "decoupler", fake)
     ranked_table, ranked_universe = _generic_artifacts(science, purpose="ranked")
     ranked_output = _output_values(
-        OpenBioSingleCellRankedGSEA.execute(
+        ranked_gsea_owned(
             ranked_table,
             ranked_universe,
-            gene_sets_file=resource_path.name,
+            gene_sets_path=resolve_input_path(resource_path.name, extensions=(".csv", ".tsv", ".gmt")),
+            requested_resource_path=resource_path.name,
             resource_metadata_json=_metadata_json(),
             comparison="treated_vs_control",
             min_targets=2,
@@ -995,10 +1001,11 @@ def test_nodes_expose_table_summary_code_and_hash_resource(
 
     selected_table, selected_universe = _generic_artifacts(science, purpose="selected")
     ora_output = _output_values(
-        OpenBioSingleCellGeneSetOverrepresentation.execute(
+        gene_set_overrepresentation_owned(
             selected_table,
             selected_universe,
-            gene_sets_file=resource_path.name,
+            gene_sets_path=resolve_input_path(resource_path.name, extensions=(".csv", ".tsv", ".gmt")),
+            requested_resource_path=resource_path.name,
             resource_metadata_json=_metadata_json(),
             comparison="treated_vs_control",
             min_targets=2,

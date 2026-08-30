@@ -1,23 +1,48 @@
 from __future__ import annotations
 
 import csv
-import warnings
-from io import BytesIO
-from typing import TYPE_CHECKING, Any
+import json
+import shutil
+from pathlib import Path
+from typing import Any
 
+import folder_paths
 from comfy_api.latest import io, ui
 
-from .contracts import PlotResult, SingleCellResult, SummaryResult, TableResult
+from .artifact_codecs import (
+    ANNDATA_CODEC,
+    ANNDATA_PAYLOAD,
+    PLOT_CODEC,
+    PLOT_PAYLOAD,
+    RESULT_METADATA,
+    TABLE_CODEC,
+    TABLE_PAYLOAD,
+    TABLE_SCHEMA,
+)
+from .artifact_persist import persist_artifact
+from .artifact_runtime import ArtifactTicket
+from .artifact_service import current_artifact_runtime
+from .contracts import SummaryResult
 from .files import OutputTarget, atomic_write_output, prepare_output_target, preview_output_target
-from .node_types import AnnDataType, PlotResultType, SummaryResultType, TableResultType
-from .payload import result_to_payload
-
-if TYPE_CHECKING:
-    from anndata import AnnData
-
+from .node_types import (
+    AnnDataType,
+    AugurResultType,
+    CassiopeiaCharactersType,
+    CassiopeiaTreeType,
+    CNVStateType,
+    DGIdbResourceType,
+    LianaResultType,
+    PlotResultType,
+    PseudobulkType,
+    SCENICResultArtifactType,
+    SummaryResultType,
+    TableResultType,
+    TFActivityArtifactType,
+    VelocityStateType,
+)
+from .payload import MAX_COLUMNS, MAX_ROWS, artifact_metadata_to_payload, result_to_payload
 
 CATEGORY = "openbio/single-cell/output"
-H5AD_COMPRESSIONS = ("gzip", "lzf", "none")
 CSV_MISSING_VALUE = "NA"
 
 
@@ -43,186 +68,135 @@ def _preview_identity(unique_id: str | int | None, extra_pnginfo: Any) -> str:
     return f"{len(workflow_key)}:{workflow_key}{len(node_key)}:{node_key}"
 
 
-def _validate_png_bytes(png: bytes) -> None:
-    if not isinstance(png, bytes):
-        raise TypeError("PNG payload must be bytes.")
-    try:
-        from PIL import Image
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(BytesIO(png)) as image:
-                if image.format != "PNG":
-                    raise ValueError(f"Detected {image.format or 'unknown'} image data instead of PNG.")
-                image.verify()
-            with Image.open(BytesIO(png)) as image:
-                if image.format != "PNG":
-                    raise ValueError(f"Detected {image.format or 'unknown'} image data instead of PNG.")
-                image.load()
-                if image.width < 1 or image.height < 1:
-                    raise ValueError("PNG dimensions must both be positive.")
-    except Exception as error:
-        raise ValueError("PlotResult contains an invalid, truncated, or unsafe PNG payload.") from error
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"Artifact JSON contains a non-finite number: {value}")
 
 
-def _write_png(target: OutputTarget, png: bytes, *, overwrite: bool) -> None:
-    _validate_png_bytes(png)
+def _strict_json(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject_json_constant)
+    if not isinstance(value, dict):
+        raise ValueError(f"Artifact JSON must be an object: {path.name}")
+    return value
+
+
+def _ticket_root(ticket: ArtifactTicket, *, kind: str, codec: str) -> Path:
+    if not isinstance(ticket, ArtifactTicket):
+        raise TypeError(f"Expected a {kind} ArtifactTicket.")
+    if ticket.kind != kind or ticket.codec != codec:
+        raise ValueError(f"Expected {kind} with codec {codec}; received {ticket.kind} with {ticket.codec}.")
+    return current_artifact_runtime().resolve(ticket)
+
+
+def _copy_artifact_file(source: Path, target: OutputTarget, *, overwrite: bool) -> None:
+    source_size = source.stat().st_size
 
     def writer(staged_path: str) -> None:
-        with open(staged_path, "wb") as handle:
-            handle.write(png)
+        with source.open("rb") as source_handle, open(staged_path, "wb") as staged_handle:
+            shutil.copyfileobj(source_handle, staged_handle, length=1024 * 1024)
 
     def validator(staged_path: str) -> None:
-        with open(staged_path, "rb") as handle:
-            staged_png = handle.read()
-        if staged_png != png:
-            raise RuntimeError("Staged PNG bytes differ from the supplied PlotResult.")
-        _validate_png_bytes(staged_png)
+        if source.stat().st_size != source_size or Path(staged_path).stat().st_size != source_size:
+            raise RuntimeError("Artifact source changed while it was being copied.")
 
     atomic_write_output(target, writer, overwrite=overwrite, validator=validator)
 
 
-def _h5ad_compression(value: str) -> str | None:
-    if not isinstance(value, str) or value not in H5AD_COMPRESSIONS:
-        allowed = ", ".join(H5AD_COMPRESSIONS)
-        raise ValueError(f"H5AD compression must be one of: {allowed}.")
-    return None if value == "none" else value
-
-
-def _csv_label(value: Any, *, role: str) -> str:
-    if value is None:
-        raise ValueError(f"{role} cannot be None; name it explicitly before CSV export.")
-    label = str(value)
-    if not label.strip():
-        raise ValueError(f"{role} cannot be empty; name it explicitly before CSV export.")
-    if "\x00" in label:
-        raise ValueError(f"{role} cannot contain a NUL character.")
-    return label
-
-
-def _prepare_csv_frame(frame: Any) -> tuple[Any, list[str]]:
-    if int(frame.columns.nlevels) != 1:
-        raise ValueError("CSV export requires a single-level column axis; flatten MultiIndex columns first.")
-    column_labels = [_csv_label(value, role="CSV column label") for value in frame.columns]
-    if len(column_labels) != len(set(column_labels)):
-        raise ValueError("CSV column labels must be unique after string conversion.")
-
-    index_labels = []
-    for level, name in enumerate(frame.index.names):
-        if name is None or (isinstance(name, str) and not name.strip()):
-            label = "__openbio_row_id__" if frame.index.nlevels == 1 else f"__openbio_row_id_{level}__"
-        else:
-            label = _csv_label(name, role=f"CSV index level {level} name")
-        index_labels.append(label)
-    if len(index_labels) != len(set(index_labels)):
-        raise ValueError("CSV index labels must be unique.")
-    collisions = sorted(set(index_labels).intersection(column_labels))
-    if collisions:
+def _table_rows(root: Path):
+    schema = _strict_json(root / TABLE_SCHEMA)
+    columns = schema.get("columns")
+    index = schema.get("index")
+    if not isinstance(columns, list) or not isinstance(index, dict):
+        raise ValueError("Table artifact schema is invalid.")
+    column_names = [item.get("name") if isinstance(item, dict) else None for item in columns]
+    if not all(isinstance(name, str) for name in column_names):
+        raise ValueError("Table artifact columns are invalid.")
+    index_name = index.get("name")
+    index_label = index_name if isinstance(index_name, str) and index_name.strip() else "__openbio_row_id__"
+    if index_label in column_names:
         raise ValueError(
-            "CSV index labels collide with data columns; rename them before export: " + ", ".join(collisions)
+            f"CSV index label collides with a data column; rename it before export: {index_label}"
         )
 
-    export_frame = frame.copy(deep=False)
-    export_frame.columns = column_labels
-    return export_frame, index_labels
+    def rows():
+        with (root / TABLE_PAYLOAD).open(encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                row = json.loads(line, parse_constant=_reject_json_constant)
+                if not isinstance(row, list) or len(row) != len(column_names) + 1:
+                    raise ValueError(f"Table artifact row {line_number} is invalid.")
+                yield row
+
+    return index_label, column_names, rows()
+
+
+def _csv_value(value: Any) -> Any:
+    if value is None:
+        return CSV_MISSING_VALUE
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, allow_nan=False, ensure_ascii=False, separators=(",", ":"))
+    return value
 
 
 def preview_result(
-    result: SingleCellResult,
+    result: SummaryResult | ArtifactTicket,
     unique_id: str | int | None = None,
     extra_pnginfo: Any = None,
 ) -> dict[str, Any]:
-    if not isinstance(result, (SummaryResult, TableResult, PlotResult)):
-        raise TypeError("Expected an OpenBio summary, table, or plot result value.")
-    output: dict[str, Any] = {"openbio_singlecell": [result_to_payload(result)]}
-    if isinstance(result, PlotResult):
-        target = preview_output_target(_preview_identity(unique_id, extra_pnginfo))
-        _write_png(target, result.png, overwrite=True)
-        output["images"] = [_saved_result(target)]
-    return output
-
-
-def save_h5ad(
-    adata: AnnData,
-    filename_prefix: str,
-    overwrite: bool = False,
-    compression: str = "gzip",
-) -> OutputTarget:
-    from anndata import AnnData as AnnDataClass
-    from anndata import read_h5ad
-
-    if not isinstance(adata, AnnDataClass):
-        raise TypeError("Expected an OPENBIO_ANNDATA value.")
-    selected_compression = _h5ad_compression(compression)
-    target = prepare_output_target(filename_prefix, "h5ad", overwrite)
-    expected_shape = tuple(int(value) for value in adata.shape)
-    expected_obs_names = adata.obs_names.copy()
-    expected_var_names = adata.var_names.copy()
-
-    def writer(staged_path: str) -> None:
-        adata.write_h5ad(staged_path, compression=selected_compression)
-
-    def validator(staged_path: str) -> None:
-        if tuple(int(value) for value in adata.shape) != expected_shape:
-            raise RuntimeError("Input AnnData shape changed while it was being written.")
-        if not adata.obs_names.equals(expected_obs_names) or not adata.var_names.equals(expected_var_names):
-            raise RuntimeError("Input AnnData axis identity changed while it was being written.")
-        restored = read_h5ad(staged_path, backed="r")
-        try:
-            if tuple(int(value) for value in restored.shape) != expected_shape:
-                raise RuntimeError("Written H5AD shape does not match the source AnnData.")
-            if not restored.obs_names.equals(expected_obs_names):
-                raise RuntimeError("Written H5AD observation identifiers do not match the source AnnData.")
-            if not restored.var_names.equals(expected_var_names):
-                raise RuntimeError("Written H5AD variable identifiers do not match the source AnnData.")
-        finally:
-            restored.file.close()
-
-    atomic_write_output(target, writer, overwrite=overwrite, validator=validator)
-    return target
-
-
-def export_csv(table: TableResult, filename_prefix: str, overwrite: bool = False) -> OutputTarget:
-    if not isinstance(table, TableResult):
-        raise TypeError("Expected an OPENBIO_SINGLE_CELL_TABLE value.")
-    frame, index_labels = _prepare_csv_frame(table.table)
-    target = prepare_output_target(filename_prefix, "csv", overwrite)
-    expected_header = index_labels + list(frame.columns)
-    expected_index = table.table.index.copy()
-    expected_columns = table.table.columns.copy()
-
-    def writer(staged_path: str) -> None:
-        index_label: str | list[str] = index_labels[0] if len(index_labels) == 1 else index_labels
-        frame.to_csv(
-            staged_path,
-            index=True,
-            index_label=index_label,
-            encoding="utf-8",
-            lineterminator="\n",
-            na_rep=CSV_MISSING_VALUE,
+    if isinstance(result, SummaryResult):
+        return {"openbio_singlecell": [result_to_payload(result)]}
+    if not isinstance(result, ArtifactTicket):
+        raise TypeError("Expected an OpenBio summary or table/plot ArtifactTicket.")
+    if result.kind == "OPENBIO_SINGLE_CELL_TABLE":
+        root = _ticket_root(result, kind=result.kind, codec=TABLE_CODEC)
+        _, columns, rows = _table_rows(root)
+        preview_rows = []
+        total_rows = 0
+        for row in rows:
+            if total_rows < MAX_ROWS:
+                preview_rows.append(row[1 : MAX_COLUMNS + 1])
+            total_rows += 1
+        payload = artifact_metadata_to_payload(
+            _strict_json(root / RESULT_METADATA),
+            columns=columns,
+            rows=preview_rows,
+            total_rows=total_rows,
         )
+        return {"openbio_singlecell": [payload]}
+    if result.kind == "OPENBIO_SINGLE_CELL_PLOT":
+        root = _ticket_root(result, kind=result.kind, codec=PLOT_CODEC)
+        target = preview_output_target(_preview_identity(unique_id, extra_pnginfo))
+        _copy_artifact_file(root / PLOT_PAYLOAD, target, overwrite=True)
+        payload = artifact_metadata_to_payload(_strict_json(root / RESULT_METADATA))
+        return {"openbio_singlecell": [payload], "images": [_saved_result(target)]}
+    raise ValueError("Preview accepts only OPENBIO_SINGLE_CELL_TABLE or OPENBIO_SINGLE_CELL_PLOT tickets.")
 
-    def validator(staged_path: str) -> None:
-        if not table.table.index.equals(expected_index) or not table.table.columns.equals(expected_columns):
-            raise RuntimeError("Input TableResult axes changed while it was being exported.")
-        with open(staged_path, encoding="utf-8", newline="") as handle:
-            rows = csv.reader(handle)
-            header = next(rows, None)
-            if header != expected_header:
-                raise RuntimeError("Staged CSV header does not match the explicit row/column identity contract.")
-            row_count = sum(1 for _ in rows)
-        if row_count != len(frame):
-            raise RuntimeError("Staged CSV row count does not match the source table.")
 
-    atomic_write_output(target, writer, overwrite=overwrite, validator=validator)
+def save_h5ad(adata: ArtifactTicket, filename_prefix: str, overwrite: bool = False) -> OutputTarget:
+    root = _ticket_root(adata, kind="OPENBIO_ANNDATA", codec=ANNDATA_CODEC)
+    target = prepare_output_target(filename_prefix, "h5ad", overwrite)
+    _copy_artifact_file(root / ANNDATA_PAYLOAD, target, overwrite=overwrite)
     return target
 
 
-def save_png(plot: PlotResult, filename_prefix: str, overwrite: bool = False) -> OutputTarget:
-    if not isinstance(plot, PlotResult):
-        raise TypeError("Expected an OPENBIO_SINGLE_CELL_PLOT value.")
+def export_csv(table: ArtifactTicket, filename_prefix: str, overwrite: bool = False) -> OutputTarget:
+    root = _ticket_root(table, kind="OPENBIO_SINGLE_CELL_TABLE", codec=TABLE_CODEC)
+    target = prepare_output_target(filename_prefix, "csv", overwrite)
+    index_label, columns, rows = _table_rows(root)
+
+    def writer(staged_path: str) -> None:
+        with open(staged_path, "w", encoding="utf-8", newline="") as handle:
+            output = csv.writer(handle, lineterminator="\n")
+            output.writerow([index_label, *columns])
+            for row in rows:
+                output.writerow([_csv_value(value) for value in row])
+
+    atomic_write_output(target, writer, overwrite=overwrite)
+    return target
+
+
+def save_png(plot: ArtifactTicket, filename_prefix: str, overwrite: bool = False) -> OutputTarget:
+    root = _ticket_root(plot, kind="OPENBIO_SINGLE_CELL_PLOT", codec=PLOT_CODEC)
     target = prepare_output_target(filename_prefix, "png", overwrite)
-    _write_png(target, plot.png, overwrite=overwrite)
+    _copy_artifact_file(root / PLOT_PAYLOAD, target, overwrite=overwrite)
     return target
 
 
@@ -240,7 +214,7 @@ class OpenBioSingleCellPreviewResult(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, result: SingleCellResult) -> io.NodeOutput:
+    def execute(cls, result: SummaryResult | ArtifactTicket) -> io.NodeOutput:
         return io.NodeOutput(ui=preview_result(result, cls.hidden.unique_id, cls.hidden.extra_pnginfo))
 
 
@@ -255,7 +229,6 @@ class OpenBioSingleCellSaveH5AD(io.ComfyNode):
                 AnnDataType.Input("adata"),
                 io.String.Input("filename_prefix", default="adata"),
                 io.Boolean.Input("overwrite", default=False, advanced=True),
-                io.Combo.Input("compression", options=list(H5AD_COMPRESSIONS), default="gzip", advanced=True),
             ],
             outputs=[],
             is_output_node=True,
@@ -265,12 +238,11 @@ class OpenBioSingleCellSaveH5AD(io.ComfyNode):
     @classmethod
     def execute(
         cls,
-        adata: AnnData,
+        adata: ArtifactTicket,
         filename_prefix: str = "adata",
         overwrite: bool = False,
-        compression: str = "gzip",
     ) -> io.NodeOutput:
-        target = save_h5ad(adata, filename_prefix, overwrite, compression)
+        target = save_h5ad(adata, filename_prefix, overwrite)
         return io.NodeOutput(ui={"files": [_saved_result(target)]})
 
 
@@ -294,7 +266,7 @@ class OpenBioSingleCellExportCSV(io.ComfyNode):
     @classmethod
     def execute(
         cls,
-        table: TableResult,
+        table: ArtifactTicket,
         filename_prefix: str = "table",
         overwrite: bool = False,
     ) -> io.NodeOutput:
@@ -322,7 +294,7 @@ class OpenBioSingleCellSavePNG(io.ComfyNode):
     @classmethod
     def execute(
         cls,
-        plot: PlotResult,
+        plot: ArtifactTicket,
         filename_prefix: str = "plot",
         overwrite: bool = False,
     ) -> io.NodeOutput:
@@ -330,9 +302,55 @@ class OpenBioSingleCellSavePNG(io.ComfyNode):
         return io.NodeOutput(ui={"images": [_saved_result(target)]})
 
 
+class OpenBioSingleCellPersistArtifact(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellPersistArtifact",
+            display_name="Persist Artifact",
+            category=CATEGORY,
+            description="Copy a temporary portable file artifact into durable ComfyUI output storage.",
+            inputs=[
+                io.MultiType.Input(
+                    "artifact",
+                    [
+                        AnnDataType,
+                        TableResultType,
+                        PlotResultType,
+                        PseudobulkType,
+                        CNVStateType,
+                        VelocityStateType,
+                        TFActivityArtifactType,
+                        SCENICResultArtifactType,
+                        AugurResultType,
+                        DGIdbResourceType,
+                        LianaResultType,
+                        CassiopeiaCharactersType,
+                        CassiopeiaTreeType,
+                    ],
+                ),
+                io.String.Input("name", default="artifact"),
+            ],
+            outputs=[],
+            is_output_node=True,
+            not_idempotent=True,
+        )
+
+    @classmethod
+    def execute(cls, artifact: ArtifactTicket, name: str = "artifact") -> io.NodeOutput:
+        persisted = persist_artifact(
+            current_artifact_runtime(),
+            artifact,
+            folder_paths.get_output_directory(),
+            name,
+        )
+        return io.NodeOutput(ui={"text": [str(persisted.path)]})
+
+
 OUTPUT_NODE_CLASSES = [
     OpenBioSingleCellPreviewResult,
     OpenBioSingleCellSaveH5AD,
     OpenBioSingleCellExportCSV,
     OpenBioSingleCellSavePNG,
+    OpenBioSingleCellPersistArtifact,
 ]

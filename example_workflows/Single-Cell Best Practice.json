@@ -3430,13 +3430,11 @@
       },
       "widgets_values": [
         "best_practice_full_gene_results",
-        false,
-        "gzip"
+        false
       ],
       "widgets_values_named": {
         "filename_prefix": "best_practice_full_gene_results",
-        "overwrite": false,
-        "compression": "gzip"
+        "overwrite": false
       }
     },
     {
@@ -3535,13 +3533,11 @@
       },
       "widgets_values": [
         "best_practice_hvg_scvi_results",
-        false,
-        "gzip"
+        false
       ],
       "widgets_values_named": {
         "filename_prefix": "best_practice_hvg_scvi_results",
-        "overwrite": false,
-        "compression": "gzip"
+        "overwrite": false
       }
     }
   ],

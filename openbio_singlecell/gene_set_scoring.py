@@ -498,13 +498,14 @@ def _standalone_score_gene_sets(
                     f"{operation} decoupler.mt.{method}.func is missing parameters: "
                     f"{sorted(missing_specific - set(implementation_signature.parameters))}."
                 )
+        # Scientific workspace: decoupler writes result slots and may coerce its matrix input.
         work_matrix = matrix.copy()
         work = ad.AnnData(X=work_matrix)
         work.obs_names = pd.Index(observation_names, dtype="object")
         work.var_names = pd.Index(feature_names, dtype="object")
         backend(
             data=work,
-            net=resource["network"].copy(),
+            net=resource["network"],
             tmin=min_targets,
             raw=False,
             empty=False,
@@ -527,6 +528,7 @@ def _standalone_score_gene_sets(
                 f"missing={sorted(set(retained_sources) - set(raw_scores.columns))[:20]}, "
                 f"unknown={sorted(set(raw_scores.columns) - set(retained_sources))[:20]}."
             )
+        # Scientific result materialization: detach the canonical column order from the backend workspace.
         score_frame = raw_scores.loc[:, retained_sources].copy()
         try:
             score_values = score_frame.to_numpy(dtype=float, copy=True)
@@ -612,6 +614,7 @@ def _standalone_score_gene_sets(
                 "Gene panel scoring Scanpy interface is missing reviewed parameters: "
                 f"{sorted(required_parameters - set(signature.parameters))}."
             )
+        # Scientific workspace: Scanpy score_genes mutates obs and may inspect/coerce X.
         work = ad.AnnData(X=matrix.copy())
         work.obs_names = pd.Index(observation_names, dtype="object")
         work.var_names = pd.Index(feature_names, dtype="object")
@@ -836,11 +839,11 @@ def _standalone_score_gene_sets(
         np=np,
         pd=pd,
     )
-    output = adata.copy()
+    output = adata
     if method == "panel":
-        output.obs[output_key] = score_frame[output_key].copy()
+        output.obs[output_key] = score_frame[output_key]
     else:
-        output.obsm[output_key] = score_frame.copy()
+        output.obsm[output_key] = score_frame
     store_score_artifact(output, artifact)
     stored_frame = (
         pd.DataFrame({output_key: output.obs[output_key]}, index=output.obs_names.copy())

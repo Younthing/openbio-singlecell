@@ -341,6 +341,7 @@ def _standalone_milo_differential_abundance_impl(
     if round(selected_cells * neighborhood_proportion) < 1:
         raise ValueError(f"{operation} neighborhood_proportion samples fewer than one candidate vertex.")
 
+    # Milo needs an independently materialized two-Condition subset for graph and neighborhood mutation.
     selected = adata[selected_mask].copy()
     selected_obs_names = [obs_names[index] for index, keep in enumerate(selected_mask) if keep]
     if selected.obs_names.tolist() != selected_obs_names:

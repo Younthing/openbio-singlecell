@@ -1,6 +1,6 @@
 # openbio-singlecell
 
-`openbio-singlecell` is an independent ComfyUI custom-node pack for in-memory single-cell RNA-seq analysis. It works with the standard ComfyUI frontend and with the paired OpenBio frontend build. The pack does not modify ComfyUI's executor, cache, queue, WebSocket protocol, or built-in nodes.
+`openbio-singlecell` is an independent ComfyUI custom-node pack for file-artifact single-cell RNA-seq analysis. It works with the standard ComfyUI frontend and with the paired OpenBio frontend build. The pack does not modify ComfyUI's executor, cache, queue, WebSocket protocol, or built-in nodes.
 
 ## Supported baseline
 
@@ -180,8 +180,8 @@ Open one of the five production starting-point templates in `example_workflows`:
   Sample, Condition, and annotation strings into one descriptive Sample Composition Summary node. Its complete
   Sample-by-population table and report can be previewed, and the table can be exported.
 - `scVI Batch Integration and Contrast.json` trains scVI from raw counts in `adata.X`, constructs neighbors
-  from `X_scVI`, visualizes the integrated embedding, and passes the concrete in-memory model to scVI differential
-  expression instead of retraining it.
+  from `X_scVI`, visualizes the integrated embedding, and passes its native session-only model artifact to scVI
+  differential expression instead of retraining it.
 - `Single-Cell Best Practice.json` is the production-oriented end-to-end example for the supplied multi-sample
   study. It re-audits QC, removes predicted doublets, applies sample-wise MAD rules, preserves full-gene counts in
   both `layers["counts"]` and `raw`, trains scVI on a 5,000-HVG count view, joins its Leiden labels back to the
@@ -235,9 +235,10 @@ is only a runnable starting choice. Replace it with a populated provisional labe
 or connect the same branch to the later curated `cell_type` column. Duplicate the explicit population-selection
 branch for additional cell types.
 
-The scVI `model` output is an ephemeral Python object for downstream nodes in the current execution. Saving the
-workflow records the connection and parameters, not trained model weights; after restarting ComfyUI, rerun scVI
-Integration before executing its differential-expression consumer.
+The scVI `model` output is a native session-only artifact for downstream nodes in the current Artifact Runtime
+session, never a live Python object in ComfyUI. Saving the workflow records the connection and parameters, not the
+native model directory; after restarting ComfyUI, rerun scVI Integration before executing its
+differential-expression consumer.
 
 ## Study parameters
 
@@ -294,19 +295,26 @@ sh scripts/start.sh
 The start scripts require a built `ComfyUI_frontend/dist/index.html`, then launch ComfyUI with:
 
 ```text
---disable-api-nodes --enable-assets --front-end-root <sibling frontend dist>
+--disable-api-nodes --enable-assets --front-end-root <sibling frontend dist> --cache-classic
 ```
 
-Additional arguments are forwarded to ComfyUI. ComfyUI's own requirements must already be installed. In particular, `--enable-assets` requires ComfyUI's database dependencies and a working local database connection.
+Additional arguments are forwarded to ComfyUI. The scripts add `--cache-classic` only when no cache mode was
+supplied; `--cache-classic`, `--cache-none`, and `--cache-lru N` are supported. OpenBio rejects ComfyUI's default
+RAM-pressure cache because `ArtifactTicket` values do not measure their retained disk results. ComfyUI's own
+requirements must already be installed. In particular, `--enable-assets` requires ComfyUI's database dependencies
+and a working local database connection.
 
 ## Data and output behavior
 
-- AnnData values use `adata` ports and the `OPENBIO_ANNDATA` wire type.
+- AnnData values use `adata` ports and the `OPENBIO_ANNDATA` wire type. Large typed ports carry immutable
+  `ArtifactTicket` values; the ComfyUI process does not load their AnnData, tables, plots, models, or other
+  scientific state.
 - Core Study Parameters exposes its six selections as standard ComfyUI `STRING` wires, so they can connect to any
   compatible string input.
 - Tables, plots, and structured summaries use distinct `table`, `plot`, and `summary` ports with the
   plugin-owned `OPENBIO_SINGLE_CELL_TABLE`, `OPENBIO_SINGLE_CELL_PLOT`, and
-  `OPENBIO_SINGLE_CELL_SUMMARY` wire types.
+  `OPENBIO_SINGLE_CELL_SUMMARY` wire types. Tables and plots are File artifacts; summaries, code, scalar values,
+  and small metrics remain strict JSON-compatible values or strings.
 - Refactored analysis and transformation nodes expose their primary result first, followed by a structured
   `summary` and a standard `STRING` `code` port. The summary wire carries an OpenBio result artifact whose
   `.summary` payload is strict JSON-compatible data with report-ready
@@ -314,12 +322,19 @@ Additional arguments are forwarded to ComfyUI. ComfyUI's own requirements must a
   software versions; the preview/API payload adapter serializes that inner payload as JSON. The code port contains
   an equivalent Python function with the resolved scientific choices and scientific input checks; it intentionally
   omits plugin-specific `analysis_history` bookkeeping because the adjacent summary carries that provenance.
-- Modifying nodes copy their input before changing it; read-only nodes do not copy it.
+- Every scientific node invocation starts a fresh one-shot Worker, reads its immutable inputs into private state,
+  computes in place, publishes new File artifacts, and exits. Its optional `worker` input accepts an
+  `OPENBIO_WORKER` value from the Python Worker node, which selects one exact local Python executable; when
+  unconnected it uses the ComfyUI interpreter. A selected interpreter is probed for the OpenBio protocol, Python
+  3.12, and required dependencies. The path is trusted local workflow input, not a malicious-code sandbox.
+- AnnData artifacts are complete uncompressed H5AD files. A one-shot Worker never opens an input artifact for
+  writing and does not make a defensive full-object copy merely to protect upstream state. Algorithm-required
+  workspaces, subsets, and the Raw snapshot may still allocate memory.
 - AnnData transforms use `adata` as their primary output; analysis artifacts use their concrete table, plot, or
   summary type as the primary output; preview and save nodes are terminal and have no data output.
 - Preview accepts all three artifact types, while CSV and PNG outputs accept only tables and plots respectively,
   so incompatible links are rejected before execution. CSV export always retains the row index under an explicit,
-  collision-checked header; H5AD export exposes portable `gzip`, `lzf`, or uncompressed storage, defaulting to gzip.
+  collision-checked header; H5AD export streams the canonical uncompressed artifact without loading or recompressing it.
 - Frequently tuned analysis choices, expression sources, and result-defining thresholds stay visible. Core Study
   Parameters is an optional source for reusing sample, condition, annotation, and primary-contrast strings; analysis
   nodes keep their ordinary explicit inputs and do not consume a combined design object. Random seeds, internal
@@ -354,20 +369,37 @@ Additional arguments are forwarded to ComfyUI. ComfyUI's own requirements must a
 - Load H5AD and Load 10x H5 accept a browser file selection or a file dropped directly onto the node; uploads are
   stored under `ComfyUI/input/openbio-singlecell` and the node keeps the resulting relative path.
 - Inputs are limited to relative paths under the ComfyUI `input` directory and are checked again at the read boundary.
-- Temporary plots are written below `temp/openbio-singlecell`; ComfyUI clears its temp directory at startup.
+- Temporary File artifacts are stored below `temp/openbio-singlecell`. Each node run publishes all of its File
+  artifacts atomically under one `RunLease`; the shared run directory remains available while an `ArtifactTicket`
+  is held by ComfyUI's cache or a running consumer and becomes eligible for cleanup after the final reference is
+  released. UUIDs provide unique artifact identity; they are not content hashes or workflow-cache keys.
+- Classic, None, and LRU cache modes retain or recompute node results according to ComfyUI's normal workflow
+  signatures. A cache hit reuses the cached `ArtifactTicket` without starting a one-shot Worker. None retains no
+  reusable entries, LRU releases evicted entries, and Classic may keep current intermediates until invalidation,
+  cache reset, or process exit. If immediate cleanup is prevented, a later startup scavenges a stale session only
+  after confirming that its owning process is dead.
+- Independent DAG branches may read the same parent artifact concurrently and publish separate results. OpenBio
+  uses ComfyUI's native concurrency without a memory scheduler, so concurrent one-shot Workers' AnnData and
+  algorithm workspace memory use adds together.
 - CSV, PNG, and H5AD files are only made permanent by explicit output nodes and are written below
   `output/openbio-singlecell`. They are staged and validated in the destination directory before an atomic commit;
   a failed write leaves an existing destination unchanged. PNG previews use the same validation/commit discipline
   below the temporary directory.
+- Persist Artifact copies a portable File artifact to `output/openbio-singlecell/artifacts` as a Persisted artifact
+  using staged validation, a hash manifest, and atomic publication. It neither moves the temporary source nor
+  returns a workflow value. There is no generic Restore node; an existing H5AD can re-enter only through the normal
+  H5AD input path after it is placed under ComfyUI's input directory.
 - Node UI payloads are bounded; complete tables are exported as CSV.
-- DataFrames remain inside table artifacts and plots carry rendered PNG data. Library-specific models, trees,
-  figures, and other opaque Python objects remain node implementation details unless a workflow has a concrete
-  reusable downstream contract for them.
+- Tables use JSONL plus an explicit schema, plots use PNG, and specialized typed results use validated file codecs.
+  Arbitrary Python objects are never carried by `ArtifactTicket` values. The registry exposes only the
+  artifact-backed scientific nodes; there is no live-object compatibility mode.
 - Completed cNMF rank surveys, trained scVI models, validated external pySCENIC result bundles, and solved
   Cassiopeia trees have explicit typed contracts because each has a real downstream consumer. No generic
-  Python-object or generic model wire is exposed. A cNMF run owns a managed temporary workspace and is process-local
-  factorization state: it is not serialized into AnnData, cannot survive an application restart, and is consumed only
-  by cNMF Consensus Programs. Imported pySCENIC evidence is immutable and hash-bound to its external-run manifest.
+  Python-object or generic model wire is exposed. cNMF and scVI results that use their libraries' native directories
+  are native session-only artifacts: they are bound to the originating Artifact Runtime session and the producer's
+  probed Python interpreter identity. Each consumer still starts a fresh one-shot Worker with that identity. These
+  artifacts cannot become Persisted artifacts, survive restart, be restored, or be consumed by a different
+  interpreter. Imported pySCENIC evidence is immutable and bound to its external-run manifest.
 - A transformation keeps one `adata` output when it has no reusable secondary product. The deliberate exceptions
   include scVI Integration (`adata`, `model`) and Import pySCENIC Results (`adata`, `scenic_result`); cNMF Rank Survey
   produces reusable `run` state plus a K-metrics table, and Cassiopeia reconstruction produces one reusable `tree`
@@ -378,8 +410,9 @@ Additional arguments are forwarded to ComfyUI. ComfyUI's own requirements must a
 The current workflow includes 10x study loading, QC, expression snapshots, layer-aware preprocessing, Harmony/scVI
 integration, clustering, annotation, pseudobulk differential analysis, enrichment, LIANA communication,
 compositional abundance testing, method-author cNMF, Schist, external pySCENIC result import, Cassiopeia lineage
-analysis, PAGA/DPT, RNA velocity, and inferCNV. The pack does not declare a maximum AnnData size and does not yet
-provide AnnData backed mode, general out-of-core processing, automatic disk caching, ATAC, or spatial analysis.
+analysis, PAGA/DPT, RNA velocity, and inferCNV. The pack does not declare a maximum AnnData size and does not provide
+general out-of-core computation, ATAC, or spatial analysis. File artifacts bound retained ComfyUI-process memory,
+but each one-shot Worker still materializes one private scientific state plus any algorithm workspace.
 Notebook stages implemented only in R, destructive file organization, publication-only plots, the empty Geneformer
 notebook, and the import-only spatial notebook are intentionally not represented as nodes. Scale and GSVA may
 densify data as their underlying libraries normally do. A running scientific operation may finish before a stop

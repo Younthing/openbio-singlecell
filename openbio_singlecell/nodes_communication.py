@@ -1,47 +1,17 @@
 from __future__ import annotations
 
-import time
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from comfy_api.latest import io
 
-from . import PLUGIN_VERSION
-from .analysis_utils import make_plot_result, make_summary_result
-from .expression_source import DynamicExpressionSource, ExpressionSourceSpec
+from .expression_source import ExpressionSourceSpec
 from .files import resolve_input_path
-from .liana_communication import (
-    liana_communication_code,
-    liana_resource_cache_fingerprint,
-    run_liana_communication,
-)
-from .liana_plot import liana_dot_plot_code, render_liana_dot_plot
-from .liana_result import LianaResult, validate_liana_result
-from .node_types import (
-    AnnDataType,
-    LianaResultType,
-    PlotResultType,
-    SummaryResultType,
-)
-
-if TYPE_CHECKING:
-    from anndata import AnnData
-
+from .liana_communication import liana_resource_cache_fingerprint
+from .node_types import AnnDataType, LianaResultType, PlotResultType, SummaryResultType
 
 CATEGORY = "openbio/single-cell/cell-communication"
 METHODS = ["cellphonedb", "rank_aggregate"]
-def _label_list(value: str, *, label: str) -> list[str]:
-    if not isinstance(value, str):
-        raise TypeError(f"{label} must be a comma-delimited string.")
-    if not value.strip():
-        return []
-    parts = value.split(",")
-    labels = [part.strip() for part in parts]
-    if any(not item for item in labels):
-        raise ValueError(f"{label} contains an empty comma-delimited item.")
-    if len(labels) != len(set(labels)):
-        raise ValueError(f"{label} contains duplicate labels.")
-    return labels
 
 
 class OpenBioSingleCellLianaCommunication(io.ComfyNode):
@@ -63,8 +33,7 @@ class OpenBioSingleCellLianaCommunication(io.ComfyNode):
             raise TypeError("LIANA resource must be a DynamicCombo value.")
         mode = resource.get("resource")
         if mode == "bundled_human":
-            expected = {"resource", "resource_name", "resource_metadata_json"}
-            if set(resource) != expected:
+            if set(resource) != {"resource", "resource_name", "resource_metadata_json"}:
                 raise ValueError("LIANA bundled_human resource payload has inactive or missing fields.")
             return {
                 "resource_mode": "bundled_human",
@@ -73,8 +42,7 @@ class OpenBioSingleCellLianaCommunication(io.ComfyNode):
                 "resource_metadata_json": str(resource["resource_metadata_json"]),
             }
         if mode == "local_resource":
-            expected = {"resource", "resource_name", "resource_csv", "resource_metadata_json"}
-            if set(resource) != expected:
+            if set(resource) != {"resource", "resource_name", "resource_csv", "resource_metadata_json"}:
                 raise ValueError("LIANA local_resource payload has inactive or missing fields.")
             return {
                 "resource_mode": "local_resource",
@@ -168,103 +136,14 @@ class OpenBioSingleCellLianaCommunication(io.ComfyNode):
                 resolved["resource_metadata_json"],
             )
         path = resolve_input_path(str(resolved["resource_csv"]), extensions=(".csv",))
-        return liana_resource_cache_fingerprint(
-            path,
-            str(resolved["resource_metadata_json"]),
-        )
+        return liana_resource_cache_fingerprint(path, str(resolved["resource_metadata_json"]))
 
     @classmethod
-    def execute(
-        cls,
-        adata: AnnData,
-        sample_key: str = "sample",
-        condition_key: str = "condition",
-        identity_key: str = "cell_type",
-        annotation_status: str = "unknown",
-        organism: str = "Homo sapiens",
-        method: str = "rank_aggregate",
-        resource: Mapping[str, object] | None = None,
-        source: DynamicExpressionSource | None = None,
-        expression_proportion: float = 0.1,
-        min_cells_per_identity_sample: int = 5,
-        permutations: int = 1000,
-        random_seed: int = 1337,
-        jobs: int = 1,
-        max_output_rows: int = 2_000_000,
-        max_working_memory_gib: float = 4.0,
-    ) -> io.NodeOutput:
-        started_at = time.perf_counter()
-        resolved_resource = cls._resolve_resource(resource)
-        expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
-        resource_path = (
-            resolve_input_path(str(resolved_resource["resource_csv"]), extensions=(".csv",))
-            if resolved_resource["resource_mode"] == "local_resource"
-            else None
-        )
-        result, summary = run_liana_communication(
-            adata,
-            sample_key=sample_key,
-            condition_key=condition_key,
-            identity_key=identity_key,
-            annotation_status=annotation_status,
-            organism=organism,
-            method=method,
-            resource_mode=str(resolved_resource["resource_mode"]),
-            resource_name=str(resolved_resource["resource_name"]),
-            resource_path=resource_path,
-            resource_metadata_json=str(resolved_resource["resource_metadata_json"]),
-            source_kind=expression.kind,
-            layer_name=expression.layer_name,
-            expression_proportion=expression_proportion,
-            min_cells_per_identity_sample=min_cells_per_identity_sample,
-            permutations=permutations,
-            random_seed=random_seed,
-            jobs=jobs,
-            max_output_rows=max_output_rows,
-            max_working_memory_gib=max_working_memory_gib,
-            openbio_version=PLUGIN_VERSION,
-        )
-        report = make_summary_result(
-            summary=summary,
-            title="Sample-resolved LIANA communication summary",
-            operation="liana_communication",
-            parameters=summary["parameters"],
-            description=summary["results"],
-            warnings=summary["warnings"],
-            input_cells=int(adata.n_obs),
-            input_genes=int(adata.n_vars),
-            started_at=started_at,
-            random_seed=random_seed,
-        )
-        accounting = summary["key_results"]["resource"]["accounting"]
-        code = liana_communication_code(
-            parameters={
-                "sample_key": sample_key,
-                "condition_key": condition_key,
-                "identity_key": identity_key,
-                "annotation_status": annotation_status,
-                "organism": organism,
-                "method": method,
-                "resource_mode": str(resolved_resource["resource_mode"]),
-                "resource_name": str(resolved_resource["resource_name"]),
-                "resource_path": resource_path,
-                "resource_metadata_json": str(resolved_resource["resource_metadata_json"]),
-                "source_kind": expression.kind,
-                "layer_name": expression.layer_name,
-                "expression_proportion": expression_proportion,
-                "min_cells_per_identity_sample": min_cells_per_identity_sample,
-                "permutations": permutations,
-                "random_seed": random_seed,
-                "jobs": jobs,
-                "max_output_rows": max_output_rows,
-                "max_working_memory_gib": max_working_memory_gib,
-                "openbio_version": PLUGIN_VERSION,
-                "expected_file_sha256": accounting["raw_file_sha256"],
-                "expected_canonical_resource_sha256": accounting["canonical_resource_sha256"],
-                "expected_effective_resource_sha256": accounting["effective_resource_sha256"],
-            }
-        )
-        return io.NodeOutput(result, report, code)
+    def prepare_worker_arguments(cls, kwargs: dict[str, Any]) -> dict[str, Any]:
+        prepared = dict(kwargs)
+        resolved = cls._resolve_resource(prepared.pop("resource", None))
+        prepared.update({key: value for key, value in resolved.items() if value is not None})
+        return prepared
 
 
 class OpenBioSingleCellLianaDotPlot(io.ComfyNode):
@@ -354,83 +233,17 @@ class OpenBioSingleCellLianaDotPlot(io.ComfyNode):
         )
 
     @classmethod
-    def execute(
-        cls,
-        result: LianaResult,
-        source_labels: str = "",
-        target_labels: str = "",
-        selection: Mapping[str, object] | None = None,
-        top_n: int = 20,
-        figure_width: float = 12.0,
-        figure_height: float = 8.0,
-        max_plot_rows: int = 100_000,
-        max_image_pixels: int = 40_000_000,
-    ) -> io.NodeOutput:
-        started_at = time.perf_counter()
-        _table, provenance, _metadata = validate_liana_result(result)
-        selection_method, selection_threshold = cls._resolve_selection(selection)
-        if selection_method != provenance["method"]:
-            raise ValueError(
-                f"LIANA plot selection branch {selection_method!r} does not match the typed result method "
-                f"{provenance['method']!r}."
-            )
-        source_label_list = _label_list(source_labels, label="LIANA source_labels")
-        target_label_list = _label_list(target_labels, label="LIANA target_labels")
-        png, summary = render_liana_dot_plot(
-            result,
-            source_labels=source_label_list,
-            target_labels=target_label_list,
-            selection_threshold=selection_threshold,
-            top_n=top_n,
-            figure_width=figure_width,
-            figure_height=figure_height,
-            max_plot_rows=max_plot_rows,
-            max_image_pixels=max_image_pixels,
-            openbio_version=PLUGIN_VERSION,
-        )
-        plotted = make_plot_result(
-            title=f"LIANA {provenance['method'].replace('_', ' ')} by-Sample dot plot",
-            operation="liana_dot_plot",
-            parameters=summary["parameters"],
-            description=summary["results"],
-            warnings=summary["warnings"],
-            input_cells=int(provenance["expression"]["cells"]),
-            input_genes=int(provenance["expression"]["genes"]),
-            started_at=started_at,
-            png=png,
-        )
-        report = make_summary_result(
-            summary=summary,
-            title="LIANA dot-plot selection summary",
-            operation="liana_dot_plot",
-            parameters=summary["parameters"],
-            description=summary["results"],
-            warnings=summary["warnings"],
-            input_cells=int(provenance["expression"]["cells"]),
-            input_genes=int(provenance["expression"]["genes"]),
-            started_at=started_at,
-        )
-        code = liana_dot_plot_code(
-            parameters={
-                "source_labels": source_label_list,
-                "target_labels": target_label_list,
-                "selection_threshold": selection_threshold,
-                "top_n": top_n,
-                "figure_width": figure_width,
-                "figure_height": figure_height,
-                "max_plot_rows": max_plot_rows,
-                "max_image_pixels": max_image_pixels,
-                "openbio_version": PLUGIN_VERSION,
-            }
-        )
-        return io.NodeOutput(plotted, report, code)
+    def prepare_worker_arguments(cls, kwargs: dict[str, Any]) -> dict[str, Any]:
+        prepared = dict(kwargs)
+        method, threshold = cls._resolve_selection(prepared.pop("selection", None))
+        prepared.update(selection_method=method, selection_threshold=threshold)
+        return prepared
 
 
 COMMUNICATION_NODE_CLASSES = [
     OpenBioSingleCellLianaCommunication,
     OpenBioSingleCellLianaDotPlot,
 ]
-
 
 __all__ = [
     "COMMUNICATION_NODE_CLASSES",

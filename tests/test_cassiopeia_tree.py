@@ -39,6 +39,8 @@ def assign_missing_average(*args, **kwargs):
 
 
 class FakeCassiopeiaTree:
+    copy_count = 0
+
     def __init__(
         self,
         character_matrix=None,
@@ -59,6 +61,7 @@ class FakeCassiopeiaTree:
         self._graph = None if tree is None else tree.copy()
 
     def copy(self):
+        type(self).copy_count += 1
         return copy.deepcopy(self)
 
     @property
@@ -97,9 +100,7 @@ def _fake_priors(allele_table, grouping_variables=None, cut_sites=None):
         counts.update(alleles)
     if not counts:
         return pd.DataFrame(columns=["count", "freq"])
-    return pd.DataFrame(
-        {"count": counts, "freq": {allele: count / len(groups) for allele, count in counts.items()}}
-    )
+    return pd.DataFrame({"count": counts, "freq": {allele: count / len(groups) for allele, count in counts.items()}})
 
 
 def _fake_converter(
@@ -269,6 +270,7 @@ def fake_backend(monkeypatch):
     fake = make_fake_cassiopeia()
     FakeVanillaGreedySolver.mode = "balanced"
     FakeVanillaGreedySolver.solve_count = 0
+    FakeCassiopeiaTree.copy_count = 0
     monkeypatch.setattr(lineage, "_require_cassiopeia", lambda: fake)
     return fake
 
@@ -307,7 +309,7 @@ def _assert_rng_equal(before, after):
 
 
 def test_schemas_are_atomic_typed_and_report_code():
-    schemas = {node.GET_SCHEMA().node_id: node.GET_SCHEMA() for node in LINEAGE_NODE_CLASSES}
+    schemas = {node.define_schema().node_id: node.define_schema() for node in LINEAGE_NODE_CLASSES}
     assert [item.id for item in schemas["OpenBioSingleCellCassiopeiaLineageQC"].inputs] == [
         "allele_table_file",
         "first_column_as_index",
@@ -340,7 +342,9 @@ def test_schemas_are_atomic_typed_and_report_code():
         item.id for item in schemas["OpenBioSingleCellCassiopeiaExpansionTest"].inputs
     }
     assert "summary_key" not in {item.id for item in schemas["OpenBioSingleCellCassiopeiaPlasticity"].inputs}
-    assert [schema.node_id for schema in schemas.values()] == [node.GET_SCHEMA().node_id for node in LINEAGE_NODE_CLASSES]
+    assert [schema.node_id for schema in schemas.values()] == [
+        node.define_schema().node_id for node in LINEAGE_NODE_CLASSES
+    ]
     assert OpenBioSingleCellCassiopeiaLineageQC in LINEAGE_NODE_CLASSES
     assert OpenBioSingleCellReconstructCassiopeiaTree in LINEAGE_NODE_CLASSES
     assert OpenBioSingleCellCassiopeiaExpansionTest in LINEAGE_NODE_CLASSES
@@ -384,23 +388,15 @@ def test_qc_strict_summary_denominators_and_defensive_artifact(tmp_path, fake_ba
         ),
     ],
 )
-def test_qc_rejects_conflicts_cross_lineage_identity_and_reserved_tokens(
-    tmp_path, fake_backend, rows, message
-):
+def test_qc_rejects_conflicts_cross_lineage_identity_and_reserved_tokens(tmp_path, fake_backend, rows, message):
     with pytest.raises(ValueError, match=message):
         _prepare(tmp_path, rows)
 
 
 def test_qc_reports_all_missing_and_all_uncut_lineages(tmp_path, fake_backend):
     rows = _rows()
-    rows.extend(
-        {"Tumor": "M", "cellBC": cell, "intBC": "i2", "r1": "", "r2": ""}
-        for cell in ("m1", "m2")
-    )
-    rows.extend(
-        {"Tumor": "U", "cellBC": cell, "intBC": "i3", "r1": "NONE", "r2": "NONE"}
-        for cell in ("u1", "u2")
-    )
+    rows.extend({"Tumor": "M", "cellBC": cell, "intBC": "i2", "r1": "", "r2": ""} for cell in ("m1", "m2"))
+    rows.extend({"Tumor": "U", "cellBC": cell, "intBC": "i3", "r1": "NONE", "r2": "NONE"} for cell in ("u1", "u2"))
     artifact, table, summary, _ = _prepare(tmp_path, rows)
     records = table.set_index("lineage_id")
     assert records.loc["M", "status"] == "unavailable"
@@ -428,9 +424,7 @@ def test_qc_threshold_and_prior_policy_warnings_do_not_block_expert_tree(tmp_pat
     assert "T1" in artifact.lineage_ids
     assert summary["key_results"]["lineages_with_qc_warnings"] == 1
     assert any("independence" in warning for warning in summary["warnings"])
-    _, tree_summary, _ = lineage.reconstruct_cassiopeia_tree(
-        artifact, "T1", openbio_version="test"
-    )
+    _, tree_summary, _ = lineage.reconstruct_cassiopeia_tree(artifact, "T1", openbio_version="test")
     assert any("upstream QC thresholds" in warning for warning in tree_summary["warnings"])
 
 
@@ -477,6 +471,34 @@ def test_tree_is_canonical_rng_safe_and_defensive(tmp_path, fake_backend):
     assert "evil" not in first.copy_tree()._graph
 
 
+def test_worker_reconstruction_reuses_the_codec_owned_character_matrix(tmp_path, fake_backend):
+    from openbio_singlecell.operations_lineage import reconstruct_owned
+
+    created = []
+
+    class TrackingTree(FakeCassiopeiaTree):
+        def __init__(self, *args, character_matrix=None, priors=None, **kwargs):
+            super().__init__(*args, character_matrix=character_matrix, priors=priors, **kwargs)
+            self.character_matrix = character_matrix
+            self.priors = {} if priors is None else priors
+            created.append(self)
+
+    fake_backend.data.CassiopeiaTree = TrackingTree
+    characters, _, _, _ = _prepare(tmp_path)
+    source_matrix, _, _ = characters.copy_lineage("T1", _owned=True)
+
+    tree, _, _ = reconstruct_owned(
+        characters,
+        lineage_id="T1",
+        prior_transformation="negative_log",
+        collapse_mutationless_edges=False,
+    )
+
+    assert created[0].character_matrix is source_matrix
+    assert created[1].character_matrix is source_matrix
+    assert tree.copy_tree(_owned=True) is created[1]
+
+
 def test_tree_artifact_detects_topology_tampering(tmp_path, fake_backend):
     characters, _, _, _ = _prepare(tmp_path)
     tree, _, _ = lineage.reconstruct_cassiopeia_tree(characters, "T1", openbio_version="test")
@@ -499,6 +521,18 @@ def test_expansion_independently_checks_formula_and_applies_bh(tmp_path, fake_ba
     assert summary["key_results"]["eligible_hypotheses"] == 2
     json.dumps(summary, allow_nan=False)
     compile(code, "<cassiopeia-expansion-code>", "exec")
+
+
+def test_worker_expansion_keeps_only_the_backend_required_tree_copy(tmp_path, fake_backend):
+    from openbio_singlecell.operations_lineage import expansion_owned
+
+    characters, _, _, _ = _prepare(tmp_path)
+    tree, _, _ = lineage.reconstruct_cassiopeia_tree(characters, "T1", openbio_version="test")
+    FakeCassiopeiaTree.copy_count = 0
+
+    expansion_owned(tree, minimum_clade_size=2, minimum_depth=1, fdr_threshold=0.5)
+
+    assert FakeCassiopeiaTree.copy_count == 1
 
 
 def test_expansion_rejects_malicious_backend_disagreement(tmp_path, fake_backend, monkeypatch):
@@ -555,9 +589,22 @@ def test_plasticity_uses_edge_denominator_preserves_inputs_and_reports_all_cells
     compile(code, "<cassiopeia-plasticity-code>", "exec")
 
 
-def test_plasticity_frequency_equality_exhausted_polytomy_and_report_grade_warning(
-    tmp_path, fake_backend
-):
+def test_worker_owned_plasticity_updates_its_private_anndata_in_place(tmp_path, fake_backend):
+    from openbio_singlecell.operations_lineage import plasticity_owned
+
+    characters, _, _, _ = _prepare(tmp_path)
+    tree, _, _ = lineage.reconstruct_cassiopeia_tree(characters, "T1", openbio_version="test")
+    adata = _plasticity_adata()
+    FakeCassiopeiaTree.copy_count = 0
+
+    output, _, _, _ = plasticity_owned(adata, tree, annotation_key="cell_type")
+
+    assert output is adata
+    assert "sc_effective_plasticity" in adata.obs
+    assert FakeCassiopeiaTree.copy_count == 0
+
+
+def test_plasticity_frequency_equality_exhausted_polytomy_and_report_grade_warning(tmp_path, fake_backend):
     FakeVanillaGreedySolver.mode = "star"
     characters, _, _, _ = _prepare(tmp_path)
     tree, _, _ = lineage.reconstruct_cassiopeia_tree(characters, "T1", openbio_version="test")
@@ -596,9 +643,7 @@ def test_plasticity_frequency_equality_exhausted_polytomy_and_report_grade_warni
     assert report_grade["parameters"]["analysis_mode"] == "report_grade"
 
 
-def test_plasticity_excludes_missing_identity_and_annotation_with_one_state_warning(
-    tmp_path, fake_backend
-):
+def test_plasticity_excludes_missing_identity_and_annotation_with_one_state_warning(tmp_path, fake_backend):
     FakeVanillaGreedySolver.mode = "star"
     characters, _, _, _ = _prepare(tmp_path)
     tree, _, _ = lineage.reconstruct_cassiopeia_tree(characters, "T1", openbio_version="test")
@@ -637,9 +682,7 @@ def test_generated_source_compiles_executes_and_matches_all_four_operations(tmp_
     )
     assert_frame_equal(qc, generated_qc)
     original_tree, _, _ = lineage.reconstruct_cassiopeia_tree(characters, "T1", openbio_version="test")
-    generated_tree, _, _ = namespace["reconstruct_cassiopeia_tree"](
-        generated_characters, "T1", openbio_version="test"
-    )
+    generated_tree, _, _ = namespace["reconstruct_cassiopeia_tree"](generated_characters, "T1", openbio_version="test")
     assert original_tree.topology_fingerprint == generated_tree.topology_fingerprint
     original_expansion, _, _ = lineage.compute_cassiopeia_expansions(
         original_tree, minimum_clade_size=2, openbio_version="test"
@@ -656,6 +699,4 @@ def test_generated_source_compiles_executes_and_matches_all_four_operations(tmp_
         adata, generated_tree, annotation_key="cell_type", openbio_version="test"
     )
     assert_frame_equal(original_table, generated_table)
-    assert original_output.obs["sc_effective_plasticity"].equals(
-        generated_output.obs["sc_effective_plasticity"]
-    )
+    assert original_output.obs["sc_effective_plasticity"].equals(generated_output.obs["sc_effective_plasticity"])

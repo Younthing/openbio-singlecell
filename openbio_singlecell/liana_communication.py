@@ -1094,7 +1094,6 @@ def _liana_run_impl(
         expected_canonical_resource_sha256=expected_canonical_resource_sha256,
         expected_effective_resource_sha256=expected_effective_resource_sha256,
     )
-    resource_before = resource.copy(deep=True)
     resource_frame_sha256 = _liana_resource_frame_sha256(resource)
     eligible_identities = design["eligible_identities"]
     tested_rows_upper_bound = sum(
@@ -1111,7 +1110,7 @@ def _liana_run_impl(
     dense_expression_bytes = len(observations) * len(features) * 8
     memory_components = {
         "selected_expression_storage_bytes": matrix_storage_bytes,
-        "private_dense_expression_peak_bytes": dense_expression_bytes * 3,
+        "backend_dense_expression_workspace_bytes": dense_expression_bytes * 2,
         "backend_and_canonical_result_bytes": tested_rows_upper_bound * len(LIANA_RESULT_COLUMNS[method]) * 16,
         "resource_copy_bytes": len(resource) * 2 * 64,
     }
@@ -1121,7 +1120,7 @@ def _liana_run_impl(
             f"LIANA estimates {estimated_working_bytes / 1024**3:.3f} GiB working memory, exceeding "
             f"max_working_memory_gib={max_working_memory_gib:.3f}."
         )
-    work = adata.copy()
+    work = adata
     work_matrix = work.X if source_kind == "X" else work.layers[layer_name]
     work_expression_before = _liana_matrix_sha256(
         work_matrix,
@@ -1171,11 +1170,11 @@ def _liana_run_impl(
     )
     warnings_list.extend(captured_backend_warnings)
     if _liana_resource_frame_sha256(backend_resource) != backend_resource_sha256 or not backend_resource.equals(
-        resource_before
+        resource
     ):
         raise RuntimeError("LIANA backend modified its private pinned resource input.")
     if list(work.obs_names) != observations or list(work.var_names) != features:
-        raise RuntimeError("LIANA changed the private AnnData axes.")
+        raise RuntimeError("LIANA changed the worker-owned AnnData axes.")
     work_matrix_after = work.X if source_kind == "X" else work.layers[layer_name]
     if (
         _liana_matrix_sha256(
@@ -1187,8 +1186,8 @@ def _liana_run_impl(
         )
         != work_expression_before
     ):
-        raise RuntimeError("LIANA changed the private selected expression matrix.")
-    if _liana_resource_frame_sha256(resource) != resource_frame_sha256 or not resource.equals(resource_before):
+        raise RuntimeError("LIANA changed the worker-owned selected expression matrix.")
+    if _liana_resource_frame_sha256(resource) != resource_frame_sha256:
         raise RuntimeError("LIANA backend modified the caller-owned canonical resource table.")
     if (
         _liana_current_caller_identity(
@@ -1355,6 +1354,8 @@ def _liana_run_impl(
 
 def run_liana_communication(
     adata: Any,
+    *,
+    copy_table: bool = True,
     **parameters: Any,
 ) -> tuple[Any, dict[str, Any]]:
     table, provenance, summary = _liana_run_impl(adata, **parameters)
@@ -1366,6 +1367,7 @@ def run_liana_communication(
         provenance=provenance,
         numpy=numpy,
         pandas=pandas,
+        copy_table=copy_table,
     )
     return artifact, summary
 

@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import copy
 import json
+import uuid
+from pathlib import Path
 
 import pytest
 
+from openbio_singlecell.artifact_codecs import read_plot, read_table, write_anndata
 from openbio_singlecell.node_types import PlotResultType, SummaryResultType, TableResultType
 from openbio_singlecell.nodes_population import OpenBioSingleCellCellTypeCorrelation
+from openbio_singlecell.operations_population import (
+    population_centroid_correlation,
+    population_correlation_owned,
+)
 from openbio_singlecell.population_correlation import _strongest_signed_pairs, analyze_population_centroid_correlation
+from openbio_singlecell.worker_protocol import OperationContext, WorkerResponse
 
 
 @pytest.fixture
@@ -59,7 +67,7 @@ def _run(adata, **overrides):
 
 
 def test_population_correlation_schema_is_atomic():
-    schema = OpenBioSingleCellCellTypeCorrelation.GET_SCHEMA()
+    schema = OpenBioSingleCellCellTypeCorrelation.define_schema()
     assert schema.display_name == "Population Centroid Correlation"
     assert [input_.id for input_ in schema.inputs] == [
         "adata",
@@ -80,6 +88,48 @@ def test_population_correlation_schema_is_atomic():
         ("summary", SummaryResultType.io_type),
         ("code", "STRING"),
     ]
+
+
+def test_population_correlation_operation_publishes_table_and_png_artifacts(
+    tmp_path: Path, correlation_adata
+):
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    write_anndata(input_root, correlation_adata)
+    staging = tmp_path / "run.partial"
+    staging.mkdir()
+    context = OperationContext.from_request_path(staging / "request.json", str(uuid.uuid4()))
+
+    records = population_centroid_correlation(
+        context,
+        {
+            "adata": {
+                "type": "artifact",
+                "kind": "OPENBIO_ANNDATA",
+                "codec": "anndata-h5ad-v1",
+                "path": str(input_root.resolve()),
+            }
+        },
+        {
+            "population_key": "cell_type",
+            "representation_key": "X_pca",
+            "correlation_method": "pearson",
+            "linkage_method": "complete",
+            "n_dimensions": 0,
+            "annotation_status": "curated",
+            "color_map": "RdYlBu",
+            "show_numbers": False,
+            "max_groups": 200,
+            "max_output_rows": 100000,
+        },
+    )
+    WorkerResponse.success(context.request_id, records)
+
+    assert [record["name"] for record in records] == ["table", "plot", "summary", "code"]
+    table, _ = read_table(staging / records[0]["payload"])
+    png, _ = read_plot(staging / records[1]["payload"])
+    assert table.shape == (3, 10)
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
 
 
 def test_population_correlation_matches_independent_centroids_and_is_immutable(correlation_adata, science):
@@ -114,7 +164,7 @@ def test_population_correlation_matches_independent_centroids_and_is_immutable(c
 
 
 def test_population_correlation_node_and_generated_code_are_equivalent(correlation_adata, science):
-    table_result, plot_result, report, code = OpenBioSingleCellCellTypeCorrelation.execute(
+    table_result, plot_result, report, code = population_correlation_owned(
         correlation_adata,
         population_key="cell_type",
         representation_key="X_pca",
@@ -126,7 +176,7 @@ def test_population_correlation_node_and_generated_code_are_equivalent(correlati
         show_numbers=True,
         max_groups=10,
         max_output_rows=100,
-    ).result
+    )
     assert table_result.source["operation"] == "population_centroid_correlation"
     assert plot_result.png.startswith(b"\x89PNG")
     assert report.summary["parameters"]["resolved_dimensions"] == 3

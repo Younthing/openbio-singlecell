@@ -23,6 +23,7 @@ from openbio_singlecell.nodes_abundance import (
     OpenBioSingleCellSccodaDifferentialComposition,
     OpenBioSingleCellTasccodaDifferentialComposition,
 )
+from openbio_singlecell.operations_abundance import sccoda_owned, tasccoda_owned
 
 
 def test_composition_node_schemas_are_atomic_and_method_specific():
@@ -244,8 +245,21 @@ def _run_flat(adata: AnnData, backend: object, **overrides: object):
     return run_sccoda_differential_composition(adata, _backend=backend, **parameters)
 
 
+def test_sccoda_uses_the_worker_owned_anndata_without_a_full_defensive_copy(monkeypatch):
+    adata = _composition_adata()
+
+    def reject_full_copy(_self):
+        raise AssertionError("worker-owned AnnData must not be defensively copied")
+
+    monkeypatch.setattr(AnnData, "copy", reject_full_copy)
+    table, _ = _run_flat(adata, _FlatFakeBackend())
+
+    assert table["cell_type"].tolist() == ["B", "T"]
+
+
 def test_sccoda_fake_backend_has_focal_only_expected_fdr_table_and_code_parity():
     adata = _composition_adata()
+    reproduction_input = adata.copy()
     obs_before = adata.obs.copy(deep=True)
     uns_before = dict(adata.uns)
 
@@ -273,7 +287,7 @@ def test_sccoda_fake_backend_has_focal_only_expected_fdr_table_and_code_parity()
     assert len(summary["references"]) >= 4
     assert summary["software_versions"]["python"]
     assert summary["software_versions"]["pertpy"] == "1.3.0"
-    pd.testing.assert_frame_equal(adata.obs, obs_before)
+    pd.testing.assert_frame_equal(adata.obs[obs_before.columns], obs_before)
     assert adata.uns == uns_before
 
     code = sccoda_differential_composition_code(
@@ -295,7 +309,7 @@ def test_sccoda_fake_backend_has_focal_only_expected_fdr_table_and_code_parity()
     namespace: dict[str, object] = {}
     exec(code, namespace)
     generated_table, generated_summary = namespace["run_sccoda_differential_composition"](
-        adata,
+        reproduction_input,
         _backend=_FlatFakeBackend(),
     )
     pd.testing.assert_frame_equal(generated_table, table)
@@ -434,6 +448,7 @@ def _run_tree(adata: AnnData, backend: object, **overrides: object):
 
 def test_tasccoda_fake_backend_separates_direct_nodes_and_derived_leaves_with_code_parity():
     adata = _hierarchy_adata()
+    reproduction_input = adata.copy()
     obs_before = adata.obs.copy(deep=True)
 
     table, summary = _run_tree(adata, _TreeFakeBackend())
@@ -463,7 +478,7 @@ def test_tasccoda_fake_backend_separates_direct_nodes_and_derived_leaves_with_co
     assert summary["software_versions"]["python"]
     assert "estimated_fdr" not in summary["parameters"]
     assert "estimated_fdr" not in str(summary)
-    pd.testing.assert_frame_equal(adata.obs, obs_before)
+    pd.testing.assert_frame_equal(adata.obs[obs_before.columns], obs_before)
 
     code = tasccoda_differential_composition_code(
         sample_key="sample",
@@ -488,7 +503,7 @@ def test_tasccoda_fake_backend_separates_direct_nodes_and_derived_leaves_with_co
     namespace: dict[str, object] = {}
     exec(code, namespace)
     generated_table, generated_summary = namespace["run_tasccoda_differential_composition"](
-        adata,
+        reproduction_input,
         _backend=_TreeFakeBackend(),
     )
     pd.testing.assert_frame_equal(generated_table, table)
@@ -602,13 +617,13 @@ def test_backend_corruption_fails_atomically_and_generated_function_matches(corr
     before = adata.obs.copy(deep=True)
     with pytest.raises(RuntimeError):
         _run_flat(adata, CorruptBackend())
-    pd.testing.assert_frame_equal(adata.obs, before)
+    pd.testing.assert_frame_equal(adata.obs[before.columns], before)
 
     code = sccoda_differential_composition_code(**_flat_parameters())
     namespace: dict[str, object] = {}
     exec(code, namespace)
     with pytest.raises(RuntimeError):
-        namespace["run_sccoda_differential_composition"](adata, _backend=CorruptBackend())
+        namespace["run_sccoda_differential_composition"](_composition_adata(), _backend=CorruptBackend())
 
 
 @pytest.mark.parametrize("malformation", ["multiple_roots", "multiple_leaf_paths", "unused_category"])
@@ -665,16 +680,16 @@ def test_public_nodes_wrap_table_summary_and_specialized_code_atomically(monkeyp
     )
     flat_parameters = _flat_parameters()
     flat_parameters.pop("openbio_version")
-    flat_table, flat_report, flat_code = OpenBioSingleCellSccodaDifferentialComposition.execute(
+    flat_table, flat_report, flat_code = sccoda_owned(
         _composition_adata(),
         **flat_parameters,
-    ).result
+    )
     tree_parameters = _tree_parameters()
     tree_parameters.pop("openbio_version")
-    tree_table, tree_report, tree_code = OpenBioSingleCellTasccodaDifferentialComposition.execute(
+    tree_table, tree_report, tree_code = tasccoda_owned(
         _hierarchy_adata(),
         **tree_parameters,
-    ).result
+    )
 
     assert list(flat_table.table.columns) == SCCODA_TABLE_COLUMNS
     assert flat_report.summary["node_id"] == "OpenBioSingleCellSccodaDifferentialComposition"
@@ -696,7 +711,7 @@ def test_real_adapter_rejects_any_nonexact_pertpy_version_before_backend_work(mo
 
     with pytest.raises(RuntimeError, match="requires exact Pertpy 1.3.0.*1.2.9"):
         run_sccoda_differential_composition(adata, **_flat_parameters())
-    pd.testing.assert_frame_equal(adata.obs, before)
+    pd.testing.assert_frame_equal(adata.obs[before.columns], before)
 
 
 _REAL_SCCODA_SMOKE_AVAILABLE = (

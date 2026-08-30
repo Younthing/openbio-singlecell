@@ -362,6 +362,7 @@ def analyze_population_centroid_correlation(
         index=list(obs_names),
     )
     work = science.ad.AnnData(science.np.zeros((n_obs, 1), dtype=science.np.float32), obs=private_obs)
+    # Scanpy receives a private feature-only workspace so its dendrogram backend cannot alias the source representation.
     work.obsm[representation_key] = selected.copy()
     info = science.sc.tl.dendrogram(
         work,

@@ -55,6 +55,7 @@ def _standalone_run_drug_score(
             resource_metadata,
             resource_accounting,
             resource_artifact_metadata,
+            copy_table=False,
         )
     )
     actual_resource_fingerprint = resource_artifact_metadata["artifact_fingerprint_sha256"]
@@ -316,6 +317,7 @@ def _standalone_run_drug_score(
             f"{operation} Pertpy score parameters are no longer keyword-compatible: {incompatible}."
         )
 
+    # Scientific workspace: Pertpy writes several scratch slots and must not replace the selected source matrix.
     work = ad.AnnData(
         X=matrix.copy(),
         obs=pd.DataFrame(index=pd.Index(observation_names)),
@@ -341,6 +343,7 @@ def _standalone_run_drug_score(
         resource_metadata,
         resource_accounting,
         resource_artifact_metadata,
+        copy_table=False,
     )
     if (
         resource_artifact_after["artifact_fingerprint_sha256"] != actual_resource_fingerprint
@@ -380,7 +383,7 @@ def _standalone_run_drug_score(
     observed_scores = scores[:, 0]
     if not bool(np.allclose(observed_scores, expected_scores, rtol=1e-12, atol=1e-12)):
         raise RuntimeError(f"{operation} Pertpy scores disagree with the independently computed target mean.")
-    output = adata.copy()
+    output = adata
     output.obs[output_key] = pd.Series(observed_scores, index=output.obs_names, dtype=float)
 
     source_values = []
@@ -540,9 +543,13 @@ def _standalone_run_drug_score(
 def run_drug_score(
     adata: AnnData,
     resource: DGIdbResource,
+    *,
+    copy_resource: bool = True,
     **parameters: Any,
 ) -> tuple[AnnData, dict[str, Any]]:
-    table, metadata, accounting, artifact = validate_dgidb_resource(resource)
+    table, metadata, accounting, artifact = validate_dgidb_resource(
+        resource, copy_payload=copy_resource
+    )
     return _standalone_run_drug_score(
         adata,
         table,

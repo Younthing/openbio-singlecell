@@ -596,9 +596,9 @@ def _ta_run_diffusion_map(
             collisions.append(f"{container_name}[{key!r}]")
     if collisions and not overwrite_existing:
         raise ValueError(f"Diffusion Map output bundle already exists: {', '.join(collisions)}")
-    output = adata.copy()
-    output.obsp[graph["connectivities_key"]] = graph["connectivities"].copy()
-    output.obsp[graph["distances_key"]] = graph["distances"].copy()
+    output = adata
+    output.obsp[graph["connectivities_key"]] = graph["connectivities"]
+    output.obsp[graph["distances_key"]] = graph["distances"]
     if overwrite_existing:
         for container, key in (
             (output.obsm, "X_diffmap"),
@@ -991,7 +991,7 @@ def _ta_run_paga(
     collisions = [f"uns[{key!r}]" for key in ("paga", sizes_key, _TA_PAGA_PROVENANCE_KEY) if key in adata.uns]
     if collisions and not overwrite_existing:
         raise ValueError(f"PAGA output bundle already exists: {', '.join(collisions)}")
-    output = adata.copy()
+    output = adata
     previous_paga = adata.uns.get("paga")
     previous_sizes_key = None
     if "paga" in adata.uns:
@@ -1002,8 +1002,8 @@ def _ta_run_paga(
                 "uns['paga'] bundle explicitly before recomputing."
             )
         previous_sizes_key = f"{previous_groups}_sizes"
-    output.obsp[graph["connectivities_key"]] = graph["connectivities"].copy()
-    output.obsp[graph["distances_key"]] = graph["distances"].copy()
+    output.obsp[graph["connectivities_key"]] = graph["connectivities"]
+    output.obsp[graph["distances_key"]] = graph["distances"]
     if partition["unused_categories"]:
         output.obs[partition["groupby"]] = output.obs[partition["groupby"]].cat.remove_unused_categories()
         partition = _ta_partition(
@@ -1019,6 +1019,8 @@ def _ta_run_paga(
                 continue
             if key in output.uns:
                 del output.uns[key]
+    # PAGA needs a featureless AnnData workspace so backend-owned mutations do
+    # not leak into the full scientific state beyond the validated PAGA bundle.
     scratch = output[:, []].copy()
     scratch.obs = output.obs[[partition["groupby"]]].copy()
     scratch.uns.clear()
@@ -1364,9 +1366,9 @@ def _ta_run_dpt(
             collisions.append(f"{container_name}[{key!r}]")
     if collisions and not overwrite_existing:
         raise ValueError(f"DPT output bundle already exists: {', '.join(collisions)}")
-    output = adata.copy()
-    output.obsp[graph["connectivities_key"]] = graph["connectivities"].copy()
-    output.obsp[graph["distances_key"]] = graph["distances"].copy()
+    output = adata
+    output.obsp[graph["connectivities_key"]] = graph["connectivities"]
+    output.obsp[graph["distances_key"]] = graph["distances"]
     if overwrite_existing:
         for container, key in (
             (output.obs, "dpt_pseudotime"),

@@ -9,7 +9,7 @@ import types
 
 import pytest
 
-from openbio_singlecell.nodes_differential import OpenBioSingleCellSCVIDifferentialExpression
+from openbio_singlecell.operations_differential import run_scvi_differential_owned
 from openbio_singlecell.scvi_de_evidence import (
     SCVI_DE_REFERENCES,
     SCVI_DE_SUMMARY_SCHEMA,
@@ -395,7 +395,7 @@ def test_scvi_model_de_generated_source_is_exact(scvi_evidence_fixture, science)
 
 def test_scvi_model_de_node_returns_table_summary_and_equivalent_code(scvi_evidence_fixture, science):
     adata, _, model = scvi_evidence_fixture
-    result, report, code = OpenBioSingleCellSCVIDifferentialExpression.execute(
+    result, report, code = run_scvi_differential_owned(
         adata,
         model,
         groupby="group",
@@ -406,7 +406,7 @@ def test_scvi_model_de_node_returns_table_summary_and_equivalent_code(scvi_evide
         batch_handling="shared_technical_batches",
         n_samples_overall=5000,
         random_seed=23,
-    ).result
+    )
     assert result.source["operation"] == "scvi_model_de_evidence"
     assert report.summary["status"] == "exploratory_model_evidence"
     assert result.table.shape == (3, 23)

@@ -123,6 +123,7 @@ def compute_scenic_rss(
     max_output_rows: int = 100_000,
     openbio_version: str = PLUGIN_VERSION,
     _portable_artifact: bool = False,
+    _worker_owned: bool = False,
 ) -> tuple[DataFrame, dict[str, Any]]:
     import numpy as np
     import pandas as pd
@@ -141,6 +142,7 @@ def compute_scenic_rss(
         exact_type=not _portable_artifact,
         numpy=np,
         pandas=pd,
+        copy_result=not _portable_artifact,
     )
     observation_names = _canonical_axis(adata.obs_names.tolist(), name="AnnData observation axis")
     if activity.index.tolist() != list(observation_names):
@@ -153,7 +155,7 @@ def compute_scenic_rss(
             f"SCENIC RSS complete grid requires {required_rows:,} rows, exceeding "
             f"max_output_rows={max_output_rows:,}."
         )
-    values = activity.to_numpy(dtype=float, copy=True)
+    values = activity.to_numpy(dtype=float, copy=not _worker_owned)
     sums = values.sum(axis=0)
     degenerate = [regulon for regulon, total in zip(regulons, sums, strict=True) if total <= 0.0]
     if degenerate:

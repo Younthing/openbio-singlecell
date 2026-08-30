@@ -403,6 +403,8 @@ def analyze_cell_cycle_score(
 
     private_obs = science.pd.DataFrame(index=science.pd.Index(obs_names))
     private_var = science.pd.DataFrame(index=science.pd.Index(var_names))
+    # Scanpy writes scores and may transform its input; isolate that scientific
+    # workspace while the worker-owned AnnData remains the output container.
     work = science.ad.AnnData(matrix.copy(), obs=private_obs, var=private_var)
     with _CELL_CYCLE_RNG_LOCK:
         numpy_state = science.np.random.get_state()
@@ -436,7 +438,7 @@ def analyze_cell_cycle_score(
     ):
         raise RuntimeError("Scanpy returned malformed cell-cycle scores or phase labels.")
 
-    output = adata.copy()
+    output = adata
     output.obs[output_keys["s_score"]] = s_values
     output.obs[output_keys["g2m_score"]] = g2m_values
     output.obs[output_keys["phase"]] = science.pd.Categorical(phases, categories=["G1", "S", "G2M"])

@@ -118,17 +118,17 @@ def _cnv_json(value):
         if not math.isfinite(value):
             raise ValueError("Strict JSON data cannot contain NaN or infinity.")
         return value
-    if hasattr(value, "item"):
-        try:
-            return _cnv_json(value.item())
-        except (TypeError, ValueError):
-            pass
     if isinstance(value, Mapping):
         return {str(key): _cnv_json(item) for key, item in value.items()}
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [_cnv_json(item) for item in value]
     if hasattr(value, "tolist"):
         return _cnv_json(value.tolist())
+    if hasattr(value, "item"):
+        try:
+            return _cnv_json(value.item())
+        except (TypeError, ValueError):
+            pass
     raise TypeError(f"Unsupported strict JSON value type: {type(value).__name__}.")
 
 
@@ -632,8 +632,8 @@ class _StandaloneCNVState:
     __slots__ = ("_adata", "_metadata")
     artifact_type = CNV_STATE_TYPE
 
-    def __init__(self, adata, metadata_record):
-        object.__setattr__(self, "_adata", adata.copy())
+    def __init__(self, adata, metadata_record, *, _owned=False):
+        object.__setattr__(self, "_adata", adata if _owned else adata.copy())
         object.__setattr__(self, "_metadata", copy.deepcopy(dict(metadata_record)))
 
     def __setattr__(self, name, value):
@@ -650,11 +650,16 @@ class _StandaloneCNVState:
     def to_adata(self):
         return self._adata.copy()
 
+    def _owned_adata(self):
+        """Return the private payload for one-shot worker encoding/consumption only."""
+
+        return self._adata
+
 
 CNVState = _StandaloneCNVState
 
 
-def _cnv_validate_state(artifact, *, numpy, scipy_sparse):
+def _cnv_validate_state(artifact, *, numpy, scipy_sparse, _owned=False):
     if getattr(artifact, "artifact_type", None) != CNV_STATE_TYPE:
         raise TypeError("CNV analysis requires an OPENBIO_CNV_STATE artifact.")
     if not callable(getattr(artifact, "to_adata", None)):
@@ -687,8 +692,8 @@ def _cnv_validate_state(artifact, *, numpy, scipy_sparse):
         or metadata_record["stage"] != "inferred"
     ):
         raise ValueError("CNV state identity or stage is invalid.")
-    adata = artifact.to_adata()
-    if adata is artifact.to_adata():
+    adata = artifact._owned_adata() if _owned else artifact.to_adata()
+    if not _owned and adata is artifact.to_adata():
         raise RuntimeError("CNV state to_adata() must return a new defensive copy.")
     observed = _cnv_artifact_fingerprints(adata, metadata_record, numpy=numpy, scipy_sparse=scipy_sparse)
     if observed != metadata_record["fingerprints"]:
@@ -787,6 +792,7 @@ def _cnv_run_infer(
     max_output_gib=4.0,
     overwrite_existing=False,
     openbio_version="unknown",
+    _worker_owned=False,
 ):
     operation = "Infer CNV"
     infercnvpy, anndata, numpy, pandas, scipy_sparse, natsort, backend_version = _cnv_imports(operation)
@@ -970,7 +976,7 @@ def _cnv_run_infer(
             f"Infer CNV backend chromosome/window metadata mismatch: expected {expected_chr_pos!r}, "
             f"found {observed_chr_pos!r}."
         )
-    output = adata.copy()
+    output = adata if _worker_owned else adata.copy()
     if overwrite_existing:
         for container, key in (
             (output.obsm, matrix_key),
@@ -979,7 +985,9 @@ def _cnv_run_infer(
         ):
             if key in container:
                 del container[key]
-    output.obsm[matrix_key] = cnv_matrix.copy()
+    # The infercnvpy working AnnData is private and dead after this transfer;
+    # an owned worker can move its matrix reference without another full output.
+    output.obsm[matrix_key] = cnv_matrix if _worker_owned else cnv_matrix.copy()
     output.uns[output_key] = copy.deepcopy(dict(backend_metadata))
     parameters = {
         "source_kind": source_kind,
@@ -1034,8 +1042,10 @@ def _cnv_run_infer(
     fingerprints = _cnv_artifact_fingerprints(output, metadata_record, numpy=numpy, scipy_sparse=scipy_sparse)
     metadata_record["fingerprints"] = fingerprints
     metadata_record["artifact_fingerprint_sha256"] = _cnv_artifact_hash(metadata_record, fingerprints)
-    artifact = _StandaloneCNVState(output, metadata_record)
-    _cnv_validate_state(artifact, numpy=numpy, scipy_sparse=scipy_sparse)
+    artifact = _StandaloneCNVState(output, metadata_record, _owned=_worker_owned)
+    _cnv_validate_state(
+        artifact, numpy=numpy, scipy_sparse=scipy_sparse, _owned=_worker_owned
+    )
     report_warnings = _cnv_warning_messages(caught)
     if state != "logged":
         report_warnings.append(
@@ -1154,6 +1164,7 @@ def _cnv_run_pca(
     max_output_gib=2.0,
     random_seed=0,
     openbio_version="unknown",
+    _worker_owned=False,
 ):
     operation = "CNV PCA"
     infercnvpy, _anndata, numpy, _pandas, scipy_sparse, _natsort, backend_version = _cnv_imports(operation)
@@ -1162,7 +1173,12 @@ def _cnv_run_pca(
         operation=operation,
         expected_names=("adata", "svd_solver", "zero_center", "inplace", "use_rep", "key_added", "kwargs"),
     )
-    adata, state_metadata = _cnv_validate_state(cnv_state, numpy=numpy, scipy_sparse=scipy_sparse)
+    adata, state_metadata = _cnv_validate_state(
+        cnv_state,
+        numpy=numpy,
+        scipy_sparse=scipy_sparse,
+        _owned=_worker_owned,
+    )
     obs_names, _var_names = _cnv_axes(adata, operation=operation)
     use_rep = state_metadata["output_key"]
     cnv_matrix = adata.obsm[f"X_{use_rep}"]
@@ -1192,7 +1208,7 @@ def _cnv_run_pca(
         )
     input_state_fingerprint = state_metadata["artifact_fingerprint_sha256"]
     input_cnv_fingerprint = state_metadata["fingerprints"]["cnv_matrix_sha256"]
-    output = adata.copy()
+    output = adata if _worker_owned else adata.copy()
     if overwrite_existing:
         for container, key in (
             (output.obsm, output_key),
@@ -1399,6 +1415,7 @@ def _cnv_run_score(
     output_key="cnv_score",
     overwrite_existing=False,
     openbio_version="unknown",
+    _worker_owned=False,
 ):
     operation = "CNV Score"
     infercnvpy, _anndata, numpy, pandas, scipy_sparse, _natsort, backend_version = _cnv_imports(operation)
@@ -1407,7 +1424,12 @@ def _cnv_run_score(
         operation=operation,
         expected_names=("adata", "groupby", "use_rep", "key_added", "inplace", "obs_key"),
     )
-    state_adata, state_metadata = _cnv_validate_state(cnv_state, numpy=numpy, scipy_sparse=scipy_sparse)
+    state_adata, state_metadata = _cnv_validate_state(
+        cnv_state,
+        numpy=numpy,
+        scipy_sparse=scipy_sparse,
+        _owned=_worker_owned,
+    )
     state_obs_names, state_var_names = _cnv_axes(state_adata, operation=operation)
     downstream_obs_names, downstream_var_names = _cnv_axes(adata, operation=operation)
     if downstream_obs_names != state_obs_names or downstream_var_names != state_var_names:
@@ -1430,7 +1452,7 @@ def _cnv_run_score(
     collisions = [value for value in collisions if value is not None]
     if collisions and not overwrite_existing:
         raise ValueError(f"CNV Score output bundle already exists: {', '.join(collisions)}")
-    output = adata.copy()
+    output = adata if _worker_owned else adata.copy()
     if partition["unused_categories"]:
         output.obs[partition["groupby"]] = output.obs[partition["groupby"]].cat.remove_unused_categories()
         retained_unused = partition["unused_categories"]
@@ -1725,6 +1747,7 @@ def analyze_infer_cnv(
     n_jobs: int = 1,
     max_output_gib: float = 4.0,
     overwrite_existing: bool = False,
+    _owned: bool = False,
 ) -> tuple[CNVState, dict[str, Any]]:
     return _cnv_run_infer(
         adata,
@@ -1746,6 +1769,7 @@ def analyze_infer_cnv(
         max_output_gib=max_output_gib,
         overwrite_existing=overwrite_existing,
         openbio_version=PLUGIN_VERSION,
+        _worker_owned=_owned,
     )
 
 
@@ -1757,6 +1781,7 @@ def analyze_cnv_pca(
     overwrite_existing: bool = False,
     max_output_gib: float = 2.0,
     random_seed: int = 0,
+    _owned: bool = False,
 ) -> tuple[Any, dict[str, Any]]:
     return _cnv_run_pca(
         cnv_state,
@@ -1766,6 +1791,7 @@ def analyze_cnv_pca(
         max_output_gib=max_output_gib,
         random_seed=random_seed,
         openbio_version=PLUGIN_VERSION,
+        _worker_owned=_owned,
     )
 
 
@@ -1776,6 +1802,7 @@ def analyze_cnv_score(
     groupby: str,
     output_key: str = "cnv_score",
     overwrite_existing: bool = False,
+    _owned: bool = False,
 ) -> tuple[Any, Any, dict[str, Any]]:
     return _cnv_run_score(
         cnv_state,
@@ -1784,6 +1811,7 @@ def analyze_cnv_score(
         output_key=output_key,
         overwrite_existing=overwrite_existing,
         openbio_version=PLUGIN_VERSION,
+        _worker_owned=_owned,
     )
 
 

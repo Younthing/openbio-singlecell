@@ -100,6 +100,17 @@ class _StandalonePseudobulkArtifact:
         object.__setattr__(self, "_adata", adata.copy())
         object.__setattr__(self, "_metadata", copy.deepcopy(dict(metadata)))
 
+    @classmethod
+    def _from_owned(cls, adata, metadata):
+        """Build from worker-owned state without a defensive full-matrix copy."""
+
+        import copy
+
+        artifact = object.__new__(cls)
+        object.__setattr__(artifact, "_adata", adata)
+        object.__setattr__(artifact, "_metadata", copy.deepcopy(dict(metadata)))
+        return artifact
+
     def __setattr__(self, name, value):
         raise AttributeError("PseudobulkArtifact is immutable; create a new validated artifact instead.")
 
@@ -117,12 +128,17 @@ class _StandalonePseudobulkArtifact:
         """Return a defensive copy of the private pseudobulk AnnData."""
         return self._adata.copy()
 
+    def _owned_adata(self):
+        """Return worker-private state for trusted internal codec/analysis paths."""
+
+        return self._adata
+
 
 PseudobulkArtifact = _StandalonePseudobulkArtifact
 
 
-def _standalone_validate_pseudobulk_artifact(artifact):
-    """Validate the complete typed artifact and return defensive data/metadata copies."""
+def _standalone_validate_pseudobulk_artifact(artifact, *, copy_result=True):
+    """Validate the complete artifact; public callers receive a defensive data copy by default."""
     import json
     from collections.abc import Mapping
 
@@ -186,7 +202,8 @@ def _standalone_validate_pseudobulk_artifact(artifact):
         raise ValueError(f"{operation} fingerprint is invalid.")
     if getattr(artifact, "fingerprint", None) != fingerprint:
         raise ValueError(f"{operation} fingerprint property disagrees with metadata.")
-    adata = artifact.to_adata()
+    owned_accessor = getattr(artifact, "_owned_adata", None)
+    adata = artifact.to_adata() if copy_result or not callable(owned_accessor) else owned_accessor()
     if not isinstance(adata, AnnData):
         raise TypeError(f"{operation} to_adata() must return an AnnData object.")
     if getattr(adata, "isbacked", False):
@@ -1144,7 +1161,9 @@ def _standalone_run_pseudobulk(
         documented_cells = pd.to_numeric(backend.obs["psbulk_n_cells"], errors="raise").to_numpy(dtype=float)
         if not bool(np.array_equal(backend_cells, documented_cells)):
             raise RuntimeError("Pseudobulk Decoupler backend cell-QC aliases disagree.")
-    filter_input = backend.copy()
+    # The Decoupler result is worker-owned. Reuse it for its non-mutating filter API instead of
+    # retaining a second full AnnData merely to protect this private intermediate.
+    filter_input = backend
     if "psbulk_cells" not in filter_input.obs and "psbulk_n_cells" in filter_input.obs:
         filter_input.obs["psbulk_cells"] = filter_input.obs["psbulk_n_cells"].to_numpy(copy=True)
     try:
@@ -1387,8 +1406,8 @@ def _standalone_run_pseudobulk(
     }
     artifact_fingerprint = _standalone_artifact_fingerprint(output, artifact_metadata)
     artifact_metadata["artifact_fingerprint"] = artifact_fingerprint
-    artifact = _StandalonePseudobulkArtifact(output, artifact_metadata)
-    _standalone_validate_pseudobulk_artifact(artifact)
+    artifact = _StandalonePseudobulkArtifact._from_owned(output, artifact_metadata)
+    _standalone_validate_pseudobulk_artifact(artifact, copy_result=False)
 
     warnings = [
         "Profile min_cells and min_counts are dataset-dependent QC choices; sensitivity analysis may be warranted.",

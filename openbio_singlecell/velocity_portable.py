@@ -1072,6 +1072,7 @@ def prepare_velocity_abundances(
     normalization_target: str = "median_library",
     overwrite_existing: bool = False,
     scvelo_module: Any | None = None,
+    _worker_owned: bool = False,
 ) -> tuple[Any, dict[str, Any]]:
     anndata, numpy, _, sparse = _vs_science()
     if not isinstance(adata, anndata.AnnData):
@@ -1142,12 +1143,17 @@ def prepare_velocity_abundances(
     if not bool(retained.any()):
         raise ValueError("Velocity filtering removed every feature.")
 
-    output = adata.copy()
-    output.layers["spliced"] = source_matrices["spliced"].copy()
-    output.layers["unspliced"] = source_matrices["unspliced"].copy()
+    output = adata if _worker_owned else adata.copy()
+    for canonical, source in (("spliced", spliced_layer), ("unspliced", unspliced_layer)):
+        if canonical != source:
+            # The original named source and canonical normalized layer have
+            # distinct scientific meanings, so they must not alias.
+            output.layers[canonical] = source_matrices[canonical].copy()
     if VELOCITY_STATE_KEY in output.uns:
         del output.uns[VELOCITY_STATE_KEY]
-    output = output[:, retained].copy()
+    if not bool(retained.all()):
+        # Axis filtering necessarily materializes a new AnnData view.
+        output = output[:, retained].copy()
     before_totals = {
         key: _vs_row_sums(output.layers[key]) for key in ("spliced", "unspliced")
     }
@@ -1158,8 +1164,12 @@ def prepare_velocity_abundances(
             raise ValueError(
                 f"Velocity filtered {key} layer has {zero.size} zero-library cell(s): {examples}."
             )
-    baseline = output.copy()
-    x_fingerprint_before = _vs_matrix_fingerprint(baseline.X, label="X-before-normalization")
+    # scVelo 0.3.4 normalizes X and writes temporary obs state even when only
+    # velocity layers are requested. Preserve those specific scientific slots;
+    # a whole-AnnData defensive copy is unnecessary inside a one-shot worker.
+    x_before = output.X.copy()
+    obs_before = output.obs.copy(deep=True)
+    x_fingerprint_before = _vs_matrix_fingerprint(x_before, label="X-before-normalization")
     scvelo_module, scvelo_version, normalize = _vs_backend(scvelo_module, "normalize_per_cell")
     caught = []
     try:
@@ -1180,14 +1190,11 @@ def prepare_velocity_abundances(
         raise RuntimeError(
             f"scVelo 0.3.4 velocity-layer normalization failed ({type(exc).__name__}: {exc})."
         ) from exc
-    normalized_layers = {}
     for key in ("spliced", "unspliced"):
         if key not in output.layers:
             raise RuntimeError(f"scVelo normalization removed canonical layer {key!r}.")
-        normalized_layers[key] = output.layers[key].copy()
-    output = baseline
-    for key, matrix in normalized_layers.items():
-        output.layers[key] = matrix
+    output.X = x_before
+    output.obs = obs_before
     if _vs_matrix_fingerprint(output.X, label="X-before-normalization") != x_fingerprint_before:
         raise RuntimeError("Velocity preparation failed to restore expression X exactly.")
 
@@ -1281,6 +1288,7 @@ def compute_velocity_moments(
     max_dense_gib: float = 2.0,
     overwrite_existing: bool = False,
     scvelo_module: Any | None = None,
+    _worker_owned: bool = False,
 ) -> tuple[Any, dict[str, Any]]:
     _, numpy, _, sparse = _vs_science()
     parent = validate_portable_velocity_state(prepared_adata, allowed_stages=("prepared",))
@@ -1299,7 +1307,7 @@ def compute_velocity_moments(
             f"exceeding max_dense_gib={max_dense_gib}."
         )
     graph = _vs_resolve_graph(prepared_adata, neighbors_key)
-    output = prepared_adata.copy()
+    output = prepared_adata if _worker_owned else prepared_adata.copy()
     if VELOCITY_STATE_KEY in output.uns:
         del output.uns[VELOCITY_STATE_KEY]
     for key in collisions:
@@ -1430,6 +1438,7 @@ def estimate_rna_velocity(
     min_likelihood: float = 0.001,
     overwrite_existing: bool = False,
     scvelo_module: Any | None = None,
+    _worker_owned: bool = False,
 ) -> tuple[Any, dict[str, Any]]:
     _, numpy, _, sparse = _vs_science()
     if mode not in {"stochastic", "deterministic", "dynamical"}:
@@ -1495,7 +1504,7 @@ def estimate_rna_velocity(
         else None
     )
 
-    output = velocity_adata.copy()
+    output = velocity_adata if _worker_owned else velocity_adata.copy()
     if VELOCITY_STATE_KEY in output.uns:
         del output.uns[VELOCITY_STATE_KEY]
     if overwrite_existing:
@@ -1701,6 +1710,7 @@ def recover_velocity_dynamics(
     max_dense_gib: float = 2.0,
     overwrite_existing: bool = False,
     scvelo_module: Any | None = None,
+    _worker_owned: bool = False,
 ) -> tuple[Any, dict[str, Any]]:
     _, numpy, _, sparse = _vs_science()
     parent = validate_portable_velocity_state(
@@ -1771,7 +1781,7 @@ def recover_velocity_dynamics(
     if collision_locations and not overwrite_existing:
         raise ValueError(f"Recover Dynamics output already exists: {collision_locations[:20]}.")
     graph = _vs_resolve_graph(velocity_adata, str(parent["neighbors_key"]))
-    output = velocity_adata.copy()
+    output = velocity_adata if _worker_owned else velocity_adata.copy()
     if VELOCITY_STATE_KEY in output.uns:
         del output.uns[VELOCITY_STATE_KEY]
     if overwrite_existing:
@@ -2030,6 +2040,7 @@ def build_velocity_graph(
     n_jobs: int = 1,
     overwrite_existing: bool = False,
     scvelo_module: Any | None = None,
+    _worker_owned: bool = False,
 ) -> tuple[Any, dict[str, Any]]:
     _, numpy, _, sparse = _vs_science()
     parent = validate_portable_velocity_state(
@@ -2079,7 +2090,7 @@ def build_velocity_graph(
         shape=(int(velocity_adata.n_obs), int(velocity_adata.n_vars)),
     )
     source_graph = _vs_resolve_graph(velocity_adata, str(parent["neighbors_key"]))
-    output = velocity_adata.copy()
+    output = velocity_adata if _worker_owned else velocity_adata.copy()
     if VELOCITY_STATE_KEY in output.uns:
         del output.uns[VELOCITY_STATE_KEY]
     if overwrite_existing:
@@ -2402,6 +2413,7 @@ def render_velocity_stream(
     smooth: float = 0.5,
     min_mass: float = 1.0,
     scvelo_module: Any | None = None,
+    _worker_owned: bool = False,
 ) -> tuple[bytes, dict[str, Any]]:
     _, numpy, pandas, sparse = _vs_science()
     state = validate_portable_velocity_state(graph_adata, allowed_stages=("velocity_graph",))
@@ -2464,7 +2476,9 @@ def render_velocity_stream(
     if not bool(numpy.isfinite(selected_velocity).all()):
         raise ValueError("Velocity stream requires finite selected-gene velocity vectors.")
     usable = numpy.linalg.norm(selected_velocity, axis=1) > 0
-    work = graph_adata.copy()
+    # Rendering is terminal in the one-shot worker, so backend-only embedding
+    # cache writes do not require a full defensive AnnData copy.
+    work = graph_adata if _worker_owned else graph_adata.copy()
     scvelo_module, scvelo_version, stream = _vs_backend(scvelo_module, "velocity_embedding_stream")
     import matplotlib.pyplot as pyplot
     from matplotlib.backends.backend_agg import FigureCanvasAgg

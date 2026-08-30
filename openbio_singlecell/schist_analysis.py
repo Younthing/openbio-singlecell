@@ -1081,18 +1081,7 @@ def _standalone_schist_nested_model(
         sparse=sparse,
     )
     adjacency_fingerprint = _standalone_graph_fingerprint(adjacency, adata.obs_names, np=np)
-    output = adata.copy()
-    if (
-        _standalone_state_fingerprint(
-            output,
-            key_added=settings["key_added"],
-            np=np,
-            pd=pd,
-            sparse=sparse,
-        )
-        != source_fingerprint
-    ):
-        raise RuntimeError("AnnData copy did not preserve the validated scientific input state.")
+    output = adata
     _standalone_clear_output_family(output, key_added=settings["key_added"], family=family)
     result = backend["fit_model"](
         output,
@@ -1130,7 +1119,7 @@ def _standalone_schist_nested_model(
         )
         != source_fingerprint
     ):
-        raise RuntimeError("Schist execution mutated the caller-owned AnnData.")
+        raise RuntimeError("Schist execution mutated state outside its owned output family.")
     hierarchy = _standalone_validate_backend_output(
         output,
         key_added=settings["key_added"],

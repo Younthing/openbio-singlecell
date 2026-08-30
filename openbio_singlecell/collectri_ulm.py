@@ -459,7 +459,7 @@ def run_collectri_ulm(
     _materialized_official_network_path: str | None = None,
     _resolved_official_resource_provenance: Mapping[str, Any] | None = None,
 ) -> tuple[AnnData, TFActivityArtifact, dict[str, Any]]:
-    """Infer observation-level CollecTRI ULM activity without mutating caller-owned input."""
+    """Infer observation-level CollecTRI ULM activity in one worker-owned AnnData."""
 
     import anndata as ad
     import numpy as np
@@ -726,7 +726,7 @@ def run_collectri_ulm(
         )
     dense_for_checks = matrix.toarray() if sparse.issparse(matrix) else np.asarray(matrix, dtype=float)
     work = ad.AnnData(
-        X=matrix.copy(),
+        X=matrix,
         obs=pd.DataFrame(index=pd.Index(observations)),
         var=pd.DataFrame(index=pd.Index(features)),
     )
@@ -814,8 +814,6 @@ def run_collectri_ulm(
     expected_adjusted = np.vstack([_bh_adjust(row, numpy=np) for row in raw_pvalues])
     if not bool(np.allclose(adjusted_values, expected_adjusted, rtol=5e-5, atol=5e-6)):
         raise RuntimeError("decoupler mt.ulm adjusted p-values differ from independent row-wise BH calculation.")
-    scores = scores.copy(deep=True)
-    adjusted = adjusted.copy(deep=True)
     network_accounting = []
     for regulator in sorted(before_counts.index.tolist()):
         network_accounting.append(
@@ -877,8 +875,9 @@ def run_collectri_ulm(
         provenance=provenance,
         numpy=np,
         pandas=pd,
+        copy_frames=False,
     )
-    output = adata.copy()
+    output = adata
     collision = (
         COLLECTRI_SCORE_KEY in output.obsm
         or COLLECTRI_PADJ_KEY in output.obsm
@@ -888,8 +887,8 @@ def run_collectri_ulm(
         raise ValueError(
             "CollecTRI owned output keys already exist; enable overwrite_existing explicitly to replace them."
         )
-    output.obsm[COLLECTRI_SCORE_KEY] = scores.copy(deep=True)
-    output.obsm[COLLECTRI_PADJ_KEY] = adjusted.copy(deep=True)
+    output.obsm[COLLECTRI_SCORE_KEY] = scores
+    output.obsm[COLLECTRI_PADJ_KEY] = adjusted
     output.uns[COLLECTRI_UNS_KEY] = {
         "artifact_fingerprint_sha256": artifact.fingerprint,
         "metadata": artifact.metadata,

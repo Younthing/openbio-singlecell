@@ -2,17 +2,47 @@ from __future__ import annotations
 
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
 from openbio_singlecell.node_types import AnnDataType, SCVIModelType, SummaryResultType, TableResultType
-from openbio_singlecell.nodes_differential import OpenBioSingleCellSCVIDifferentialExpression
+from openbio_singlecell.nodes_differential import (
+    OpenBioSingleCellSCVIDifferentialExpression as _SCVIDifferentialExpressionSchema,
+)
 from openbio_singlecell.nodes_integration import OpenBioSingleCellSCVIIntegration
+from openbio_singlecell.operations_integration import scvi_integration
 from openbio_singlecell.scvi_model import SCVIModel
+from tests.artifact_operation_harness import run_anndata_operation
 
 
 def output_values(node_output):
     return node_output.result
+
+
+def _run_scvi(adata, **overrides):
+    parameters = {
+        "source": {"source": "layer", "counts_layer": "counts"},
+        "technical_batch_key": "batch",
+        "categorical_covariates": "",
+        "continuous_covariates": "",
+        "n_latent": 10,
+        "gene_likelihood": "zinb",
+        "n_layers": 1,
+        "dispersion": "gene",
+        "dropout_rate": 0.1,
+        "epochs": {"epochs": "automatic"},
+        "early_stopping": False,
+        "train_size": 0.9,
+        "batch_size": 128,
+        "size_factor_key": "",
+        "accelerator": "auto",
+        "output_key": "X_scVI",
+        "overwrite_existing": False,
+        "random_seed": 0,
+    }
+    parameters.update(overrides)
+    return run_anndata_operation(scvi_integration, adata, parameters, artifact_output="model")
 
 
 def current_training_parameters(**overrides):
@@ -70,7 +100,7 @@ class FakeTrainedSCVI:
 
 
 def test_scvi_schemas_use_the_concrete_model_wire():
-    integration = OpenBioSingleCellSCVIIntegration.GET_SCHEMA()
+    integration = OpenBioSingleCellSCVIIntegration.define_schema()
     integration_inputs = {input_.id: input_ for input_ in integration.inputs}
     assert [(output.display_name, output.io_type) for output in integration.outputs] == [
         ("adata", AnnDataType.io_type),
@@ -92,7 +122,7 @@ def test_scvi_schemas_use_the_concrete_model_wire():
     assert "compute_mde" not in integration_inputs
     assert "store_latent_distribution" not in integration_inputs
 
-    differential = OpenBioSingleCellSCVIDifferentialExpression.GET_SCHEMA()
+    differential = _SCVIDifferentialExpressionSchema.define_schema()
     differential_inputs = {input_.id: input_ for input_ in differential.inputs}
     assert [input_.id for input_ in differential.inputs] == [
         "adata",
@@ -128,7 +158,7 @@ def test_scvi_schemas_use_the_concrete_model_wire():
     assert differential_inputs["random_seed"].advanced is True
 
 
-def test_scvi_integration_returns_the_trained_model_wrapper(adata, science, monkeypatch):
+def test_scvi_integration_publishes_the_trained_native_model(adata, science, monkeypatch):
     class FakeSCVI:
         setup_calls = []
         instances = []
@@ -170,14 +200,21 @@ def test_scvi_integration_returns_the_trained_model_wrapper(adata, science, monk
         def deregister_manager(self, analysis_adata):
             raise AssertionError("Integration must not create temporary AnnData managers.")
 
+        def save(self, path, *, overwrite, save_anndata):
+            destination = Path(path)
+            destination.mkdir()
+            (destination / "model.pt").write_bytes(b"native-scvi-model")
+            assert overwrite is False
+            assert save_anndata is True
+
     fake_scvi = types.ModuleType("scvi")
     fake_scvi.settings = types.SimpleNamespace(seed=None)
     fake_scvi.model = types.SimpleNamespace(SCVI=FakeSCVI)
     monkeypatch.setitem(sys.modules, "scvi", fake_scvi)
 
     adata.obs["total_counts"] = science.np.asarray(adata.X.sum(axis=1)).ravel()
-    output, trained_model, report, code = output_values(
-        OpenBioSingleCellSCVIIntegration.execute(
+    output, model_artifact, report, code = output_values(
+        _run_scvi(
             adata,
             source={"source": "X"},
             technical_batch_key="batch",
@@ -189,10 +226,13 @@ def test_scvi_integration_returns_the_trained_model_wrapper(adata, science, monk
     )
 
     raw_model = FakeSCVI.instances[0]
-    assert isinstance(trained_model, SCVIModel)
-    assert trained_model.registered_adata is not output
+    assert model_artifact == {
+        "kind": "OPENBIO_SCVI_MODEL",
+        "codec": "scvi-native-directory",
+        "members": ("model.pt",),
+    }
     assert raw_model.adata is not output
-    assert list(trained_model.registered_adata.obs_names) == list(output.obs_names)
+    assert list(raw_model.adata.obs_names) == list(output.obs_names)
     assert raw_model.is_trained is True
     assert raw_model.train_parameters == {
         "max_epochs": 3,
@@ -218,18 +258,16 @@ def test_scvi_integration_returns_the_trained_model_wrapper(adata, science, monk
         "continuous_covariate_keys": None,
     }
     assert raw_model.latent_calls == [(True, False)]
-    assert trained_model.training_parameters["n_latent"] == 2
-    assert trained_model.training_parameters["random_seed"] == 17
-    assert trained_model.training_parameters["source"] == "X"
-    assert "counts_layer" not in trained_model.training_parameters
-    assert trained_model.training_parameters["size_factor_key"] == "total_counts"
-    assert list(trained_model.obs_names) == list(output.obs_names)
-    assert list(trained_model.var_names) == list(output.var_names)
     assert output.obsm["X_scVI"].shape == (adata.n_obs, 2)
     assert "X_scVI" not in adata.obsm
     assert report.summary["key_results"]["training"]["actual_epochs"] == 3
     assert report.summary["parameters"]["technical_batch_key"] == "batch"
     assert report.summary["parameters"]["max_epochs"] == 3
+    assert report.summary["parameters"]["n_latent"] == 2
+    assert report.summary["parameters"]["random_seed"] == 17
+    assert report.summary["parameters"]["source"] == "X"
+    assert "counts_layer" not in report.summary["parameters"]
+    assert report.summary["parameters"]["size_factor_key"] == "total_counts"
     compile(code, "<scvi-code>", "exec")
     assert fake_scvi.settings.seed is None
 
@@ -275,14 +313,19 @@ def test_scvi_integration_restores_gradients_inside_comfyui_inference_mode(adata
         def deregister_manager(self, analysis_adata):
             raise AssertionError("Integration must not create temporary AnnData managers.")
 
+        def save(self, path, *, overwrite, save_anndata):
+            destination = Path(path)
+            destination.mkdir()
+            (destination / "model.pt").write_bytes(b"native-scvi-model")
+
     fake_scvi = types.ModuleType("scvi")
     fake_scvi.settings = types.SimpleNamespace(seed=None)
     fake_scvi.model = types.SimpleNamespace(SCVI=GradientTrainingSCVI)
     monkeypatch.setitem(sys.modules, "scvi", fake_scvi)
 
     with torch.inference_mode():
-        output, trained_model, _, _ = output_values(
-            OpenBioSingleCellSCVIIntegration.execute(
+        output, model_artifact, _, _ = output_values(
+            _run_scvi(
                 adata,
                 source={"source": "X"},
                 n_latent=2,
@@ -292,7 +335,7 @@ def test_scvi_integration_restores_gradients_inside_comfyui_inference_mode(adata
         assert torch.is_inference_mode_enabled() is True
 
     assert output.obsm["X_scVI"].shape == (adata.n_obs, 2)
-    assert isinstance(trained_model, SCVIModel)
+    assert model_artifact["codec"] == "scvi-native-directory"
     assert GradientTrainingSCVI.instances[0].weight.grad is not None
     assert inference_modes == [
         ("setup", False),

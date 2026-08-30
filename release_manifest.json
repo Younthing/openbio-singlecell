@@ -116,17 +116,11 @@
       "contract": {
         "node_id_prefix": "OpenBioSingleCell",
         "category_prefix": "openbio/single-cell/",
-        "anndata_wire_type": "OPENBIO_ANNDATA",
-        "artifact_wire_types": {
+        "worker_wire_type": "OPENBIO_WORKER",
+        "artifact_ticket_wire_types": {
+          "anndata": "OPENBIO_ANNDATA",
           "table": "OPENBIO_SINGLE_CELL_TABLE",
           "plot": "OPENBIO_SINGLE_CELL_PLOT",
-          "summary": "OPENBIO_SINGLE_CELL_SUMMARY"
-        },
-        "reporting_outputs": {
-          "summary": "OPENBIO_SINGLE_CELL_SUMMARY",
-          "code": "STRING"
-        },
-        "analysis_object_wire_types": {
           "augur_result": "OPENBIO_AUGUR_RESULT",
           "dgidb_resource": "OPENBIO_DGIDB_RESOURCE",
           "liana_result": "OPENBIO_LIANA_RESULT",
@@ -135,11 +129,14 @@
           "cnmf_run": "OPENBIO_CNMF_RUN",
           "scvi_model": "OPENBIO_SCVI_MODEL",
           "scenic_result": "OPENBIO_SCENIC_RESULT",
-          "scenic_binary": "OPENBIO_SCENIC_BINARY",
           "cnv_state": "OPENBIO_CNV_STATE",
           "cassiopeia_characters": "OPENBIO_CASSIOPEIA_CHARACTERS",
           "cassiopeia_tree": "OPENBIO_CASSIOPEIA_TREE",
           "velocity_state": "OPENBIO_VELOCITY_STATE"
+        },
+        "reporting_outputs": {
+          "summary": "OPENBIO_SINGLE_CELL_SUMMARY",
+          "code": "STRING"
         }
       }
     },

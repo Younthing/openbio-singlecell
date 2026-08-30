@@ -9,10 +9,7 @@ from openbio_singlecell.node_types import SummaryResultType, TableResultType
 from openbio_singlecell.nodes_abundance import (
     OpenBioSingleCellSampleCompositionSummary,
 )
-
-
-def _outputs(node_output):
-    return node_output.result
+from openbio_singlecell.operations_abundance import sample_composition_owned
 
 
 def _composition_adata(science):
@@ -39,7 +36,7 @@ def _composition_adata(science):
 
 
 def test_sample_composition_schema():
-    schema = OpenBioSingleCellSampleCompositionSummary.GET_SCHEMA()
+    schema = OpenBioSingleCellSampleCompositionSummary.define_schema()
     assert [item.id for item in schema.inputs] == [
         "adata",
         "sample_key",
@@ -67,11 +64,9 @@ def test_sample_composition_complete_grid_summary_code_and_input_immutability(sc
     original_counts = adata.layers["counts"].copy()
     original_uns = copy.deepcopy(adata.uns)
 
-    result, report, code = _outputs(
-        OpenBioSingleCellSampleCompositionSummary.execute(
-            adata,
-            annotation_status="provisional",
-        )
+    result, report, code = sample_composition_owned(
+        adata,
+        annotation_status="provisional",
     )
     table = result.table
     assert table.columns.tolist() == [
@@ -128,7 +123,7 @@ def test_sample_composition_missing_metadata_fails_instead_of_dropping_cells(sci
     adata.obs.loc[adata.obs.index[0], column] = None
 
     with pytest.raises(ValueError, match="contains a missing value"):
-        OpenBioSingleCellSampleCompositionSummary.execute(adata)
+        sample_composition_owned(adata)
 
 
 def test_sample_composition_rejects_whitespace_collisions_and_multi_condition_samples(science):
@@ -136,27 +131,27 @@ def test_sample_composition_rejects_whitespace_collisions_and_multi_condition_sa
     whitespace.obs["sample"] = whitespace.obs["sample"].astype(object)
     whitespace.obs.loc[whitespace.obs.index[0], "sample"] = " s1"
     with pytest.raises(ValueError, match="whitespace-padded"):
-        OpenBioSingleCellSampleCompositionSummary.execute(whitespace)
+        sample_composition_owned(whitespace)
 
     collision = _composition_adata(science)
     collision.obs["sample"] = collision.obs["sample"].astype(object)
     collision.obs.iloc[0, collision.obs.columns.get_loc("sample")] = 1
     collision.obs.iloc[1, collision.obs.columns.get_loc("sample")] = "1"
     with pytest.raises(ValueError, match="collide after display normalization"):
-        OpenBioSingleCellSampleCompositionSummary.execute(collision)
+        sample_composition_owned(collision)
 
     ambiguous = _composition_adata(science)
     ambiguous.obs.loc[ambiguous.obs.index[1], "condition"] = "treated"
     ambiguous.obs["cell_type"] = ambiguous.obs["cell_type"].astype(object)
     ambiguous.obs.loc[ambiguous.obs.index[1], "cell_type"] = None
     with pytest.raises(ValueError, match="one Condition per Sample"):
-        OpenBioSingleCellSampleCompositionSummary.execute(ambiguous)
+        sample_composition_owned(ambiguous)
 
 
 def test_sample_composition_grid_guard_and_minimal_descriptive_input(science):
     adata = _composition_adata(science)
     with pytest.raises(ValueError, match=r"requires 9 rows.*max_output_rows=8"):
-        OpenBioSingleCellSampleCompositionSummary.execute(adata, max_output_rows=8)
+        sample_composition_owned(adata, max_output_rows=8)
 
     minimal = science.ad.AnnData(
         science.np.empty((2, 0)),
@@ -166,7 +161,7 @@ def test_sample_composition_grid_guard_and_minimal_descriptive_input(science):
         ),
         var=science.pd.DataFrame(index=[]),
     )
-    result, report, _ = _outputs(OpenBioSingleCellSampleCompositionSummary.execute(minimal))
+    result, report, _ = sample_composition_owned(minimal)
     assert result.table.to_dict("records") == [
         {
             "sample": "s1",
