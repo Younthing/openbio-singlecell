@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import inspect
 import json
+import textwrap
 from collections.abc import Mapping
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from . import velocity_portable as _velocity_portable
+from .analysis_reporting import _package_version
 from .velocity_portable import (
     VELOCITY_ARTIFACT_TYPE,
     VELOCITY_PORTABLE_SCHEMA,
@@ -328,15 +331,208 @@ def run_velocity_stream(
     )
 
 
+_VELOCITY_COMMON_STANDALONE_HELPERS = (
+    _package_version,
+    _velocity_portable._vs_science,
+    _velocity_portable._vs_clean_text,
+    _velocity_portable._vs_velocity_var_keys,
+    _velocity_portable._vs_json_value,
+    _velocity_portable._vs_json_sha256,
+    _velocity_portable._vs_versions,
+    _velocity_portable._vs_axis,
+    _velocity_portable._vs_matrix_values,
+    _velocity_portable._vs_matrix_fingerprint,
+    _velocity_portable._vs_series_fingerprint,
+    _velocity_portable._vs_numeric_summary,
+    _velocity_portable._vs_graph_matrix,
+    _velocity_portable._vs_resolve_graph,
+    _velocity_portable._vs_dynamics_components,
+    _velocity_portable._vs_state_components,
+    _velocity_portable._vs_summary,
+    _velocity_portable._vs_velocity_graph_matrix,
+)
+
+_VELOCITY_BACKEND_STANDALONE_HELPERS = (
+    _velocity_portable._vs_backend,
+    _velocity_portable._vs_preserve_global_state_unlocked,
+    _velocity_portable._vs_preserve_global_state,
+)
+
+_VELOCITY_COMMON_STANDALONE_CONSTANTS = (
+    "VELOCITY_PORTABLE_SCHEMA",
+    "VELOCITY_SUMMARY_SCHEMA",
+    "VELOCITY_ARTIFACT_TYPE",
+    "VELOCITY_STATE_KEY",
+    "VELOCITY_SCVELO_VERSION",
+    "VELOCITY_STAGES",
+)
+
 _CODE_OPERATIONS = {
-    "prepare": ("run_velocity_filter_and_normalize", "prepare_velocity_abundances", True),
-    "moments": ("run_velocity_moments", "compute_velocity_moments", True),
-    "estimate": ("run_velocity_estimation", "estimate_rna_velocity", True),
-    "graph": ("run_velocity_graph", "build_velocity_graph", True),
-    "recover": ("run_velocity_dynamics_recovery", "recover_velocity_dynamics", True),
-    "ranking": ("run_velocity_fit_ranking", "rank_recovered_dynamics", False),
-    "stream": ("run_velocity_stream_plot", "render_velocity_stream", True),
+    "prepare": (
+        "run_velocity_filter_and_normalize",
+        prepare_velocity_abundances,
+        "normalize_per_cell",
+        (
+            *_VELOCITY_COMMON_STANDALONE_HELPERS,
+            _velocity_portable._vs_integer,
+            _velocity_portable._vs_boolean,
+            *_VELOCITY_BACKEND_STANDALONE_HELPERS,
+            _velocity_portable._vs_row_sums,
+            _velocity_portable._vs_write_state,
+        ),
+        (*_VELOCITY_COMMON_STANDALONE_CONSTANTS, "VELOCITY_REFERENCES"),
+    ),
+    "moments": (
+        "run_velocity_moments",
+        compute_velocity_moments,
+        "moments",
+        (
+            *_VELOCITY_COMMON_STANDALONE_HELPERS,
+            _velocity_portable._vs_float,
+            _velocity_portable._vs_boolean,
+            *_VELOCITY_BACKEND_STANDALONE_HELPERS,
+            _velocity_portable._vs_alias_graph,
+            _velocity_portable._vs_write_state,
+            validate_portable_velocity_state,
+        ),
+        (*_VELOCITY_COMMON_STANDALONE_CONSTANTS, "_STATE_METADATA_KEYS", "MOMENT_REFERENCES"),
+    ),
+    "estimate": (
+        "run_velocity_estimation",
+        estimate_rna_velocity,
+        "velocity",
+        (
+            *_VELOCITY_COMMON_STANDALONE_HELPERS,
+            _velocity_portable._vs_output_key,
+            _velocity_portable._vs_float,
+            _velocity_portable._vs_boolean,
+            *_VELOCITY_BACKEND_STANDALONE_HELPERS,
+            _velocity_portable._vs_velocity_pandas3_compatibility,
+            _velocity_portable._vs_alias_graph,
+            _velocity_portable._vs_optional_alias_graph,
+            _velocity_portable._vs_write_state,
+            validate_portable_velocity_state,
+        ),
+        (
+            *_VELOCITY_COMMON_STANDALONE_CONSTANTS,
+            "_STATE_METADATA_KEYS",
+            "VELOCITY_REFERENCES",
+            "DYNAMICS_REFERENCES",
+        ),
+    ),
+    "recover": (
+        "run_velocity_dynamics_recovery",
+        recover_velocity_dynamics,
+        "recover_dynamics",
+        (
+            *_VELOCITY_COMMON_STANDALONE_HELPERS,
+            _velocity_portable._vs_integer,
+            _velocity_portable._vs_float,
+            _velocity_portable._vs_boolean,
+            *_VELOCITY_BACKEND_STANDALONE_HELPERS,
+            _velocity_portable._vs_recover_pandas3_compatibility,
+            _velocity_portable._vs_alias_graph,
+            _velocity_portable._vs_write_state,
+            validate_portable_velocity_state,
+        ),
+        (*_VELOCITY_COMMON_STANDALONE_CONSTANTS, "_STATE_METADATA_KEYS", "DYNAMICS_REFERENCES"),
+    ),
+    "graph": (
+        "run_velocity_graph",
+        build_velocity_graph,
+        "velocity_graph",
+        (
+            *_VELOCITY_COMMON_STANDALONE_HELPERS,
+            _velocity_portable._vs_output_key,
+            _velocity_portable._vs_integer,
+            _velocity_portable._vs_boolean,
+            *_VELOCITY_BACKEND_STANDALONE_HELPERS,
+            _velocity_portable._vs_alias_graph,
+            _velocity_portable._vs_write_state,
+            validate_portable_velocity_state,
+        ),
+        (*_VELOCITY_COMMON_STANDALONE_CONSTANTS, "_STATE_METADATA_KEYS", "VELOCITY_REFERENCES"),
+    ),
+    "ranking": (
+        "run_velocity_fit_ranking",
+        rank_recovered_dynamics,
+        None,
+        (
+            *_VELOCITY_COMMON_STANDALONE_HELPERS,
+            _velocity_portable._vs_integer,
+            _velocity_portable._vs_boolean,
+            validate_portable_velocity_state,
+        ),
+        (*_VELOCITY_COMMON_STANDALONE_CONSTANTS, "_STATE_METADATA_KEYS", "DYNAMICS_REFERENCES"),
+    ),
+    "stream": (
+        "run_velocity_stream_plot",
+        render_velocity_stream,
+        "velocity_embedding_stream",
+        (
+            *_VELOCITY_COMMON_STANDALONE_HELPERS,
+            _velocity_portable._vs_float,
+            *_VELOCITY_BACKEND_STANDALONE_HELPERS,
+            validate_portable_velocity_state,
+        ),
+        (*_VELOCITY_COMMON_STANDALONE_CONSTANTS, "_STATE_METADATA_KEYS", "VELOCITY_REFERENCES"),
+    ),
 }
+
+
+def _velocity_literal(value: Any) -> str:
+    return f"set({sorted(value)!r})" if isinstance(value, set) else repr(value)
+
+
+def _velocity_source(
+    *, helpers: tuple[object, ...], constants: tuple[str, ...], backend_operation: str | None
+) -> str:
+    declarations = [
+        f"{name} = {_velocity_literal(getattr(_velocity_portable, name))}"
+        for name in constants
+    ]
+    if backend_operation is not None:
+        declarations.extend(
+            (
+                "_VELOCITY_BACKEND_LOCK = threading.RLock()",
+                "_EXPECTED_SIGNATURES = "
+                + repr(
+                    {
+                        backend_operation: _velocity_portable._EXPECTED_SIGNATURES[
+                            backend_operation
+                        ]
+                    }
+                ),
+            )
+        )
+    helper_source = "\n\n".join(
+        textwrap.dedent(inspect.getsource(function)).strip()
+        for function in helpers
+    )
+    return f"""from __future__ import annotations
+
+import copy
+import hashlib
+import importlib
+import inspect
+import io
+import json
+import math
+import platform
+import random
+import re
+import sys
+import threading
+import warnings
+from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
+from importlib import metadata as importlib_metadata
+from typing import Any
+
+{"\n".join(declarations)}
+
+{helper_source}
+"""
 
 
 def velocity_code(operation: str, **parameters: Any) -> str:
@@ -344,10 +540,18 @@ def velocity_code(operation: str, **parameters: Any) -> str:
 
     if operation not in _CODE_OPERATIONS:
         raise ValueError(f"Unsupported velocity code operation: {operation!r}.")
-    wrapper_name, implementation_name, accepts_backend = _CODE_OPERATIONS[operation]
+    wrapper_name, implementation, backend_operation, helpers, constants = _CODE_OPERATIONS[
+        operation
+    ]
+    implementation_name = implementation.__name__
     normalized = copy.deepcopy(dict(parameters))
     json.dumps(normalized, ensure_ascii=False, allow_nan=False)
-    source = Path(__file__).with_name("velocity_portable.py").read_text(encoding="utf-8")
+    source = _velocity_source(
+        helpers=(*helpers, implementation),
+        constants=constants,
+        backend_operation=backend_operation,
+    )
+    accepts_backend = backend_operation is not None
     backend_argument = ", scvelo_module=None" if accepts_backend else ""
     backend_forward = ", scvelo_module=scvelo_module" if accepts_backend else ""
     wrapper = (

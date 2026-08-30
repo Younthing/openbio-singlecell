@@ -10,7 +10,7 @@ import tempfile
 import uuid
 import warnings
 import weakref
-from dataclasses import replace
+from dataclasses import fields, replace
 from importlib import metadata as distribution_metadata
 from pathlib import Path
 from types import ModuleType
@@ -651,6 +651,25 @@ def test_native_cnmf_artifact_uses_a_private_writable_checkout(tmp_path):
     run.close()
 
 
+def test_native_cnmf_codec_rejects_removed_state_fields(tmp_path):
+    run, _ = _run_live_survey()
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    write_cnmf_run(artifact, run)
+    record_path = artifact / ".openbio-cnmf" / "run.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["metadata"]["adapter_version"] == 4
+    assert {"source_state", "source_state_evidence"}.isdisjoint(record["metadata"])
+    record["metadata"]["source_state"] = "unknown"
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="metadata record schema"):
+        with checkout_cnmf_run(artifact, checkout_parent=tmp_path):
+            pass
+
+    run.close()
+
+
 def test_native_cnmf_codec_rejects_linked_members(tmp_path):
     run, _ = _run_live_survey()
     outside = tmp_path / "outside.txt"
@@ -820,6 +839,7 @@ def test_rank_survey_uses_exact_file_backed_official_chain_and_reports_integrity
     assert table_result.table["completed_restarts"].tolist() == [4, 4]
     assert run.metadata.backend_name == "cnmf.cNMF"
     assert run.metadata.backend_version == "1.7.1"
+    assert run.metadata.adapter_version == 4
     assert run.metadata.installed_distribution_attested is False
     assert run.metadata.audited_pypi_wheel_sha256 == standalone.CNMF_AUDITED_PYPI_WHEEL_SHA256
     assert len(run.metadata.artifact_hashes) == 7 + 8 + 2
@@ -1016,24 +1036,26 @@ def test_exact_known_warning_is_isolated_and_disclosed_under_werror():
     run.close()
 
 
-def test_noninteger_and_logged_expert_source_is_advisory_not_gate():
+def test_user_selected_noninteger_source_is_advisory_without_inferred_state():
     adata = _adata(noninteger=True)
     adata.uns["log1p"] = {"base": None}
     run, _, report, _ = _run_survey(adata, source={"source": "X"})
-    assert len(run.metadata.input_advisories) == 2
+    assert {"source_state", "source_state_evidence"}.isdisjoint(field.name for field in fields(run.metadata))
+    assert len(run.metadata.input_advisories) == 1
     assert any("not integer-like" in warning for warning in report.summary["warnings"])
-    assert any("proven to be logged" in warning for warning in report.summary["warnings"])
+    assert {"source_state", "source_state_evidence"}.isdisjoint(report.summary["key_results"])
+    assert not any("provenance" in warning.lower() for warning in report.summary["warnings"])
     output, final_report, _ = _run_consensus(run, selected_k=2, n_top_genes=3)
-    assert output.uns["cnmf"]["survey"]["source_state"] == "logged"
-    assert output.uns["cnmf"]["survey"]["source_state_evidence"] == "AnnData uns['log1p'] marker"
+    assert {"source_state", "source_state_evidence"}.isdisjoint(output.uns["cnmf"]["survey"])
     assert list(output.uns["cnmf"]["survey"]["input_advisories"]) == list(run.metadata.input_advisories)
+    assert {"source_state", "source_state_evidence"}.isdisjoint(final_report.summary["key_results"])
     assert final_report.summary["key_results"]["input_advisories"] == list(run.metadata.input_advisories)
     assert any("not integer-like" in warning for warning in final_report.summary["warnings"])
-    assert any("proven to be logged" in warning for warning in final_report.summary["warnings"])
+    assert not any("provenance" in warning.lower() for warning in final_report.summary["warnings"])
     run.close()
 
 
-def test_scale_to_layer_history_is_classified_consistently_in_runtime_and_code():
+def test_scale_to_layer_history_does_not_override_the_selected_source():
     adata = _adata()
     adata.layers["scaled"] = adata.layers["counts"] / 10.0
     adata.uns["openbio_singlecell"] = {
@@ -1049,30 +1071,17 @@ def test_scale_to_layer_history_is_classified_consistently_in_runtime_and_code()
         adata,
         source={"source": "layer", "layer_name": "scaled"},
     )
-    assert run.metadata.source_state == "scaled"
-    assert run.metadata.source_state_evidence == "OpenBio Scale history"
-    assert report.summary["key_results"]["source_state"] == "scaled"
-    assert any("proven to be scaled" in warning for warning in report.summary["warnings"])
+    assert run.metadata.source_kind == "layer"
+    assert run.metadata.source_layer == "scaled"
+    assert report.summary["key_results"]["source"] == "layer:scaled"
+    assert not any("scaled" in warning.lower() for warning in report.summary["warnings"])
 
     namespace: dict[str, object] = {}
     exec(code, namespace)
     generated_run, _ = namespace["cnmf_rank_survey"](adata)
-    assert generated_run.metadata.source_state == "scaled"
-    assert generated_run.metadata.source_state_evidence == "OpenBio Scale history"
+    assert generated_run.metadata.source_kind == "layer"
+    assert generated_run.metadata.source_layer == "scaled"
     generated_run.close()
-    run.close()
-
-
-def test_unknown_noninteger_source_is_not_described_as_integer_valued_or_umi():
-    run, _, report, _ = _run_survey(_adata(noninteger=True))
-    provenance_warnings = [
-        warning for warning in report.summary["warnings"] if warning.startswith("OpenBio provenance cannot establish")
-    ]
-    assert len(provenance_warnings) == 1
-    assert "integer" not in provenance_warnings[0].lower()
-    assert "umi" not in provenance_warnings[0].lower()
-    assert "input_advisories" in report.summary["key_results"]
-    assert report.summary["key_results"]["input_advisories"] == list(run.metadata.input_advisories)
     run.close()
 
 
@@ -1160,7 +1169,7 @@ def test_consensus_loads_official_tuple_and_writes_only_canonical_continuous_sta
     )
     assert report.summary["key_results"]["selected_k"] == 2
     assert report.summary["key_results"]["installed_distribution_attested"] is False
-    assert report.summary["key_results"]["source_state"] == "unknown"
+    assert report.summary["key_results"]["source"] == "layer:counts"
     assert report.summary["key_results"]["cleanup_ownership"]["cached_directory_may_persist"] is True
     assert "tamper-evident" not in report.summary["methods"]
     assert any("private checkout" in warning for warning in report.summary["warnings"])
@@ -1288,13 +1297,8 @@ def test_metadata_rebinding_and_low_level_content_change_are_rejected():
     run, _ = _run_live_survey()
     original = run.metadata
     with pytest.raises(AttributeError):
-        run.metadata = replace(original, source_state="counts")
-    forged = replace(
-        original,
-        source_state="counts",
-        source_state_evidence="forged evidence",
-        input_advisories=("forged advisory",),
-    )
+        run.metadata = replace(original, input_advisories=("forged advisory",))
+    forged = replace(original, input_advisories=("forged advisory",))
     object.__setattr__(run, "_metadata", forged)
     with pytest.raises(RuntimeError, match="changed after Survey construction|construction snapshot"):
         standalone.cnmf_consensus_programs(run, selected_k=2, n_top_genes=3)

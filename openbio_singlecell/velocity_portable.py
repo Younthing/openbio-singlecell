@@ -18,6 +18,8 @@ from contextlib import contextmanager
 from importlib import metadata as importlib_metadata
 from typing import Any
 
+from .analysis_reporting import _package_version
+
 VELOCITY_PORTABLE_SCHEMA = "openbio-singlecell/velocity-portable-state/v1"
 VELOCITY_SUMMARY_SCHEMA = "openbio-singlecell/velocity-summary/v1"
 VELOCITY_ARTIFACT_TYPE = "OPENBIO_VELOCITY_STATE"
@@ -344,24 +346,17 @@ def _vs_json_sha256(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _vs_package_version(package: str) -> str:
-    try:
-        return importlib_metadata.version(package)
-    except importlib_metadata.PackageNotFoundError:
-        return "not-installed"
-
-
 def _vs_versions(scvelo_version: str) -> dict[str, str]:
     return {
         "python": platform.python_version(),
-        "openbio-singlecell": _vs_package_version("openbio-singlecell"),
+        "openbio-singlecell": _package_version("openbio-singlecell"),
         "scvelo": scvelo_version,
-        "anndata": _vs_package_version("anndata"),
-        "numpy": _vs_package_version("numpy"),
-        "pandas": _vs_package_version("pandas"),
-        "scipy": _vs_package_version("scipy"),
-        "scanpy": _vs_package_version("scanpy"),
-        "matplotlib": _vs_package_version("matplotlib"),
+        "anndata": _package_version("anndata"),
+        "numpy": _package_version("numpy"),
+        "pandas": _package_version("pandas"),
+        "scipy": _package_version("scipy"),
+        "scanpy": _package_version("scanpy"),
+        "matplotlib": _package_version("matplotlib"),
     }
 
 

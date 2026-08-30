@@ -7,11 +7,9 @@ from typing import Any
 from . import dependencies
 from .analysis_reporting import AnalysisReference, make_analysis_report, summarize_numeric
 from .analysis_utils import make_plot_result, make_table_result
-from .artifact_codecs import read_anndata, read_table, write_plot, write_table
-from .artifact_envelope import result_metadata, table_from_metadata
+from .artifact_envelope import table_from_metadata
 from .contracts import TableResult
-from .expression_source import DynamicExpressionSource, ExpressionSource, ExpressionSourceSpec
-from .expression_state import resolve_expression_state
+from .expression_source import _MARKER_PLOT_SPEC, _MARKER_SPEC, DynamicExpressionSource
 from .marker_evidence import (
     MARKER_COLUMNS,
     filter_marker_genes_code,
@@ -22,27 +20,28 @@ from .marker_evidence import (
     validate_marker_artifact_pair,
 )
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
-    require_artifact_input,
+    analysis_outputs,
+    read_anndata_input,
+    read_table_input,
     require_input_names,
     require_parameters,
+    write_plot_output,
+    write_table_output,
 )
 from .result_plotting import (
     MARKER_PLOT_RNG_LOCK,
     _marker_expression_plot_impl,
     _plot_umap_impl,
     marker_expression_plot_code,
-    marker_plot_expression_state,
     umap_embedding_provenance,
     umap_plot_code,
 )
 from .worker_protocol import JSONValue, OperationContext, register_operation
 
 TABLE_KIND = "OPENBIO_SINGLE_CELL_TABLE"
-TABLE_CODEC = "table-jsonl-v1"
 PLOT_KIND = "OPENBIO_SINGLE_CELL_PLOT"
-PLOT_CODEC = "plot-png-v1"
+MARKER_EXPRESSION_SOURCE = _MARKER_SPEC
+MARKER_PLOT_EXPRESSION_SOURCE = _MARKER_PLOT_SPEC
 PCA_METADATA_COLUMNS = [
     "component",
     "metadata",
@@ -63,18 +62,6 @@ PCA_METADATA_COLUMNS = [
     "p_adjusted",
     "significant",
 ]
-
-MARKER_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="Marker source",
-    default="layer",
-    layer_default="log1p_norm",
-)
-MARKER_PLOT_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="Marker plot source",
-    default="layer",
-    include_raw=True,
-    layer_default="log1p_norm",
-)
 
 BH_REFERENCE = AnalysisReference(
     citation=(
@@ -247,33 +234,8 @@ PSEUDOREPLICATION_REFERENCE = AnalysisReference(
 )
 
 
-def _table_record(context: OperationContext, name: str, result: Any) -> dict[str, JSONValue]:
-    root = context.create_output_directory(name)
-    write_table(root, result.table, result_metadata(result))
-    return {
-        "type": "artifact",
-        "name": name,
-        "kind": TABLE_KIND,
-        "codec": TABLE_CODEC,
-        "payload": root.relative_to(context.output_root).as_posix(),
-    }
-
-
-def _plot_record(context: OperationContext, result: Any) -> dict[str, JSONValue]:
-    root = context.create_output_directory("plot")
-    write_plot(root, result.png, result_metadata(result))
-    return {
-        "type": "artifact",
-        "name": "plot",
-        "kind": PLOT_KIND,
-        "codec": PLOT_CODEC,
-        "payload": root.relative_to(context.output_root).as_posix(),
-    }
-
-
 def _table_input(inputs: dict[str, JSONValue], name: str) -> TableResult:
-    root = require_artifact_input(inputs, name, kind=TABLE_KIND, codec=TABLE_CODEC)
-    table, metadata = read_table(root)
+    table, metadata = read_table_input(inputs, name, kind=TABLE_KIND)
     return table_from_metadata(metadata, table)
 
 
@@ -289,7 +251,6 @@ def marker_genes_owned(
 ) -> tuple[Any, Any, Any, str]:
     science = dependencies.require_scientific_dependencies()
     expression = MARKER_EXPRESSION_SOURCE.resolve(adata, source)
-    expression_state, expression_evidence = resolve_expression_state(adata, expression)
     started_at = time.perf_counter()
     marker_table, universe_table, details = rank_marker_evidence(
         adata,
@@ -301,8 +262,6 @@ def marker_genes_owned(
         tie_correct=tie_correct,
         max_output_rows=max_output_rows,
         max_working_memory_gib=max_working_memory_gib,
-        expression_state=expression_state,
-        expression_evidence=expression_evidence,
         np=science.np,
         pd=science.pd,
         sparse=science.sparse,
@@ -386,7 +345,7 @@ def marker_genes_owned(
         operation="marker_genes",
         methods=(
             f"Scanpy {method!r} ranked every observed {groupby.strip()!r} group against all remaining cells "
-            f"using {expression.kind} expression interpreted as {details['expression_interpretation']}. "
+            f"using the explicitly selected {expression.kind} expression. "
             "Globally variable genes were evaluated by Scanpy; globally constant genes were retained as "
             "neutral hypotheses. Positive-score ranking and prevalence were computed, then statsmodels "
             "Benjamini-Hochberg correction was applied separately to the complete tested-gene family for "
@@ -445,7 +404,7 @@ def marker_genes_owned(
             "used as a formal Condition contrast or interpreted as cell-type truth.",
             "Benjamini-Hochberg adjustment is per group and does not correct for trying multiple clusterings, "
             "resolutions, rankings, or downstream thresholds.",
-            "Prevalence fractions describe values greater than zero in the selected logged representation, "
+            "Prevalence fractions describe values greater than zero in the selected representation, "
             "not average expression or proof of exclusivity.",
         ],
         input_cells=int(adata.n_obs),
@@ -518,15 +477,13 @@ def filter_marker_genes_owned(
         "rankby_abs": False,
         "pts": True,
         "corr_method": "benjamini-hochberg",
-        "expression_state": upstream["expression_state"],
-        "expression_interpretation": upstream["expression_interpretation"],
         "min_log2_fold_change": min_log2_fold_change,
         "min_fraction_in_group": min_fraction_in_group,
         "max_fraction_reference": max_fraction_reference,
         "max_p_adjusted": max_p_adjusted,
         "comparison_semantics": "inclusive",
     }
-    for optional_name in ("marker_layer_name", "expression_evidence"):
+    for optional_name in ("marker_layer_name",):
         if optional_name in upstream:
             parameters[optional_name] = upstream[optional_name]
     warning_list = [
@@ -759,11 +716,6 @@ def marker_expression_plot_owned(
     matplotlib.use("Agg", force=True)
     science = dependencies.require_scientific_dependencies()
     expression = MARKER_PLOT_EXPRESSION_SOURCE.resolve(adata, source)
-    if expression.kind == "raw":
-        current_x_state, current_x_evidence = resolve_expression_state(adata, ExpressionSource("X"))
-        expression_state, expression_evidence = "unknown", None
-    else:
-        expression_state, expression_evidence = resolve_expression_state(adata, expression)
     started_at = time.perf_counter()
     png, details = _marker_expression_plot_impl(
         adata,
@@ -777,16 +729,6 @@ def marker_expression_plot_owned(
         _science=science,
         _rng_lock=MARKER_PLOT_RNG_LOCK,
     )
-    if expression.kind == "raw":
-        expression_state, expression_evidence = marker_plot_expression_state(
-            adata,
-            source_kind="raw",
-            genes=details["genes"],
-            current_x_state=current_x_state,
-            current_x_evidence=current_x_evidence,
-            np=science.np,
-            sparse=science.sparse,
-        )
     plot_type = details["plot"]["plot"]
     parameters = {
         "genes": details["genes"],
@@ -798,21 +740,6 @@ def marker_expression_plot_owned(
         "random_seed": details["rendering"]["random_seed"],
     }
     warnings = list(details["warnings"])
-    if expression_state == "unknown":
-        warnings.append(
-            "The selected expression representation has no verifiable transformation history. Values were "
-            "plotted unchanged without assuming counts, normalization, or logarithmization; confirm the scale."
-        )
-    elif expression_state == "counts":
-        warnings.append(
-            "The selected expression representation is proven count-scale data; library size can dominate "
-            "cell-level visual differences unless normalization is performed upstream."
-        )
-    if expression_state == "scaled":
-        warnings.append(
-            "The selected representation is scaled and may contain negative values; displayed magnitudes are "
-            "not expression abundance on the original normalized scale."
-        )
     if plot_type == "dotplot":
         semantics = (
             "dot color is the selected mean expression and dot size is the fraction of cells strictly above "
@@ -880,7 +807,7 @@ def marker_expression_plot_owned(
         operation="marker_expression_plot",
         methods=(
             f"Selected the exact ordered panel {details['genes']!r} from {expression.kind!r} expression "
-            f"({expression_state!r} state), validated finite values and complete categorical groups, and "
+            "and validated finite values and complete categorical groups, then "
             f"rendered a ScanpyV1 {plot_type}. {semantics.capitalize()}. Group order followed "
             f"{details['group_order_policy']!r}; dendrogram order, when requested, used complete linkage on "
             "Pearson correlations of group means computed from this same gene panel and expression source. "
@@ -894,8 +821,6 @@ def marker_expression_plot_owned(
         ),
         key_results={
             **details,
-            "expression_state": expression_state,
-            "expression_evidence": expression_evidence,
             "display_semantics": semantics,
         },
         parameters=parameters,
@@ -1494,14 +1419,13 @@ def marker_genes(
         },
         operation="Marker Genes",
     )
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    table, universe, report, code = marker_genes_owned(read_anndata(root), **parameters)
-    return [
-        _table_record(context, "table", table),
-        _table_record(context, "universe", universe),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    table, universe, report, code = marker_genes_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(
+        report,
+        code,
+        write_table_output(context, table, kind=TABLE_KIND),
+        write_table_output(context, universe, name="universe", kind=TABLE_KIND),
+    )
 
 
 @register_operation("openbio.node.filtermarkergenes")
@@ -1526,12 +1450,12 @@ def filter_marker_genes(
         _table_input(inputs, "universe"),
         **parameters,
     )
-    return [
-        _table_record(context, "table", table),
+    return analysis_outputs(
+        report,
+        code,
+        write_table_output(context, table, kind=TABLE_KIND),
         {"type": "input_ref", "name": "universe", "input": "universe"},
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    )
 
 
 @register_operation("openbio.node.umapplot")
@@ -1556,13 +1480,8 @@ def umap_plot(
         },
         operation="UMAP Plot",
     )
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    plotted, report, code = umap_plot_owned(read_anndata(root), **parameters)
-    return [
-        _plot_record(context, plotted),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    plotted, report, code = umap_plot_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
 
 
 @register_operation("openbio.node.markerexpressionplot")
@@ -1577,13 +1496,8 @@ def marker_expression_plot(
         {"genes", "groupby", "plot", "source", "group_order", "random_seed"},
         operation="Marker Expression Plot",
     )
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    plotted, report, code = marker_expression_plot_owned(read_anndata(root), **parameters)
-    return [
-        _plot_record(context, plotted),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    plotted, report, code = marker_expression_plot_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
 
 
 @register_operation("openbio.node.pcametadataassociations")
@@ -1598,13 +1512,8 @@ def pca_metadata_associations(
         {"use_rep", "sample_key", "categorical_obs_keys", "continuous_obs_keys", "alpha"},
         operation="PCA Metadata Associations",
     )
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    table, report, code = pca_metadata_associations_owned(read_anndata(root), **parameters)
-    return [
-        _table_record(context, "table", table),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    table, report, code = pca_metadata_associations_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(report, code, write_table_output(context, table, kind=TABLE_KIND))
 
 
 __all__ = [

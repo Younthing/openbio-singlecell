@@ -6,10 +6,10 @@ from typing import Any
 from comfy_api.latest import io
 
 from .dgidb_resource import DGIDB_RESOURCE_EXTENSIONS, dgidb_resource_cache_fingerprint
-from .expression_source import ExpressionSourceSpec
+from .expression_source import _AUCELL_SPEC, _DRUG_SCORE_SPEC, _GENE_PANEL_SPEC, _GSVA_SPEC
 from .files import input_file_fingerprint, resolve_input_path
 from .gene_set_scoring import gene_set_resource_cache_fingerprint
-from .node_types import AnnDataType, DGIdbResourceType, SummaryResultType, TableResultType
+from .node_types import AnnDataType, DGIdbResourceType, TableResultType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/enrichment"
 GENE_SET_EXTENSIONS = (".csv", ".tsv", ".gmt")
@@ -24,9 +24,7 @@ def _validate_gene_set_file(path: str) -> bool | str:
 
 
 class OpenBioSingleCellAUCellScores(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="AUCell expression source", include_raw=True, layer_default="log1p_norm"
-    )
+    EXPRESSION_SOURCE = _AUCELL_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -49,11 +47,7 @@ class OpenBioSingleCellAUCellScores(io.ComfyNode):
                 io.String.Input("output_key", default="aucell_scores", advanced=True),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
     @classmethod
@@ -68,9 +62,7 @@ class OpenBioSingleCellAUCellScores(io.ComfyNode):
 
 
 class OpenBioSingleCellGSVAScores(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="GSVA expression source", include_raw=True, layer_default="log1p_norm"
-    )
+    EXPRESSION_SOURCE = _GSVA_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -100,11 +92,7 @@ class OpenBioSingleCellGSVAScores(io.ComfyNode):
                 io.String.Input("output_key", default="gsva_scores", advanced=True),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
     @classmethod
@@ -119,9 +107,7 @@ class OpenBioSingleCellGSVAScores(io.ComfyNode):
 
 
 class OpenBioSingleCellGenePanelScores(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="Gene panel expression source", include_raw=True, layer_default="log1p_norm"
-    )
+    EXPRESSION_SOURCE = _GENE_PANEL_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -143,11 +129,7 @@ class OpenBioSingleCellGenePanelScores(io.ComfyNode):
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
     @classmethod
@@ -188,11 +170,7 @@ class OpenBioSingleCellPathwayScoreTTest(io.ComfyNode):
                     advanced=True,
                 ),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
 
@@ -219,11 +197,7 @@ class OpenBioSingleCellRankedGSEA(io.ComfyNode):
                 io.Int.Input("random_seed", default=123, min=0, max=2**31 - 1, advanced=True),
                 io.Int.Input("max_output_rows", default=100_000, min=1, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
     @classmethod
@@ -262,11 +236,7 @@ class OpenBioSingleCellGeneSetOverrepresentation(io.ComfyNode):
                 io.Float.Input("max_p_adjusted", default=0.05, min=0.0, max=1.0, step=0.01),
                 io.Int.Input("max_output_rows", default=100_000, min=1, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
     @classmethod
@@ -302,11 +272,7 @@ class OpenBioSingleCellDGIdbAnnotation(io.ComfyNode):
                 io.Int.Input("max_file_bytes", default=536_870_912, min=1, max=2**63 - 1, advanced=True),
                 io.Int.Input("max_rows", default=2_000_000, min=1, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                DGIdbResourceType.Output(display_name="resource"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(DGIdbResourceType.Output(display_name="resource")),
         )
 
     @classmethod
@@ -329,11 +295,7 @@ class OpenBioSingleCellDGIdbAnnotation(io.ComfyNode):
 
 
 class OpenBioSingleCellDrugScores(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="Explicit drug-score expression source",
-        include_raw=True,
-        layer_default="log1p_norm",
-    )
+    EXPRESSION_SOURCE = _DRUG_SCORE_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -351,11 +313,7 @@ class OpenBioSingleCellDrugScores(io.ComfyNode):
                 io.Int.Input("min_matched_targets", default=1, min=1, max=2**31 - 1, advanced=True),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 
@@ -378,11 +336,7 @@ class OpenBioSingleCellDrugHypergeometric(io.ComfyNode):
                 io.Float.Input("max_p_adjusted", default=0.05, min=0.0, max=1.0, step=0.01),
                 io.Int.Input("max_output_rows", default=100_000, min=1, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
 
@@ -407,11 +361,7 @@ class OpenBioSingleCellDrugGSEA(io.ComfyNode):
                 io.Int.Input("random_seed", default=123, min=0, max=2**31 - 1, advanced=True),
                 io.Int.Input("max_output_rows", default=100_000, min=1, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
 

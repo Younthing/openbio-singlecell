@@ -23,11 +23,7 @@ from openbio_singlecell.scvi_model import SCVI_MODEL_ARTIFACT_SCHEMA, SCVIModel
 
 
 def current_model_parameters(**overrides):
-    parameters = {
-        "source": "X",
-        "count_source_state": "counts",
-        "count_source_state_evidence": "test fixture raw counts",
-    }
+    parameters = {"source": "X"}
     parameters.update(overrides)
     return parameters
 
@@ -235,8 +231,6 @@ def scvi_evidence_fixture(science, monkeypatch):
             "continuous_covariates": [],
             "size_factor_key": "",
             "random_seed": 17,
-            "count_source_state": "counts",
-            "count_source_state_evidence": "test fixture raw counts",
         },
         diagnostics={"actual_epochs": 3, "metrics": {"elbo_train": {"last": 5.0}}},
     )
@@ -341,8 +335,9 @@ def test_scvi_model_de_uses_only_shared_supported_batches_and_reports(scvi_evide
     assert summary["key_results"]["top_model_evidence"] == []
     assert summary["key_results"]["top_ranked_effects"][0]["bayes_factor"] == 2.9
     assert summary["model_evidence"]["artifact_schema_version"] == SCVI_MODEL_ARTIFACT_SCHEMA
-    assert summary["model_evidence"]["registered_count_state"] == "counts"
-    assert summary["model_evidence"]["registered_count_state_evidence"] == "test fixture raw counts"
+    inferred_state_fields = {"registered_count_state", "registered_count_state_evidence"}
+    assert inferred_state_fields.isdisjoint(summary["model_evidence"])
+    assert inferred_state_fields.isdisjoint(summary["method_details"])
     assert summary["model_evidence"]["accelerator_runtime"] == {
         "training_device": "unknown",
         "cuda_available": False,
@@ -356,6 +351,7 @@ def test_scvi_model_de_uses_only_shared_supported_batches_and_reports(scvi_evide
     assert "analysis_summary" not in summary
     assert any(reference["doi"] == "10.1038/s41587-021-01206-w" for reference in summary["references"])
     assert "not independent biological Samples" in summary["warnings"][0]
+    assert not any("verified as raw counts" in warning for warning in summary["warnings"])
     json.dumps(summary, allow_nan=False)
 
 
@@ -574,27 +570,6 @@ def test_scvi_model_de_summary_references_are_not_shared(scvi_evidence_fixture):
     assert second["references"][0]["citation"] == original_citation
     with pytest.raises(TypeError):
         SCVI_DE_REFERENCES[0]["citation"] = "global mutation"
-
-
-def test_scvi_model_de_warns_when_registered_count_state_is_unknown(scvi_evidence_fixture):
-    adata, raw_model, _ = scvi_evidence_fixture
-    model = SCVIModel(
-        raw_model,
-        adata,
-        current_model_parameters(
-            technical_batch_key="batch",
-            categorical_covariates=[],
-            continuous_covariates=[],
-            size_factor_key="",
-            count_source_state="unknown",
-            count_source_state_evidence=None,
-        ),
-    )
-
-    _, summary = _run(adata, model)
-
-    assert summary["model_evidence"]["registered_count_state"] == "unknown"
-    assert any("not verified as raw counts" in warning for warning in summary["warnings"])
 
 
 def test_scvi_model_de_rejects_unaudited_scvi_version_before_backend(scvi_evidence_fixture, monkeypatch):

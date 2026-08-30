@@ -24,7 +24,6 @@ from openbio_singlecell.nodes_integration import (
 )
 from openbio_singlecell.operations_input import ANNDATA_CODEC, ANNDATA_KIND
 from openbio_singlecell.operations_integration import (
-    _scvi_code,
     harmony_integration,
     scvi_integration,
 )
@@ -709,8 +708,9 @@ def test_scvi_fake_backend_reporting_code_and_private_model_state(integration_ad
     assert report.summary["parameters"]["accelerator"] == "cpu"
     assert report.summary["key_results"]["training"]["device"] == "cpu"
     assert report.summary["key_results"]["training"]["actual_epochs"] == 2
-    assert report.summary["key_results"]["count_source_state"] == "counts"
-    assert report.summary["key_results"]["count_source_state_evidence"]
+    inferred_state_fields = {"count_source_state", "count_source_state_evidence"}
+    assert inferred_state_fields.isdisjoint(report.summary["parameters"])
+    assert inferred_state_fields.isdisjoint(report.summary["key_results"])
     assert report.summary["key_results"]["model_session_only"] is True
     json.dumps(report.summary, allow_nan=False)
     compile(code, "<scvi-code>", "exec")
@@ -847,65 +847,6 @@ def test_scvi_runtime_and_generated_code_reject_untrained_backend(integration_ad
     exec(code, namespace)
     with pytest.raises(RuntimeError, match="did not report a trained model"):
         namespace["run_scvi_integration"](integration_adata)
-
-
-def test_scvi_unknown_integer_source_is_disclosed(integration_adata, science, monkeypatch):
-    fake_scvi, _ = _fake_scvi(science)
-    monkeypatch.setitem(sys.modules, "scvi", fake_scvi)
-    integration_adata.uns.pop("openbio_singlecell")
-
-    _, _model, report, code = output_values(_run_scvi(integration_adata, n_latent=3))
-
-    assert report.summary["key_results"]["count_source_state"] == "unknown"
-    assert report.summary["key_results"]["count_source_state_evidence"] is None
-    assert any("no recorded raw-count provenance" in item for item in report.summary["warnings"])
-    namespace = {}
-    exec(code, namespace)
-    with pytest.warns(RuntimeWarning, match="no recorded raw-count provenance"):
-        namespace["run_scvi_integration"](integration_adata)
-
-
-def test_scvi_transformed_provenance_is_advisory_in_runtime_and_code(integration_adata, science, monkeypatch):
-    fake_scvi, _ = _fake_scvi(science)
-    monkeypatch.setitem(sys.modules, "scvi", fake_scvi)
-    integration_adata.uns["openbio_singlecell"]["analysis_history"]["normalized"] = {
-        "operation": "scale_to_layer",
-        "parameters": {"output_layer": "counts"},
-    }
-    parameters = {
-        "source": "layer",
-        "counts_layer": "counts",
-        "technical_batch_key": "batch",
-        "categorical_covariates": [],
-        "continuous_covariates": [],
-        "size_factor_key": "",
-        "output_key": "X_scVI",
-        "overwrite_existing": False,
-        "random_seed": 0,
-        "n_layers": 1,
-        "n_latent": 3,
-        "gene_likelihood": "zinb",
-        "dispersion": "gene",
-        "dropout_rate": 0.1,
-        "max_epochs": None,
-        "accelerator": "auto",
-        "train_size": 0.9,
-        "batch_size": 128,
-        "early_stopping": False,
-    }
-
-    output, _, report, _ = output_values(_run_scvi(integration_adata, n_latent=3))
-    assert output.obsm["X_scVI"].shape == (integration_adata.n_obs, 3)
-    assert report.summary["key_results"]["count_source_state"] == "scaled"
-    assert report.summary["key_results"]["count_source_state_evidence"] == "OpenBio Scale history"
-    assert any("recorded expression state 'scaled'" in warning for warning in report.summary["warnings"])
-    assert "verified raw UMI" not in report.summary["methods"]
-
-    namespace = {}
-    exec(_scvi_code(parameters), namespace)
-    with pytest.warns(UserWarning, match="recorded expression state 'scaled'"):
-        generated, _ = namespace["run_scvi_integration"](integration_adata)
-    science.np.testing.assert_allclose(generated.obsm["X_scVI"], output.obsm["X_scVI"])
 
 
 @pytest.mark.parametrize(

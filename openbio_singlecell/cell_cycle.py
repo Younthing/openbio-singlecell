@@ -239,7 +239,7 @@ def _validate_expression(
     source_kind: str,
     layer_name: str | None,
     science: Any,
-) -> tuple[Any, str, list[str], str, dict[str, Any], list[str]]:
+) -> tuple[Any, str, list[str], list[str]]:
     if source_kind == "raw":
         if layer_name is not None:
             raise ValueError("Cell Cycle Score Raw source cannot carry a layer name.")
@@ -301,34 +301,14 @@ def _validate_expression(
         )
     else:
         constant = bool((not numeric.size) or float(science.np.ptp(numeric)) == 0.0)
-    if constant:
-        state = "constant_user_selected"
-    elif contains_negative:
-        state = "signed_user_selected"
-    elif integer_like:
-        state = "nonnegative_integer_like_user_selected"
-    else:
-        state = "nonnegative_noninteger_user_selected"
-    evidence = {
-        "basis": "explicit_source_and_value_profile",
-        "history_used": False,
-        "biological_state_verified": False,
-        "integer_like": integer_like,
-        "contains_negative": contains_negative,
-        "constant": constant,
-    }
-    advisories = [
-        "Expression state and full-gene completeness are user-declared; full-gene log-normalized expression is the recommended Cell Cycle Score input."
-    ]
-    if source_kind == "raw":
-        advisories.append("Raw was selected explicitly; the Raw slot itself does not certify counts or transformed state.")
+    advisories = []
     if integer_like and not contains_negative:
         advisories.append("The selected source is integer-like and may be counts; phase scores can differ from the recommended log-normalized workflow.")
     if contains_negative:
         advisories.append("The selected source contains negative values and may be scaled/residual expression; interpretation is expert-declared.")
     if constant:
         advisories.append("The selected source is constant, so cell-cycle score separation may be degenerate.")
-    return matrix, source_label, source_var_names, state, evidence, advisories
+    return matrix, source_label, source_var_names, advisories
 
 
 def analyze_cell_cycle_score(
@@ -348,7 +328,7 @@ def analyze_cell_cycle_score(
 
     science = dependencies.require_scientific_dependencies()
     obs_names, current_var_names = _canonical_axes(adata)
-    matrix, source_label, var_names, source_state, state_evidence, expression_advisories = _validate_expression(
+    matrix, source_label, var_names, expression_advisories = _validate_expression(
         adata,
         source_kind=source_kind,
         layer_name=layer_name,
@@ -507,9 +487,6 @@ def analyze_cell_cycle_score(
             "input_features": len(current_var_names),
             "selected_source_features": len(var_names),
             "expression_source": source_label,
-            "expression_state": source_state,
-            "expression_state_evidence": state_evidence,
-            "full_gene_status": "user_declared_not_programmatically_verified",
             "expression_fingerprint_sha256": _matrix_fingerprint(
                 matrix, obs_names=obs_names, var_names=var_names, science=science
             ),
@@ -543,7 +520,7 @@ def analyze_cell_cycle_score(
         "warnings": warnings,
         "limitations": [
             "The gene programs are supervised signatures and may not represent every organism, tissue, disease state, or assay.",
-            "Scores depend on the user-selected expression state, observed gene coverage, gene pool, binning, and seed; this node does not certify normalization or full-gene completeness.",
+            "Scores depend on the user-selected expression source, observed gene coverage, gene pool, binning, and seed.",
             "Phase is not synchronized time, lineage, proliferation rate, or a hypothesis test.",
         ],
     }

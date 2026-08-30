@@ -4,9 +4,9 @@ import inspect
 import textwrap
 from typing import Any
 
+from .analysis_reporting import _package_version, _plain_json, collect_software_versions, summarize_numeric
 from .pseudobulk import (
     _standalone_artifact_fingerprint,
-    _standalone_plain_json,
     _standalone_validate_pseudobulk_artifact,
 )
 
@@ -27,37 +27,6 @@ PYDESEQ2_COLUMNS = [
     "p_value",
     "p_adjusted",
 ]
-
-
-def _standalone_numeric_summary(values):
-    """Summarize finite values while explicitly counting null/non-finite entries."""
-    import numpy as np
-
-    array = np.asarray(list(values), dtype=float).ravel()
-    finite = array[np.isfinite(array)]
-    missing = int(array.size - finite.size)
-    if finite.size == 0:
-        return {
-            "n": int(array.size),
-            "missing": missing,
-            "min": None,
-            "q1": None,
-            "median": None,
-            "mean": None,
-            "q3": None,
-            "max": None,
-        }
-    quantiles = np.quantile(finite, [0.0, 0.25, 0.5, 0.75, 1.0])
-    return {
-        "n": int(array.size),
-        "missing": missing,
-        "min": float(quantiles[0]),
-        "q1": float(quantiles[1]),
-        "median": float(quantiles[2]),
-        "mean": float(finite.mean()),
-        "q3": float(quantiles[3]),
-        "max": float(quantiles[4]),
-    }
 
 
 def _standalone_bh_adjust(p_values):
@@ -380,11 +349,11 @@ def _standalone_prepare_pseudobulk_design(
             raise ValueError(f"{operation} continuous term {key!r} must be finite.")
         if bool(np.allclose(values, values[0], rtol=0.0, atol=0.0)):
             omitted_constant_terms.append(key)
-            continuous_summaries[key] = _standalone_numeric_summary(values)
+            continuous_summaries[key] = summarize_numeric(values)
             continue
         design_columns.append(key)
         design_vectors.append(values)
-        continuous_summaries[key] = _standalone_numeric_summary(values)
+        continuous_summaries[key] = summarize_numeric(values)
         reference_values = values[condition_values == reference_condition]
         comparison_values = values[condition_values == comparison_condition]
         if float(reference_values.max()) < float(comparison_values.min()) or float(comparison_values.max()) < float(
@@ -522,7 +491,7 @@ def _standalone_prepare_pseudobulk_design(
             "row_order": model_data.obs[sample_key].tolist(),
         },
         "expression_filter": filter_diagnostics,
-        "library_size_distribution_before_filter": _standalone_numeric_summary(library_sizes),
+        "library_size_distribution_before_filter": summarize_numeric(library_sizes),
     }
     formal_invalid_reasons = list(metadata["formal_interpretation_invalid_reasons"])
     if any(count < 3 for count in condition_counts.values()):
@@ -647,26 +616,18 @@ def _standalone_backend_preflight(module, *, engine):
 
 
 def _standalone_engine_software_versions(*, openbio_version, backend_versions, decoupler_version, engine):
-    import platform
-    from importlib import metadata as importlib_metadata
-
-    versions = {
-        "python": platform.python_version(),
-        "openbio-singlecell": str(openbio_version),
-        **{str(key): str(value) for key, value in backend_versions.items()},
-        "decoupler": str(decoupler_version),
-    }
+    backend_versions = {str(key): str(value) for key, value in backend_versions.items()}
     packages = ["anndata", "formulaic-contrasts", "numpy", "pandas", "scipy"]
-    if engine == "pydeseq2" and "pydeseq2" not in versions:
+    if engine == "pydeseq2" and "pydeseq2" not in backend_versions:
         packages.append("pydeseq2")
-    for package in packages:
-        if package in versions:
-            continue
-        try:
-            versions[package] = importlib_metadata.version(package)
-        except importlib_metadata.PackageNotFoundError:
-            versions[package] = "not-installed"
-    return versions
+    discovered = collect_software_versions(packages, openbio_version=str(openbio_version))
+    return {
+        "python": discovered.pop("python"),
+        "openbio-singlecell": discovered.pop("openbio-singlecell"),
+        **backend_versions,
+        "decoupler": str(decoupler_version),
+        **{package: version for package, version in discovered.items() if package not in backend_versions},
+    }
 
 
 def _standalone_engine_summary(diagnostics):
@@ -683,11 +644,11 @@ def _standalone_engine_summary(diagnostics):
         if field not in diagnostics:
             raise ValueError(f"Pseudobulk contrast summary diagnostics are missing {field!r}.")
     key_results = {
-        str(key): _standalone_plain_json(value)
+        str(key): _plain_json(value)
         for key, value in diagnostics.items()
         if key not in {"parameters", "warnings", "software_versions", "engine"}
     }
-    parameters = _standalone_plain_json(diagnostics["parameters"])
+    parameters = _plain_json(diagnostics["parameters"])
     warnings = [str(value) for value in diagnostics["warnings"]]
     direction = (
         f"{parameters['comparison_condition']} versus {parameters['reference_condition']} within population "
@@ -835,7 +796,7 @@ def _standalone_engine_summary(diagnostics):
         "warnings": warnings,
         "limitations": limitations,
         "references": references,
-        "software_versions": _standalone_plain_json(diagnostics["software_versions"]),
+        "software_versions": _plain_json(diagnostics["software_versions"]),
     }
     if direction not in summary["key_results"]["effect_direction"]:
         summary["key_results"]["comparison_statement"] = direction
@@ -977,7 +938,7 @@ def _standalone_run_edger(
     normalization_summary = {
         "available_from_pertpy_adapter": normalization_factors is not None,
         "distribution": (
-            _standalone_numeric_summary(normalization_factors) if normalization_factors is not None else None
+            summarize_numeric(normalization_factors) if normalization_factors is not None else None
         ),
     }
     parameters = {
@@ -1062,7 +1023,7 @@ def _standalone_run_edger(
         "significant_total": int(calls.sum()),
         "significant_up": significant_up,
         "significant_down": significant_down,
-        "top_genes": _standalone_plain_json(table.head(20).to_dict("records")),
+        "top_genes": _plain_json(table.head(20).to_dict("records")),
         "backend_input_postconditions": {
             "sample_axis_preserved": True,
             "tested_gene_axis_preserved": True,
@@ -1079,7 +1040,7 @@ def _standalone_run_edger(
         "warnings": warnings,
         "software_versions": software_versions,
     }
-    json.dumps(_standalone_plain_json(diagnostics), ensure_ascii=False, allow_nan=False)
+    json.dumps(_plain_json(diagnostics), ensure_ascii=False, allow_nan=False)
     _standalone_validate_pseudobulk_artifact(artifact, copy_result=False)
     return table, diagnostics
 
@@ -1433,9 +1394,9 @@ def _standalone_run_pydeseq2(
         "significant_total": int(calls.sum()),
         "significant_up": significant_up,
         "significant_down": significant_down,
-        "top_genes": _standalone_plain_json(table.loc[table["p_value"].notna()].head(20).to_dict("records")),
-        "size_factor_distribution": (_standalone_numeric_summary(size_factors) if size_factors is not None else None),
-        "dispersion_distribution": (_standalone_numeric_summary(dispersions) if dispersions is not None else None),
+        "top_genes": _plain_json(table.loc[table["p_value"].notna()].head(20).to_dict("records")),
+        "size_factor_distribution": (summarize_numeric(size_factors) if size_factors is not None else None),
+        "dispersion_distribution": (summarize_numeric(dispersions) if dispersions is not None else None),
         "requested_dispersion_fit_type": "parametric",
         "realized_dispersion_fit_type": realized_dispersion_fit,
         "requested_size_factors_fit_type": "ratio",
@@ -1490,7 +1451,7 @@ def _standalone_run_pydeseq2(
         "warnings": warnings,
         "software_versions": software_versions,
     }
-    json.dumps(_standalone_plain_json(diagnostics), ensure_ascii=False, allow_nan=False)
+    json.dumps(_plain_json(diagnostics), ensure_ascii=False, allow_nan=False)
     _standalone_validate_pseudobulk_artifact(artifact, copy_result=False)
     return table, diagnostics
 
@@ -1517,10 +1478,10 @@ def pseudobulk_engine_code(*, engine: str, **parameters: Any) -> str:
     runner = _standalone_run_edger if engine == "edger" else _standalone_run_pydeseq2
     function_name = "run_pseudobulk_edger" if engine == "edger" else "run_pseudobulk_pydeseq2"
     source_functions = [
-        _standalone_plain_json,
+        _plain_json,
         _standalone_artifact_fingerprint,
         _standalone_validate_pseudobulk_artifact,
-        _standalone_numeric_summary,
+        summarize_numeric,
         _standalone_bh_adjust,
         _standalone_parse_key_list,
         _standalone_backend_matrix_fingerprint,
@@ -1534,6 +1495,8 @@ def pseudobulk_engine_code(*, engine: str, **parameters: Any) -> str:
             _standalone_normalize_backend_warnings,
             _standalone_prepare_pseudobulk_design,
             _standalone_backend_preflight,
+            _package_version,
+            collect_software_versions,
             _standalone_engine_software_versions,
             _standalone_engine_summary,
             runner,

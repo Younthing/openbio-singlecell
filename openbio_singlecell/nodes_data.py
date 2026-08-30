@@ -4,22 +4,16 @@ from typing import Any
 
 from comfy_api.latest import io
 
-from .expression_source import ExpressionSourceSpec
+from .expression_source import _SNAPSHOT_SPEC
 from .files import input_file_fingerprint, resolve_input_path
-from .node_types import AnnDataType, SummaryResultType
+from .node_types import AnnDataType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/data"
 GTF_EXTENSIONS = (".gtf", ".gtf.gz")
 
 
 class OpenBioSingleCellSnapshotExpression(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="Raw snapshot source",
-        default="X",
-        include_raw=False,
-        layer_input_id="source_layer",
-        layer_default="counts",
-    )
+    EXPRESSION_SOURCE = _SNAPSHOT_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -35,11 +29,7 @@ class OpenBioSingleCellSnapshotExpression(io.ComfyNode):
                 cls.EXPRESSION_SOURCE.input(),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 
@@ -63,11 +53,7 @@ class OpenBioSingleCellSubsetObservations(io.ComfyNode):
                     advanced=True,
                 ),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 
@@ -91,11 +77,7 @@ class OpenBioSingleCellMergeObservationAnnotations(io.ComfyNode):
                     advanced=True,
                 ),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 
@@ -120,11 +102,7 @@ class OpenBioSingleCellMapGeneIdsFromGTF(io.ComfyNode):
                 io.String.Input("id_column", default="gene_ids", advanced=True),
                 io.String.Input("gene_name_column", default="gene_symbols", advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
     @classmethod

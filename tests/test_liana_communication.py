@@ -346,6 +346,10 @@ def test_communication_exact_by_sample_complete_family_summary_and_immutability(
         {"sample": "S2", "condition": "treated"},
     ]
     assert summary["key_results"]["result"]["complete_backend_family_returned"] is True
+    expression = summary["key_results"]["expression"]
+    assert expression["source_kind"] == "X"
+    assert "state" not in expression
+    assert "state_evidence" not in expression
     assert summary["key_results"]["resource"]["accounting"]["retained_rows_on_exact_feature_axis"] == 2
     assert summary["software_versions"]["liana"] == "1.9.0"
     assert "not tested" in summary["results"]
@@ -353,6 +357,7 @@ def test_communication_exact_by_sample_complete_family_summary_and_immutability(
     json.dumps(summary, allow_nan=False)
     assert len(summary["references"]) >= 4
     assert provenance["resource"]["metadata"]["license"] == "CC0 test fixture"
+    assert provenance["expression"] == expression
     assert len(metadata["table_identity"]["content_sha256"]) == 64
     assert selector.calls == ["consensus"]
     assert len(backend.calls) == 1

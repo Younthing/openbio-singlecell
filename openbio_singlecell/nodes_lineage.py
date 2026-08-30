@@ -11,8 +11,8 @@ from .node_types import (
     AnnDataType,
     CassiopeiaCharactersType,
     CassiopeiaTreeType,
-    SummaryResultType,
     TableResultType,
+    analysis_outputs,
 )
 
 CATEGORY = "openbio/single-cell/lineage"
@@ -60,12 +60,10 @@ class OpenBioSingleCellCassiopeiaLineageQC(io.ComfyNode):
                 io.Int.Input("max_file_mib", default=512, min=1, max=MAX_INTEGER, advanced=True),
                 io.Float.Input("max_matrix_gib", default=2.0, min=1e-12, advanced=True),
             ],
-            outputs=[
+            outputs=analysis_outputs(
                 CassiopeiaCharactersType.Output(display_name="characters"),
                 TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            ),
         )
 
     @classmethod
@@ -101,11 +99,7 @@ class OpenBioSingleCellReconstructCassiopeiaTree(io.ComfyNode):
                 ),
                 io.Boolean.Input("collapse_mutationless_edges", default=False, advanced=True),
             ],
-            outputs=[
-                CassiopeiaTreeType.Output(display_name="tree"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(CassiopeiaTreeType.Output(display_name="tree")),
         )
 
 
@@ -123,11 +117,7 @@ class OpenBioSingleCellCassiopeiaExpansionTest(io.ComfyNode):
                 io.Int.Input("minimum_depth", default=1, min=0, max=MAX_INTEGER, advanced=True),
                 io.Float.Input("fdr_threshold", default=0.05, min=0.0, max=1.0, step=0.01),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
 
@@ -154,12 +144,9 @@ class OpenBioSingleCellCassiopeiaPlasticity(io.ComfyNode):
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
                 io.Float.Input("max_working_gib", default=4.0, min=1e-12, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(
+                AnnDataType.Output(display_name="adata"), TableResultType.Output(display_name="table")
+            ),
         )
 
 

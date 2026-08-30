@@ -239,52 +239,6 @@ def _liana_canonical_labels(series: Any, *, label: str, pandas: Any) -> list[str
     return result
 
 
-def _liana_history(adata: Any) -> list[Mapping[str, Any]]:
-    metadata = adata.uns.get("openbio_singlecell")
-    if not isinstance(metadata, Mapping):
-        return []
-    history = metadata.get("analysis_history")
-    if not isinstance(history, Mapping):
-        return []
-    return [entry for entry in history.values() if isinstance(entry, Mapping)]
-
-
-def _liana_expression_state(adata: Any, *, source_kind: str, layer_name: str | None) -> tuple[str, str | None]:
-    x_state: tuple[str, str | None] = ("unknown", None)
-    layer_states: dict[str, tuple[str, str]] = {}
-    for entry in _liana_history(adata):
-        operation = entry.get("operation")
-        parameters = entry.get("parameters")
-        parameters = parameters if isinstance(parameters, Mapping) else {}
-        if operation == "snapshot_expression":
-            layer_states["counts"] = ("counts", "OpenBio Snapshot Expression history")
-            if parameters.get("source") == "X":
-                x_state = ("counts", "OpenBio Snapshot Expression history")
-        elif operation == "normalize_to_layer":
-            output_layer = parameters.get("output_layer")
-            transform = parameters.get("transform")
-            if isinstance(output_layer, str):
-                state = "logged" if transform == "log1p" else "normalized" if transform == "none" else "transformed"
-                layer_states[output_layer] = (state, "OpenBio Normalize To Layer history")
-        elif operation == "pearson_residuals_to_layer":
-            output_layer = parameters.get("output_layer")
-            if isinstance(output_layer, str):
-                layer_states[output_layer] = ("pearson_residuals", "OpenBio Pearson Residuals history")
-        elif operation == "scale_to_layer":
-            output_layer = parameters.get("output_layer")
-            if isinstance(output_layer, str):
-                layer_states[output_layer] = ("scaled", "OpenBio Scale history")
-        if operation == "normalize_total":
-            x_state = ("normalized", "OpenBio Normalize Total history")
-        elif operation == "log1p":
-            x_state = ("logged", "OpenBio Log1p history")
-    if source_kind == "layer":
-        return layer_states.get(str(layer_name), ("unknown", None))
-    if x_state[0] == "unknown" and isinstance(adata.uns.get("log1p"), Mapping):
-        return "logged", "AnnData uns['log1p'] marker"
-    return x_state
-
-
 def _liana_validate_resource_metadata(
     value: str | Mapping[str, Any],
     *,
@@ -514,32 +468,11 @@ def _liana_validate_input(
         raise ValueError("LIANA expression must contain only finite real numeric values.")
     value_min = float(min(0.0, stored.min(initial=0.0)))
     integer_like = bool(numpy.allclose(stored, numpy.rint(stored), rtol=0.0, atol=1e-8))
-    state, state_evidence = _liana_expression_state(adata, source_kind=source_kind, layer_name=layer_name)
     warnings_list: list[str] = []
-    if state in {"counts", "pearson_residuals", "scaled", "transformed"}:
+    if integer_like and value_min >= 0.0:
         warnings_list.append(
-            f"The explicitly selected LIANA expression is described as {state!r} ({state_evidence}); the backend "
-            "will use those finite values unchanged, but interaction scores do not have the recommended normalized "
-            "log1p interpretation."
-        )
-    elif state == "unknown" and integer_like and value_min >= 0.0:
-        warnings_list.append(
-            "LIANA expression provenance is unknown and values are nonnegative integer-like/count-like. The "
-            "explicit expert selection was honored, but library size and ties can dominate the result."
-        )
-    elif state == "unknown":
-        warnings_list.append(
-            "Expression provenance is unknown but values are non-count-like; LIANA assumes caller-supplied "
-            "library-size-normalized log1p expression."
-        )
-    elif state == "normalized":
-        warnings_list.append(
-            "Expression is library-size normalized but no log1p transform is recorded; score magnitudes depend on "
-            "this explicitly disclosed representation."
-        )
-    elif state != "logged":
-        warnings_list.append(
-            f"LIANA expression state {state!r} is nonstandard; the explicitly selected finite values were used unchanged."
+            "The selected LIANA expression contains nonnegative integer-like/count-like values. The backend will "
+            "use them unchanged, but library size and ties can dominate interaction scores."
         )
     if value_min < 0.0:
         warnings_list.append(
@@ -599,8 +532,6 @@ def _liana_validate_input(
     expression = {
         "source_kind": source_kind,
         "layer_name": layer_name,
-        "state": state,
-        "state_evidence": state_evidence,
         "full_gene_completeness_verified": False,
         "full_gene_completeness_basis": "caller-selected current feature axis",
         "observation_axis_sha256": observation_axis_sha256,
@@ -1294,7 +1225,7 @@ def _liana_run_impl(
         "status": "ok",
         "methods": (
             f"LIANA {LIANA_AUDITED_VERSION} public mt.{method}.by_sample ran separately within each biological "
-            f"Sample using explicit {identity_key!r} identities, pinned normalized expression, and a "
+            f"Sample using explicit {identity_key!r} identities, explicitly selected expression, and a "
             "license-reviewed SHA-256-bound ligand-receptor resource."
         ),
         "results": (
@@ -1417,8 +1348,6 @@ def liana_communication_code(*, parameters: Mapping[str, Any]) -> str:
         _liana_axis,
         _liana_matrix_sha256,
         _liana_canonical_labels,
-        _liana_history,
-        _liana_expression_state,
         _liana_unique_object,
         _liana_validate_resource_metadata,
         _liana_resource_table,

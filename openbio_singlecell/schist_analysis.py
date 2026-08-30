@@ -4,26 +4,7 @@ import inspect
 import textwrap
 from typing import Any
 
-
-def _standalone_plain_json(value):
-    from collections.abc import Mapping, Sequence
-
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        return value if value == value and value not in (float("inf"), float("-inf")) else None
-    if hasattr(value, "item"):
-        try:
-            return _standalone_plain_json(value.item())
-        except (TypeError, ValueError):
-            pass
-    if isinstance(value, Mapping):
-        return {str(key): _standalone_plain_json(item) for key, item in value.items()}
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [_standalone_plain_json(item) for item in value]
-    if hasattr(value, "tolist"):
-        return _standalone_plain_json(value.tolist())
-    return str(value)
+from .analysis_reporting import _plain_json
 
 
 def _standalone_validate_settings(
@@ -347,7 +328,7 @@ def _standalone_validate_graph(adata, *, neighbors_key, posterior_samples, budge
         "isolated_observation_count": 0,
         "degree": _standalone_numeric_summary(degree, np=np),
         "connectivity_weights": _standalone_numeric_summary(matrix.data, np=np),
-        "upstream_neighbor_parameters": _standalone_plain_json(metadata.get("params", {})),
+        "upstream_neighbor_parameters": _plain_json(metadata.get("params", {})),
         "connectivity_weights_used_by_model": False,
     }
     return matrix, graph, memory
@@ -820,7 +801,7 @@ def _standalone_backend_build(backend):
                 value = value()
             except Exception as error:
                 return f"unavailable:{type(error).__name__}"
-        return _standalone_plain_json(value)
+        return _plain_json(value)
 
     return {
         "schist_module_path": backend["schist_module_path"],
@@ -1023,7 +1004,7 @@ def _standalone_summary(
         "software_versions": _standalone_software_versions(openbio_version=openbio_version, backend=backend),
         "backend_build": _standalone_backend_build(backend),
     }
-    summary = _standalone_plain_json(summary)
+    summary = _plain_json(summary)
     json.dumps(summary, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True)
     return summary
 
@@ -1162,7 +1143,7 @@ def _standalone_schist_nested_model(
 
 
 _STANDALONE_HELPERS = (
-    _standalone_plain_json,
+    _plain_json,
     _standalone_validate_settings,
     _standalone_output_family,
     _standalone_object_bytes,

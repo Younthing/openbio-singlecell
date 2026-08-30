@@ -6,18 +6,19 @@ from typing import Any
 
 from . import PLUGIN_VERSION
 from .analysis_utils import make_summary_result, make_table_result
-from .artifact_codecs import TABLE_CODEC, read_anndata, read_table, write_table
-from .artifact_envelope import result_metadata, table_from_metadata
+from .artifact_envelope import table_from_metadata
 from .collectri_ulm import collectri_ulm_code, run_collectri_ulm
-from .expression_source import DynamicExpressionSource, ExpressionSourceSpec
+from .expression_source import _COLLECTRI_SPEC, DynamicExpressionSource
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
+    analysis_outputs,
+    read_anndata_input,
+    read_table_input,
     require_artifact_input,
     require_file_input,
     require_input_names,
     require_parameters,
     write_anndata_output,
+    write_table_output,
 )
 from .pyscenic_import import import_pyscenic_bundle, pyscenic_import_code
 from .regulatory_artifact_codecs import (
@@ -37,17 +38,7 @@ from .worker_protocol import JSONValue, OperationContext, ProtocolError, registe
 TABLE_KIND = "OPENBIO_SINGLE_CELL_TABLE"
 TF_ACTIVITY_KIND = "OPENBIO_TF_ACTIVITY"
 SCENIC_KIND = "OPENBIO_SCENIC_RESULT"
-COLLECTRI_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="CollecTRI normalized expression source",
-    default="layer",
-    include_raw=False,
-    layer_default="log1p_norm",
-)
-
-
-def _anndata_input(inputs: dict[str, JSONValue]) -> Any:
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    return read_anndata(root)
+COLLECTRI_EXPRESSION_SOURCE = _COLLECTRI_SPEC
 
 
 def _tf_activity_input(inputs: dict[str, JSONValue]) -> dict[str, Any]:
@@ -71,32 +62,8 @@ def _scenic_input(inputs: dict[str, JSONValue]) -> dict[str, Any]:
 
 
 def _table_input(inputs: dict[str, JSONValue], name: str) -> Any:
-    root = require_artifact_input(inputs, name, kind=TABLE_KIND, codec=TABLE_CODEC)
-    table, metadata = read_table(root)
+    table, metadata = read_table_input(inputs, name, kind=TABLE_KIND)
     return table_from_metadata(metadata, table)
-
-
-def _table_record(
-    context: OperationContext,
-    name: str,
-    result: Any,
-    *,
-    json_list_columns: tuple[str, ...] = (),
-) -> dict[str, JSONValue]:
-    root = context.create_output_directory(name)
-    write_table(
-        root,
-        result.table,
-        result_metadata(result),
-        json_list_columns=json_list_columns,
-    )
-    return {
-        "type": "artifact",
-        "name": name,
-        "kind": TABLE_KIND,
-        "codec": TABLE_CODEC,
-        "payload": root.relative_to(context.output_root).as_posix(),
-    }
 
 
 def _tf_activity_record(context: OperationContext, artifact: Any) -> dict[str, JSONValue]:
@@ -489,16 +456,16 @@ def collectri_ulm(
     else:
         raise ProtocolError("CollecTRI resource_mode must select local_network or official_collectri.")
     output, activities, report, code = collectri_ulm_owned(
-        _anndata_input(inputs),
+        read_anndata_input(inputs),
         network_path=network_path,
         **parameters,
     )
-    return [
+    return analysis_outputs(
+        report,
+        code,
         write_anndata_output(context, output),
         _tf_activity_record(context, activities),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    )
 
 
 @register_operation("openbio.node.ranktfactivities")
@@ -521,15 +488,11 @@ def rank_tf_activity(
         operation="Rank TF Activities",
     )
     result, report, code = rank_tf_activities_owned(
-        _anndata_input(inputs),
+        read_anndata_input(inputs),
         _tf_activity_input(inputs),
         **parameters,
     )
-    return [
-        _table_record(context, "table", result),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(report, code, write_table_output(context, result, kind=TABLE_KIND))
 
 
 @register_operation("openbio.node.importpyscenicresults")
@@ -552,16 +515,16 @@ def import_pyscenic_results(
     )
     manifest_path, _provenance = require_file_input(inputs, "run_manifest_json")
     output, scenic_result, report, code = import_pyscenic_owned(
-        _anndata_input(inputs),
+        read_anndata_input(inputs),
         manifest_path,
         **parameters,
     )
-    return [
+    return analysis_outputs(
+        report,
+        code,
         write_anndata_output(context, output),
         _scenic_record(context, scenic_result),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    )
 
 
 @register_operation("openbio.node.scenicregulonspecificity")
@@ -577,15 +540,11 @@ def scenic_regulon_specificity(
         operation="SCENIC Regulon Specificity",
     )
     result, report, code = scenic_rss_owned(
-        _anndata_input(inputs),
+        read_anndata_input(inputs),
         _scenic_input(inputs),
         **parameters,
     )
-    return [
-        _table_record(context, "table", result),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(report, code, write_table_output(context, result, kind=TABLE_KIND))
 
 
 @register_operation("openbio.node.scenicactivitybinarization")
@@ -613,11 +572,11 @@ def scenic_activity_binarization(
         threshold_overrides=overrides,
         **parameters,
     )
-    return [
-        _table_record(context, "thresholds", result),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(
+        report,
+        code,
+        write_table_output(context, result, name="thresholds", kind=TABLE_KIND),
+    )
 
 
 @register_operation("openbio.node.scenictfmodules")
@@ -633,11 +592,11 @@ def scenic_tf_modules(
         operation="SCENIC Final Regulon Membership",
     )
     result, report, code = scenic_membership_owned(_scenic_input(inputs), **parameters)
-    return [
-        _table_record(context, "table", result, json_list_columns=("motif_ids",)),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(
+        report,
+        code,
+        write_table_output(context, result, kind=TABLE_KIND, json_list_columns=("motif_ids",)),
+    )
 
 
 __all__ = [

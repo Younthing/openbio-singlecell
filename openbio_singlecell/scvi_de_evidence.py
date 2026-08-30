@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from . import PLUGIN_VERSION
+from .analysis_reporting import _package_version, collect_software_versions
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -338,24 +339,6 @@ def _top_effects(table: DataFrame, *, mode: str, limit: int = 10) -> list[dict[s
     return rows
 
 
-def _standalone_software_versions(packages: Sequence[str], *, openbio_version: str) -> dict[str, str]:
-    import platform as runtime_platform
-    from importlib import metadata as importlib_metadata
-
-    versions = {
-        "python": runtime_platform.python_version(),
-        "openbio-singlecell": openbio_version,
-    }
-    for package in dict.fromkeys(packages):
-        if package in versions:
-            continue
-        try:
-            versions[package] = importlib_metadata.version(package)
-        except importlib_metadata.PackageNotFoundError:
-            versions[package] = "not-installed"
-    return versions
-
-
 def _standalone_accelerator_runtime(model_evidence: Mapping[str, Any]) -> dict[str, Any]:
     diagnostics = model_evidence.get("training_diagnostics")
     if not isinstance(diagnostics, Mapping):
@@ -501,11 +484,6 @@ def _analyze_scvi_model_de_evidence_core(
         warnings.append(
             "The backend did not expose a hashable fitted state_dict; exact fitted weights lack an independent hash."
         )
-    if model_evidence.get("registered_count_state") != "counts":
-        warnings.append(
-            "The registered expression source was not verified as raw counts; model evidence must be interpreted with "
-            "that unresolved input-state provenance."
-        )
     if len(tagged_zero):
         warnings.append(
             "Some posterior-FDR-tagged features had exactly zero mean decoded log2 fold change and are reported "
@@ -535,8 +513,6 @@ def _analyze_scvi_model_de_evidence_core(
         ),
         "statistical_unit": "selected cells and model posterior mixture; not independent biological Samples",
         "expression_source": "model-owned registered count view and decoded normalized expression; downstream adata.X is ignored",
-        "registered_count_state": model_evidence.get("registered_count_state", "unknown"),
-        "registered_count_state_evidence": model_evidence.get("registered_count_state_evidence"),
         "feature_scope": "exact ordered fitted-model feature view",
         "batch_estimand": (
             "both populations decoded on the ordered intersection of actually observed primary Technical batches"
@@ -597,7 +573,7 @@ def _analyze_scvi_model_de_evidence_core(
         },
         "parameters": parameters,
         "references": [dict(reference) for reference in SCVI_DE_REFERENCES],
-        "software_versions": _standalone_software_versions(
+        "software_versions": collect_software_versions(
             ("anndata", "numpy", "pandas", "scvi-tools", "torch", "lightning"),
             openbio_version=openbio_version,
         ),
@@ -663,7 +639,8 @@ def scvi_de_code(
         _validate_exact_text_column,
         canonicalize_scvi_de_table,
         _top_effects,
-        _standalone_software_versions,
+        _package_version,
+        collect_software_versions,
         _standalone_accelerator_runtime,
         _analyze_scvi_model_de_evidence_core,
     )

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from comfy_api.latest import io
 
-from .expression_source import ExpressionSourceSpec
-from .node_types import AnnDataType, SummaryResultType
+from .expression_source import _PCA_SPEC
+from .node_types import AnnDataType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/dimension-reduction"
 CLUSTERING_CATEGORY = "openbio/single-cell/clustering"
@@ -12,7 +12,7 @@ SUPPORTED_GRAPH_LAYOUTS = ("fr", "kk", "fa")
 
 
 class OpenBioSingleCellPCA(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(description="PCA source", default="layer", layer_default="log1p_norm")
+    EXPRESSION_SOURCE = _PCA_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -29,11 +29,7 @@ class OpenBioSingleCellPCA(io.ComfyNode):
                 io.Float.Input("max_output_gib", default=2.0, step=0.25, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=MAX_RANDOM_SEED, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 
@@ -57,11 +53,7 @@ class OpenBioSingleCellNeighbors(io.ComfyNode):
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=MAX_RANDOM_SEED, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 
@@ -81,11 +73,7 @@ class OpenBioSingleCellUMAP(io.ComfyNode):
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=MAX_RANDOM_SEED, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 
@@ -110,11 +98,7 @@ class OpenBioSingleCellTSNE(io.ComfyNode):
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=MAX_RANDOM_SEED, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 
@@ -135,11 +119,7 @@ class OpenBioSingleCellForceDirectedGraph(io.ComfyNode):
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=MAX_RANDOM_SEED, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 
@@ -164,11 +144,7 @@ class OpenBioSingleCellLeiden(io.ComfyNode):
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=MAX_RANDOM_SEED, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 

@@ -184,51 +184,9 @@ def _cnv_axes(adata, *, operation):
     return tuple(obs_names), tuple(var_names)
 
 
-def _cnv_expression_state(adata, *, source_kind, layer_name):
-    x_state = "unknown"
-    x_evidence = None
-    layer_states = {}
-    metadata_record = adata.uns.get("openbio_singlecell")
-    history = metadata_record.get("analysis_history") if isinstance(metadata_record, Mapping) else None
-    entries = history.values() if isinstance(history, Mapping) else ()
-    for entry in entries:
-        if not isinstance(entry, Mapping):
-            continue
-        operation = entry.get("operation")
-        parameters = entry.get("parameters")
-        parameters = parameters if isinstance(parameters, Mapping) else {}
-        if operation == "snapshot_expression":
-            layer_states["counts"] = ("counts", "OpenBio Snapshot Expression history")
-            if parameters.get("source") == "X":
-                x_state, x_evidence = "counts", "OpenBio Snapshot Expression history"
-        elif operation == "normalize_to_layer":
-            key = parameters.get("output_layer")
-            transform = parameters.get("transform")
-            if isinstance(key, str):
-                state = "logged" if transform == "log1p" else "transformed" if transform == "sqrt" else "normalized"
-                layer_states[key] = (state, "OpenBio Normalize To Layer history")
-        elif operation == "pearson_residuals_to_layer":
-            key = parameters.get("output_layer")
-            if isinstance(key, str):
-                layer_states[key] = ("pearson_residuals", "OpenBio Pearson Residuals history")
-        elif operation == "scale_to_layer":
-            key = parameters.get("output_layer")
-            if isinstance(key, str):
-                layer_states[key] = ("scaled", "OpenBio Scale history")
-        if operation == "normalize_total":
-            x_state, x_evidence = "normalized", "OpenBio Normalize Total history"
-        elif operation == "log1p":
-            x_state, x_evidence = "logged", "OpenBio Log1p history"
-    if source_kind == "layer":
-        return layer_states.get(layer_name, ("unknown", None))
-    if source_kind == "X" and x_state == "unknown" and isinstance(adata.uns.get("log1p"), Mapping):
-        return "logged", "AnnData uns['log1p'] marker"
-    return x_state, x_evidence
-
-
 def _cnv_source_matrix(adata, *, source_kind, layer_name, operation, numpy, scipy_sparse):
     if source_kind not in {"X", "layer"}:
-        raise ValueError(f"{operation} source must be 'X' or 'layer'; Raw contains counts and is not supported.")
+        raise ValueError(f"{operation} source must be 'X' or 'layer'; Raw is not supported.")
     if source_kind == "layer":
         layer_name = _cnv_key(layer_name, label=f"{operation} layer_name", allow_x_prefix=True)
         if layer_name not in adata.layers:
@@ -245,8 +203,7 @@ def _cnv_source_matrix(adata, *, source_kind, layer_name, operation, numpy, scip
         raise TypeError(f"{operation} expression source must contain real numeric values.")
     if values.size and not bool(numpy.isfinite(values).all()):
         raise ValueError(f"{operation} expression source must contain finite real numeric values.")
-    state, evidence = _cnv_expression_state(adata, source_kind=source_kind, layer_name=layer_name)
-    return matrix, layer_name, state, evidence
+    return matrix, layer_name
 
 
 def _cnv_csv(value, *, label):
@@ -837,7 +794,7 @@ def _cnv_run_infer(
     max_output_gib = _cnv_float(max_output_gib, label="Infer CNV max_output_gib", minimum=0.01)
     overwrite_existing = _cnv_bool(overwrite_existing, label="Infer CNV overwrite_existing")
     output_key = _cnv_key(output_key, label="Infer CNV output_key")
-    matrix, layer_name, state, state_evidence = _cnv_source_matrix(
+    matrix, layer_name = _cnv_source_matrix(
         adata,
         source_kind=source_kind,
         layer_name=layer_name,
@@ -992,8 +949,6 @@ def _cnv_run_infer(
     parameters = {
         "source_kind": source_kind,
         "layer_name": layer_name,
-        "expression_state": state,
-        "expression_state_evidence": state_evidence,
         "reference_key": design["reference_key"],
         "reference_categories": list(design["reference_categories"]),
         "sample_key": design["sample_key"],
@@ -1047,17 +1002,6 @@ def _cnv_run_infer(
         artifact, numpy=numpy, scipy_sparse=scipy_sparse, _owned=_worker_owned
     )
     report_warnings = _cnv_warning_messages(caught)
-    if state != "logged":
-        report_warnings.append(
-            f"The explicitly selected expression source is described as {state!r} "
-            f"({state_evidence or 'no available state evidence'}). infercnvpy practice recommends normalized "
-            "log-transformed expression; execution honored the expert selection without treating mutable history "
-            "as an authorization gate."
-        )
-    report_warnings.append(
-        "Full-gene completeness cannot be proven from the current AnnData feature axis; the selected source and "
-        "coordinate table were used as declared by the caller."
-    )
     if coordinates["implicit_chrM_added"]:
         report_warnings.append(
             "infercnvpy 0.6.1 always omits chrM; it was added to the effective exclusion set and disclosed."
@@ -1083,10 +1027,6 @@ def _cnv_run_infer(
         "source": {
             "kind": source_kind,
             "layer_name": layer_name,
-            "state": state,
-            "state_evidence": state_evidence,
-            "full_gene_completeness_verified": False,
-            "full_gene_completeness_basis": "caller-selected current feature axis",
             "cells": len(obs_names),
             "genes": len(var_names),
             "fingerprint_sha256": source_fingerprint,
@@ -1636,7 +1576,7 @@ def _cnv_run_score(
         limitations=(
             "The score is a group mean and every member receives the same value; it is not an independent per-cell measurement.",
             "Scores are not absolute copy number, tumor probabilities, calibrated cutoffs, or hypothesis tests.",
-            "Interpretation remains conditional on the grouping, reference, expression state, genome assembly, windows, and technical effects.",
+            "Interpretation remains conditional on the grouping, reference, selected expression source, genome assembly, windows, and technical effects.",
             "No tumor label or Sample-level Condition inference was performed.",
         ),
         references=_cnv_references("score"),
@@ -1658,7 +1598,6 @@ _CNV_INFER_SOURCE_HELPERS = (
     _cnv_axis_hash,
     _cnv_matrix_hash,
     _cnv_axes,
-    _cnv_expression_state,
     _cnv_source_matrix,
     _cnv_csv,
     _cnv_canonical_string_series,

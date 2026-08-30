@@ -383,7 +383,7 @@ def test_marker_rejects_invalid_grouping(science):
         _rank(adata, n_genes=3)
 
 
-def test_marker_external_count_like_and_noninteger_sources_are_disclosed(science):
+def test_marker_numeric_disclosures_do_not_infer_expression_state(science):
     template = _logged_adata(science, sparse_matrix=False)
     counts = science.ad.AnnData(
         X=template.X.copy(),
@@ -394,18 +394,21 @@ def test_marker_external_count_like_and_noninteger_sources_are_disclosed(science
     _count_table, _count_universe, count_summary, _count_code = _rank(counts, n_genes=3)
     assert any("count-like" in warning for warning in count_summary.summary["warnings"])
 
-    unknown = science.ad.AnnData(
+    external = science.ad.AnnData(
         X=template.X.copy(),
         obs=template.obs.copy(),
         var=template.var.copy(),
     )
-    unknown.layers["log1p_norm"] = template.layers["log1p_norm"].copy()
-    table, universe, summary, code = _rank(unknown, n_genes=3)
-    assert summary.summary["parameters"]["expression_state"] == "unknown"
-    assert "explicitly selected expression state" in " ".join(summary.summary["warnings"])
-    assert "nonstandard abundance" in summary.summary["methods"]
-    with pytest.warns(UserWarning, match="expert choice was honored"):
-        generated_table, generated_universe = _run_code(code, "rank_marker_genes", unknown)
+    external.layers["log1p_norm"] = template.layers["log1p_norm"].copy()
+    table, universe, summary, code = _rank(external, n_genes=3)
+    inferred_fields = {"expression_state", "expression_evidence", "expression_interpretation"}
+    assert inferred_fields.isdisjoint(table.parameters)
+    assert inferred_fields.isdisjoint(universe.parameters)
+    assert inferred_fields.isdisjoint(summary.summary["parameters"])
+    assert summary.summary["parameters"]["marker_source"] == "layer"
+    assert summary.summary["parameters"]["marker_layer_name"] == "log1p_norm"
+    assert "interpreted as" not in summary.summary["methods"]
+    generated_table, generated_universe = _run_code(code, "rank_marker_genes", external)
     science.pd.testing.assert_frame_equal(generated_table, table.table)
     science.pd.testing.assert_frame_equal(generated_universe, universe.table)
 

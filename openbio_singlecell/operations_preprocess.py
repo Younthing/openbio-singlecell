@@ -9,13 +9,18 @@ from typing import Any
 from . import dependencies
 from .analysis_reporting import AnalysisReference, make_analysis_report, summarize_numeric
 from .analysis_utils import finish_adata, matrix_totals_and_nonzero
-from .artifact_codecs import read_anndata
-from .artifact_envelope import result_metadata
-from .expression_source import ExpressionSource, ExpressionSourceSpec
+from .expression_source import (
+    _HVG_SPEC,
+    _NORMALIZE_LAYER_SPEC,
+    _NORMALIZE_TOTAL_SPEC,
+    _PEARSON_RESIDUAL_SPEC,
+    _SCALE_SPEC,
+    ExpressionSource,
+    ExpressionSourceSpec,
+)
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
-    require_artifact_input,
+    analysis_outputs,
+    read_anndata_input,
     require_input_names,
     require_parameters,
     write_anndata_output,
@@ -23,6 +28,11 @@ from .operations_input import (
 from .worker_protocol import JSONValue, OperationContext, ProtocolError, register_operation
 
 PREPROCESS_SOFTWARE_PACKAGES = ("scanpy", "anndata", "numpy", "pandas", "scipy")
+NORMALIZE_TOTAL_SOURCE = _NORMALIZE_TOTAL_SPEC
+NORMALIZE_LAYER_SOURCE = _NORMALIZE_LAYER_SPEC
+PEARSON_SOURCE = _PEARSON_RESIDUAL_SPEC
+HVG_SOURCE = _HVG_SPEC
+SCALE_SOURCE = _SCALE_SPEC
 SCANPY_REFERENCE = AnalysisReference(
     citation=(
         "Wolf FA, Angerer P, Theis FJ. SCANPY: large-scale single-cell gene expression data analysis. "
@@ -101,33 +111,6 @@ HVG_RESULT_COLUMNS = (
     "residual_variances",
 )
 
-NORMALIZE_TOTAL_SOURCE = ExpressionSourceSpec(
-    description="Normalize Total source",
-    layer_input_id="source_layer",
-    layer_default="counts",
-)
-NORMALIZE_LAYER_SOURCE = ExpressionSourceSpec(
-    description="Normalize source",
-    layer_input_id="source_layer",
-    layer_default="counts",
-)
-PEARSON_SOURCE = ExpressionSourceSpec(
-    description="Pearson residual source",
-    default="layer",
-    layer_input_id="source_layer",
-    layer_default="counts",
-)
-HVG_SOURCE = ExpressionSourceSpec(
-    description="Highly Variable Genes source",
-    default="layer",
-    layer_default="log1p_norm",
-)
-SCALE_SOURCE = ExpressionSourceSpec(
-    description="Scale source",
-    default="layer",
-    layer_default="log1p_norm",
-)
-
 
 def _matrix_values(matrix: Any) -> Any:
     science = dependencies.require_scientific_dependencies()
@@ -162,85 +145,6 @@ def _matrix_description(matrix: Any) -> dict[str, Any]:
         "value_min": value_min,
         "value_max": value_max,
     }
-
-
-def _expression_state(adata: Any) -> tuple[str, str | None]:
-    x_state = "logged_unverified" if isinstance(adata.uns.get("log1p"), Mapping) else "unknown"
-    x_evidence = "AnnData uns['log1p'] marker without normalization provenance" if x_state != "unknown" else None
-    metadata = adata.uns.get("openbio_singlecell")
-    history = metadata.get("analysis_history") if isinstance(metadata, Mapping) else None
-    entries = history.values() if isinstance(history, Mapping) else ()
-    for entry in entries:
-        if not isinstance(entry, Mapping):
-            continue
-        operation = entry.get("operation")
-        parameters = entry.get("parameters")
-        parameters = parameters if isinstance(parameters, Mapping) else {}
-        if operation == "snapshot_expression" and parameters.get("source") == "X":
-            x_state, x_evidence = "counts", "OpenBio Snapshot Expression history"
-        if operation == "normalize_total":
-            x_state, x_evidence = "normalized", "OpenBio Normalize Total history"
-        elif operation == "log1p":
-            if x_state == "normalized":
-                x_state, x_evidence = "logged", "OpenBio Normalize Total followed by Log1p history"
-            else:
-                x_state = "logged_unverified"
-                x_evidence = "OpenBio Log1p history without proven prior normalization"
-    return x_state, x_evidence
-
-
-def _history_entries(adata: Any) -> list[Mapping[str, Any]]:
-    metadata = adata.uns.get("openbio_singlecell")
-    if not isinstance(metadata, Mapping):
-        return []
-    history = metadata.get("analysis_history")
-    if not isinstance(history, Mapping):
-        return []
-    return [entry for entry in history.values() if isinstance(entry, Mapping)]
-
-
-def _feature_expression_state(adata: Any, expression: ExpressionSource) -> tuple[str, str | None]:
-    x_state = "logged_unverified" if isinstance(adata.uns.get("log1p"), Mapping) else "unknown"
-    x_evidence = "AnnData uns['log1p'] marker without normalization provenance" if x_state != "unknown" else None
-    layer_states: dict[str, tuple[str, str]] = {}
-    for entry in _history_entries(adata):
-        operation = entry.get("operation")
-        raw_parameters = entry.get("parameters")
-        entry_parameters = raw_parameters if isinstance(raw_parameters, Mapping) else {}
-        if operation == "snapshot_expression":
-            layer_states["counts"] = ("counts", "OpenBio Snapshot Expression history")
-            if entry_parameters.get("source") == "X":
-                x_state, x_evidence = "counts", "OpenBio Snapshot Expression history"
-        elif operation == "normalize_to_layer":
-            layer = entry_parameters.get("output_layer")
-            transform = entry_parameters.get("transform")
-            if isinstance(layer, str):
-                state = {"log1p": "logged", "none": "normalized", "sqrt": "transformed"}.get(
-                    transform,
-                    "derived",
-                )
-                layer_states[layer] = (state, "OpenBio Normalize to Layer history")
-        elif operation == "pearson_residuals_to_layer":
-            layer = entry_parameters.get("output_layer")
-            if isinstance(layer, str):
-                layer_states[layer] = ("pearson_residuals", "OpenBio Pearson Residuals history")
-        elif operation == "scale_to_layer":
-            layer = entry_parameters.get("output_layer")
-            if isinstance(layer, str):
-                layer_states[layer] = ("scaled", "OpenBio Scale history")
-
-        if operation == "normalize_total":
-            x_state, x_evidence = "normalized", "OpenBio Normalize Total history"
-        elif operation == "log1p":
-            if x_state == "normalized":
-                x_state, x_evidence = "logged", "OpenBio Normalize Total followed by Log1p history"
-            else:
-                x_state = "logged_unverified"
-                x_evidence = "OpenBio Log1p history without proven prior normalization"
-
-    if expression.kind == "layer":
-        return layer_states.get(expression.layer_name, ("unknown", None))
-    return x_state, x_evidence
 
 
 def _expression_source_label(expression: ExpressionSource) -> str:
@@ -341,24 +245,13 @@ def _validate_count_source(
     expression: ExpressionSource,
     *,
     operation: str,
-) -> tuple[Any, Any, list[str], str, str | None]:
+) -> tuple[Any, Any, list[str]]:
     science = dependencies.require_scientific_dependencies()
     matrix = expression.matrix(adata)
     if tuple(matrix.shape) != tuple(adata.shape):
         raise ValueError(f"{operation} source must align to the current AnnData shape.")
     values = _validate_finite_numeric_matrix(matrix, source_label=f"{operation} source")
-    state, evidence = _feature_expression_state(adata, expression)
     warnings: list[str] = []
-    if state != "counts":
-        detail = (
-            f"provenance describes the selected source as {state} expression ({evidence})"
-            if state != "unknown"
-            else "OpenBio provenance cannot prove the selected expression state"
-        )
-        warnings.append(
-            f"{detail}; total-count scaling will honor the expert-selected matrix but must not be interpreted "
-            "as verified raw UMI normalization."
-        )
     if values.size and bool((values < 0).any()):
         warnings.append(
             f"{operation} source contains negative expression values. Scanpy can scale this signed matrix, "
@@ -385,7 +278,7 @@ def _validate_count_source(
             f"{operation} source contains {negative_total_cells} cells with negative total expression; the "
             "resulting scale-factor signs require expert interpretation."
         )
-    return matrix, totals, warnings, state, evidence
+    return matrix, totals, warnings
 
 
 def _validate_strict_count_source(
@@ -394,13 +287,12 @@ def _validate_strict_count_source(
     *,
     operation: str,
     reject_zero_genes: bool,
-) -> tuple[Any, Any, Any, list[str], str, str | None]:
+) -> tuple[Any, Any, Any, list[str]]:
     science = dependencies.require_scientific_dependencies()
     matrix = expression.matrix(adata)
     if tuple(matrix.shape) != tuple(adata.shape):
         raise ValueError(f"{operation} source must align to the current AnnData shape.")
     values = _validate_finite_numeric_matrix(matrix, source_label=f"{operation} source")
-    state, evidence = _feature_expression_state(adata, expression)
     warnings: list[str] = []
     if values.size and bool((values < 0).any()):
         raise ValueError(f"{operation} source contains negative values outside the non-negative count-model domain.")
@@ -411,13 +303,6 @@ def _validate_strict_count_source(
             f"{operation} source contains fractional non-negative values. The selected count-based method is "
             "executable, but the input cannot be described as verified integer UMI counts."
         )
-    if state != "counts":
-        detail = (
-            f"provenance describes the source as {state} expression ({evidence})"
-            if state != "unknown"
-            else "OpenBio provenance cannot prove the selected expression state"
-        )
-        warnings.append(f"{detail}; honoring the expert-selected source without claiming verified raw UMI counts.")
     cell_totals, _ = matrix_totals_and_nonzero(matrix, axis=1)
     gene_totals, _ = matrix_totals_and_nonzero(matrix, axis=0)
     cell_totals = science.np.asarray(cell_totals, dtype=float)
@@ -428,7 +313,7 @@ def _validate_strict_count_source(
     zero_genes = int((gene_totals <= 0).sum())
     if reject_zero_genes and zero_genes:
         raise ValueError(f"{operation} source contains {zero_genes} genes with zero total counts; filter them first.")
-    return matrix, cell_totals, gene_totals, warnings, state, evidence
+    return matrix, cell_totals, gene_totals, warnings
 
 
 def _validate_logged_source(
@@ -436,7 +321,7 @@ def _validate_logged_source(
     expression: ExpressionSource,
     *,
     operation: str,
-) -> tuple[Any, Any, list[str], str, str | None]:
+) -> tuple[Any, Any]:
     science = dependencies.require_scientific_dependencies()
     matrix = expression.matrix(adata)
     if tuple(matrix.shape) != tuple(adata.shape):
@@ -446,26 +331,12 @@ def _validate_logged_source(
         raise ValueError(f"{operation} normalized log source contains negative expression values.")
     if values.size == 0 or not bool((values > 0).any()):
         raise ValueError(f"{operation} normalized log source contains no positive expression values.")
-    state, evidence = _feature_expression_state(adata, expression)
-    warnings: list[str] = []
-    if state == "logged_unverified":
-        warnings.append(
-            "The selected source has a Scanpy log1p marker, but OpenBio provenance cannot prove that total-count "
-            "normalization preceded logarithmization; confirm the external data contract."
-        )
-    elif state != "logged":
-        detail = (
-            f"provenance describes the source as {state} expression ({evidence})"
-            if state != "unknown"
-            else "OpenBio provenance cannot prove the source is normalized log1p expression"
-        )
-        warnings.append(f"{detail}; honoring the expert-selected source for the {operation} dispersion flavor.")
     totals, _ = matrix_totals_and_nonzero(matrix, axis=1)
     totals = science.np.asarray(totals, dtype=float)
     zero_cells = int((totals <= 0).sum())
     if zero_cells:
         raise ValueError(f"{operation} source contains {zero_cells} cells with zero total expression.")
-    return matrix, totals, warnings, state, evidence
+    return matrix, totals
 
 
 def _number(value: JSONValue, *, name: str, positive: bool = False, nonnegative: bool = False) -> float:
@@ -528,16 +399,11 @@ def _input_anndata(
 ) -> Any:
     require_input_names(inputs, {"adata"}, operation=operation)
     require_parameters(parameters, expected_parameters, operation=operation)
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    return read_anndata(root)
+    return read_anndata_input(inputs)
 
 
 def _records(context: OperationContext, adata: Any, report: Any, code: str) -> list[JSONValue]:
-    return [
-        write_anndata_output(context, adata),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(report, code, write_anndata_output(context, adata))
 
 
 def _validate_destination_layer(
@@ -594,39 +460,10 @@ def _log1p_code() -> str:
     return dedent(
         '''
         import warnings
-        from collections.abc import Mapping
 
         import numpy as np
         import scanpy as sc
         from scipy import sparse
-
-
-        def _openbio_log1p_state(adata):
-            x_state = "unknown"
-            x_evidence = None
-            metadata = adata.uns.get("openbio_singlecell")
-            history = metadata.get("analysis_history") if isinstance(metadata, Mapping) else None
-            entries = history.values() if isinstance(history, Mapping) else ()
-            for entry in entries:
-                if not isinstance(entry, Mapping):
-                    continue
-                operation = entry.get("operation")
-                parameters = entry.get("parameters")
-                parameters = parameters if isinstance(parameters, Mapping) else {}
-                if operation == "snapshot_expression" and parameters.get("source") == "X":
-                    x_state, x_evidence = "counts", "OpenBio Snapshot Expression history"
-                if operation == "normalize_total":
-                    x_state, x_evidence = "normalized", "OpenBio Normalize Total history"
-                elif operation == "log1p":
-                    if x_state == "normalized":
-                        x_state = "logged"
-                        x_evidence = "OpenBio Normalize Total followed by Log1p history"
-                    else:
-                        x_state = "logged_unverified"
-                        x_evidence = "OpenBio Log1p history without proven prior normalization"
-            if x_state != "logged" and isinstance(adata.uns.get("log1p"), Mapping):
-                return "logged_unverified", "AnnData uns['log1p'] marker without normalization provenance"
-            return x_state, x_evidence
 
 
         def log1p_expression(adata):
@@ -641,25 +478,10 @@ def _log1p_code() -> str:
                 raise ValueError("Log1p source contains non-finite expression values.")
             if values.size and bool((values <= -1).any()):
                 raise ValueError("Log1p source contains values <= -1 outside the finite real log1p domain.")
-            state, evidence = _openbio_log1p_state(adata)
             if values.size and bool((values < 0).any()):
                 warnings.warn(
                     "Log1p source contains values in (-1, 0); the transform is finite but the matrix is "
                     "not conventional non-negative expression.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-            if state in {"logged", "logged_unverified"}:
-                warnings.warn(
-                    f"Log1p provenance indicates an already log-transformed source ({evidence}); applying "
-                    "log1p again because the expert explicitly requested it.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-            elif state != "normalized":
-                warnings.warn(
-                    f"Log1p source state is {state!r} ({evidence}); applying the requested mathematical "
-                    "transform without claiming prior normalization.",
                     UserWarning,
                     stacklevel=2,
                 )
@@ -682,13 +504,7 @@ def log1p(
 ) -> list[JSONValue]:
     require_input_names(inputs, {"adata"}, operation="Log1p")
     require_parameters(parameters, set(), operation="Log1p")
-    root = require_artifact_input(
-        inputs,
-        "adata",
-        kind=ANNDATA_KIND,
-        codec=ANNDATA_CODEC,
-    )
-    adata = read_anndata(root)
+    adata = read_anndata_input(inputs)
     if bool(adata.isbacked):
         raise ValueError("Log1p requires an in-memory AnnData.")
     if adata.n_obs == 0 or adata.n_vars == 0:
@@ -699,24 +515,12 @@ def log1p(
         raise ValueError("Log1p source contains non-finite expression values.")
     if values.size and bool((values <= -1).any()):
         raise ValueError("Log1p source contains values <= -1 outside the finite real log1p domain.")
-    state, evidence = _expression_state(adata)
     scientific_warnings = []
     if values.size and bool((values < 0).any()):
         scientific_warnings.append(
             "Log1p source contains values in (-1, 0); the transform is finite but the matrix is not "
             "conventional non-negative expression."
         )
-    if state in {"logged", "logged_unverified"}:
-        scientific_warnings.append(
-            f"Log1p provenance indicates an already log-transformed source ({evidence}); applying log1p "
-            "again because the expert explicitly requested it."
-        )
-    elif state != "normalized":
-        scientific_warnings.append(
-            f"Log1p source state is {state!r} ({evidence}); applying the requested mathematical transform "
-            "without claiming prior normalization."
-        )
-
     started_at = time.perf_counter()
     cells, genes = int(adata.n_obs), int(adata.n_vars)
     input_description = _matrix_description(matrix)
@@ -753,8 +557,6 @@ def log1p(
             "cells": cells,
             "features": genes,
             "source": "X",
-            "source_state": state,
-            "source_state_evidence": evidence,
             "input_matrix": input_description,
             "output_matrix": _matrix_description(adata.X),
             "base": "natural",
@@ -769,7 +571,7 @@ def log1p(
         warnings=scientific_warnings,
         limitations=(
             "Log1p does not perform library-size normalization, Technical batch integration, or scaling.",
-            "Log1p expression is not a count matrix and must not be used as the Raw snapshot for count models.",
+            "Count-based methods require an explicitly selected count expression source.",
         ),
         input_cells=cells,
         input_genes=genes,
@@ -779,11 +581,10 @@ def log1p(
     return _records(context, adata, report, code)
 
 
-def _generated_state_helpers() -> str:
+def _generated_source_helpers() -> str:
     return dedent(
         """
         import warnings
-        from collections.abc import Mapping
 
         import numpy as np
         import scanpy as sc
@@ -791,90 +592,15 @@ def _generated_state_helpers() -> str:
         from scipy import sparse
 
 
-        def _openbio_history_entries(adata):
-            metadata = adata.uns.get("openbio_singlecell")
-            if not isinstance(metadata, Mapping):
-                return []
-            history = metadata.get("analysis_history")
-            if not isinstance(history, Mapping):
-                return []
-            return [entry for entry in history.values() if isinstance(entry, Mapping)]
-
-
-        def _openbio_expression_state(adata, source_kind, layer_name=None):
-            x_state = "unknown"
-            x_evidence = None
-            layer_states = {}
-            for entry in _openbio_history_entries(adata):
-                operation = entry.get("operation")
-                parameters = entry.get("parameters")
-                parameters = parameters if isinstance(parameters, Mapping) else {}
-                if operation == "snapshot_expression":
-                    layer_states["counts"] = ("counts", "OpenBio Snapshot Expression history")
-                    if parameters.get("source") == "X":
-                        x_state, x_evidence = "counts", "OpenBio Snapshot Expression history"
-                elif operation == "normalize_to_layer":
-                    output_layer = parameters.get("output_layer")
-                    if isinstance(output_layer, str):
-                        state = {
-                            "log1p": "logged",
-                            "none": "normalized",
-                            "sqrt": "transformed",
-                        }.get(parameters.get("transform"), "derived")
-                        layer_states[output_layer] = (state, "OpenBio Normalize to Layer history")
-                elif operation == "pearson_residuals_to_layer":
-                    output_layer = parameters.get("output_layer")
-                    if isinstance(output_layer, str):
-                        layer_states[output_layer] = (
-                            "pearson_residuals",
-                            "OpenBio Pearson Residuals history",
-                        )
-                elif operation == "scale_to_layer":
-                    output_layer = parameters.get("output_layer")
-                    if isinstance(output_layer, str):
-                        layer_states[output_layer] = ("scaled", "OpenBio Scale history")
-
-                if operation == "normalize_total":
-                    x_state, x_evidence = "normalized", "OpenBio Normalize Total history"
-                elif operation == "log1p":
-                    if x_state == "normalized":
-                        x_state, x_evidence = (
-                            "logged",
-                            "OpenBio Normalize Total followed by Log1p history",
-                        )
-                    else:
-                        x_state, x_evidence = (
-                            "logged_unverified",
-                            "OpenBio Log1p history without proven prior normalization",
-                        )
-
-            if source_kind == "layer":
-                return layer_states.get(layer_name, ("unknown", None))
-            if x_state != "logged" and isinstance(adata.uns.get("log1p"), Mapping):
-                return "logged_unverified", "AnnData uns['log1p'] marker without normalization provenance"
-            return x_state, x_evidence
-
-
-        def _openbio_validate_count_source(adata, matrix, source_kind, layer_name, operation):
+        def _openbio_validate_count_source(adata, matrix, operation):
             if tuple(matrix.shape) != tuple(adata.shape):
                 raise ValueError(f"{operation} source must align to the current AnnData shape.")
-            state, evidence = _openbio_expression_state(adata, source_kind, layer_name)
             values = np.asarray(matrix.data if sparse.issparse(matrix) else np.asarray(matrix).ravel())
             if values.size and not np.issubdtype(values.dtype, np.number):
                 raise TypeError(f"{operation} source must contain numeric values.")
             if values.size and not bool(np.isfinite(values).all()):
                 raise ValueError(f"{operation} source contains non-finite expression values.")
             scientific_warnings = []
-            if state != "counts":
-                detail = (
-                    f"provenance describes the selected source as {state} expression ({evidence})"
-                    if state != "unknown"
-                    else "OpenBio provenance cannot prove the selected expression state"
-                )
-                scientific_warnings.append(
-                    f"{detail}; total-count scaling will honor the expert-selected matrix but must not be "
-                    "interpreted as verified raw UMI normalization."
-                )
             if values.size and bool((values < 0).any()):
                 scientific_warnings.append(
                     f"{operation} source contains negative expression values. Scanpy can scale this signed "
@@ -917,7 +643,7 @@ def _normalize_total_code(expression: ExpressionSource, target_sum: float) -> st
         else "sc.pp.normalize_total(adata, target_sum=target_sum, exclude_highly_expressed=False, inplace=True)"
     )
     return (
-        _generated_state_helpers()
+        _generated_source_helpers()
         + "\n\n\n"
         + dedent(
             f"""
@@ -938,7 +664,7 @@ def _normalize_total_code(expression: ExpressionSource, target_sum: float) -> st
                     matrix = adata.layers[layer_name]
                 else:
                     matrix = adata.X
-                _openbio_validate_count_source(adata, matrix, source_kind, layer_name, operation)
+                _openbio_validate_count_source(adata, matrix, operation)
                 {execution}
                 normalized_values = np.asarray(
                     adata.X.data if sparse.issparse(adata.X) else np.asarray(adata.X).ravel()
@@ -967,7 +693,7 @@ def normalize_total(
     _require_in_memory_nonempty(adata, operation="Normalize Total")
     target_sum = _number(parameters["target_sum"], name="Normalize Total target_sum", positive=True)
     expression = _source_parameter(parameters, NORMALIZE_TOTAL_SOURCE, adata)
-    matrix, input_totals, report_warnings, state, evidence = _validate_count_source(
+    matrix, input_totals, report_warnings = _validate_count_source(
         adata,
         expression,
         operation="Normalize Total",
@@ -1041,8 +767,6 @@ def normalize_total(
             "cells": cells,
             "features": genes,
             "source": source_label,
-            "source_state": state,
-            "source_state_evidence": evidence,
             "input_matrix": input_description,
             "input_integer_like": input_integer_like,
             "input_cell_totals": summarize_numeric(input_totals),
@@ -1063,7 +787,7 @@ def normalize_total(
         limitations=(
             "Total-count scaling adjusts library depth only; it is not Technical batch integration or "
             "Sample-level inference.",
-            "The normalized X is derived expression and must not replace the Raw snapshot for count-dependent models.",
+            "Count-based methods require an explicitly selected count expression source.",
         ),
         input_cells=cells,
         input_genes=genes,
@@ -1081,7 +805,7 @@ def _normalize_to_layer_code(
 ) -> str:
     layer_name = expression.layer_name if expression.kind == "layer" else None
     return (
-        _generated_state_helpers()
+        _generated_source_helpers()
         + "\n\n\n"
         + dedent(
             f"""
@@ -1112,7 +836,7 @@ def _normalize_to_layer_code(
                     matrix = adata.layers[source_layer]
                 else:
                     matrix = adata.X
-                _openbio_validate_count_source(adata, matrix, source_kind, source_layer, operation)
+                _openbio_validate_count_source(adata, matrix, operation)
                 work = AnnData(X=matrix.copy())
                 sc.pp.normalize_total(
                     work,
@@ -1175,7 +899,7 @@ def normalize_to_layer(
         parameters["overwrite_existing"],
         operation=operation,
     )
-    matrix, input_totals, report_warnings, state, evidence = _validate_count_source(
+    matrix, input_totals, report_warnings = _validate_count_source(
         adata,
         expression,
         operation=operation,
@@ -1252,8 +976,6 @@ def normalize_to_layer(
             "cells": cells,
             "features": genes,
             "source": source_label,
-            "source_state": state,
-            "source_state_evidence": evidence,
             "input_matrix": input_description,
             "input_integer_like": _matrix_is_integer_like(matrix),
             "input_cell_totals": summarize_numeric(input_totals),
@@ -1277,7 +999,7 @@ def normalize_to_layer(
         limitations=(
             "Only the intermediate linear normalized matrix has cell totals equal to target_sum; transformed "
             "layer sums do not.",
-            "The derived layer is not counts and must not replace the Raw snapshot in count-dependent models.",
+            "Count-based methods require an explicitly selected count expression source.",
         ),
         input_cells=cells,
         input_genes=genes,
@@ -1289,7 +1011,7 @@ def normalize_to_layer(
 
 def _generated_feature_helpers() -> str:
     return (
-        _generated_state_helpers()
+        _generated_source_helpers()
         + "\n\n\n"
         + dedent(
             """
@@ -1343,10 +1065,7 @@ def _generated_feature_helpers() -> str:
                 return matrix, values
 
 
-            def _openbio_validate_strict_counts(
-                adata, matrix, values, source_kind, source_layer, operation, reject_zero_genes
-            ):
-                state, evidence = _openbio_expression_state(adata, source_kind, source_layer)
+            def _openbio_validate_strict_counts(matrix, values, operation, reject_zero_genes):
                 if values.size and (values < 0).any():
                     raise ValueError(
                         f"{operation} source contains negative values outside the non-negative count-model domain."
@@ -1357,17 +1076,6 @@ def _generated_feature_helpers() -> str:
                     warnings.warn(
                         f"{operation} source contains fractional non-negative values. The selected count-based "
                         "method is executable, but the input cannot be described as verified integer UMI counts.",
-                        UserWarning,
-                        stacklevel=2,
-                    )
-                if state != "counts":
-                    detail = (
-                        f"provenance describes the source as {state} expression ({evidence})"
-                        if state != "unknown"
-                        else "OpenBio provenance cannot prove the selected expression state"
-                    )
-                    warnings.warn(
-                        f"{detail}; honoring the expert-selected source without claiming verified raw UMI counts.",
                         UserWarning,
                         stacklevel=2,
                     )
@@ -1385,30 +1093,11 @@ def _generated_feature_helpers() -> str:
                     )
 
 
-            def _openbio_validate_logged(adata, matrix, values, source_kind, source_layer, operation):
+            def _openbio_validate_logged(matrix, values, operation):
                 if values.size and (values < 0).any():
                     raise ValueError(f"{operation} normalized log source contains negative expression values.")
                 if values.size == 0 or not (values > 0).any():
                     raise ValueError(f"{operation} normalized log source contains no positive expression values.")
-                state, evidence = _openbio_expression_state(adata, source_kind, source_layer)
-                if state == "logged_unverified":
-                    warnings.warn(
-                        "The selected source has a Scanpy log1p marker, but OpenBio provenance cannot prove that "
-                        "total-count normalization preceded logarithmization; confirm the external data contract.",
-                        UserWarning,
-                        stacklevel=2,
-                    )
-                elif state != "logged":
-                    detail = (
-                        f"provenance describes the source as {state} expression ({evidence})"
-                        if state != "unknown"
-                        else "OpenBio provenance cannot prove the source is normalized log1p expression"
-                    )
-                    warnings.warn(
-                        f"{detail}; honoring the expert-selected source for the {operation} dispersion flavor.",
-                        UserWarning,
-                        stacklevel=2,
-                    )
                 cell_totals = np.asarray(matrix.sum(axis=1), dtype=float).ravel()
                 zero_cells = int((cell_totals <= 0).sum())
                 if zero_cells:
@@ -1466,28 +1155,6 @@ def _generated_feature_helpers() -> str:
                         UserWarning,
                         stacklevel=2,
                     )
-
-
-            def _openbio_validate_raw_snapshot(adata, operation):
-                raw = adata.raw
-                if raw is None:
-                    raise ValueError(f"{operation} subset=True requires a full-gene Raw snapshot of post-QC counts.")
-                if raw.n_obs != adata.n_obs or not raw.obs_names.equals(adata.obs_names):
-                    raise ValueError(f"{operation} Raw snapshot observations are not aligned to the current AnnData.")
-                if not raw.var_names.is_unique:
-                    raise ValueError(f"{operation} Raw snapshot requires unique feature identifiers.")
-                if raw.n_vars < adata.n_vars or not adata.var_names.isin(raw.var_names).all():
-                    raise ValueError(f"{operation} Raw snapshot does not preserve the full current feature set.")
-                values = np.asarray(raw.X.data if sparse.issparse(raw.X) else np.asarray(raw.X).ravel())
-                if values.size == 0 or (values < 0).any() or not (values > 0).any():
-                    raise ValueError(f"{operation} Raw snapshot is not a non-negative count matrix.")
-                if not np.isfinite(values).all() or not np.allclose(
-                    values, np.rint(values), rtol=0.0, atol=1e-8
-                ):
-                    raise ValueError(f"{operation} Raw snapshot is not an integer count matrix.")
-                totals = np.asarray(raw.X.sum(axis=1), dtype=float).ravel()
-                if (totals <= 0).any():
-                    raise ValueError(f"{operation} Raw snapshot contains cells with zero total counts.")
             """
         ).strip()
     )
@@ -1530,11 +1197,8 @@ def _pearson_residuals_code(
                     raise ValueError("Pearson Residuals theta must be greater than zero.")
                 matrix, values = _openbio_feature_source(adata, source_kind, source_layer, operation)
                 _openbio_validate_strict_counts(
-                    adata,
                     matrix,
                     values,
-                    source_kind,
-                    source_layer,
                     operation,
                     reject_zero_genes=True,
                 )
@@ -1586,7 +1250,7 @@ def pearson_residuals_to_layer(
     _require_in_memory_nonempty(adata, operation=operation)
     _require_unique_axes(adata, operation=operation)
     expression = _source_parameter(parameters, PEARSON_SOURCE, adata)
-    matrix, cell_totals, gene_totals, report_warnings, state, evidence = _validate_strict_count_source(
+    matrix, cell_totals, gene_totals, report_warnings = _validate_strict_count_source(
         adata,
         expression,
         operation=operation,
@@ -1698,8 +1362,6 @@ def pearson_residuals_to_layer(
             "cells": cells,
             "features": genes,
             "source": source_label,
-            "source_state": state,
-            "source_state_evidence": evidence,
             "input_matrix": input_description,
             "input_integer_like": _matrix_is_integer_like(matrix),
             "input_cell_totals": summarize_numeric(cell_totals),
@@ -1786,20 +1448,6 @@ def _batch_group_sizes(
     return groups, warnings
 
 
-def _raw_snapshot_description(adata: Any, *, operation: str) -> dict[str, Any]:
-    raw = adata.raw
-    if raw is None:
-        raise ValueError(f"{operation} subset=True requires a full-gene Raw snapshot of post-QC counts.")
-    if int(raw.n_obs) != int(adata.n_obs) or not raw.obs_names.equals(adata.obs_names):
-        raise ValueError(f"{operation} Raw snapshot observations are not aligned to the current AnnData.")
-    if not bool(raw.var_names.is_unique):
-        raise ValueError(f"{operation} Raw snapshot requires unique feature identifiers.")
-    missing = adata.var_names.difference(raw.var_names)
-    if len(missing):
-        raise ValueError(f"{operation} Raw snapshot does not contain every current feature.")
-    return {"present": True, "cells": int(raw.n_obs), "features": int(raw.n_vars)}
-
-
 def _highly_variable_genes_code(
     expression: ExpressionSource,
     *,
@@ -1849,14 +1497,11 @@ def _highly_variable_genes_code(
                     )
                 matrix, values = _openbio_feature_source(adata, source_kind, source_layer, operation)
                 if flavor in {{"seurat", "cell_ranger"}}:
-                    _openbio_validate_logged(adata, matrix, values, source_kind, source_layer, operation)
+                    _openbio_validate_logged(matrix, values, operation)
                 else:
                     _openbio_validate_strict_counts(
-                        adata,
                         matrix,
                         values,
-                        source_kind,
-                        source_layer,
                         operation,
                         reject_zero_genes=False,
                     )
@@ -1874,15 +1519,6 @@ def _highly_variable_genes_code(
                     operation,
                     1 if flavor == "pearson_residuals" else 2,
                 )
-                if subset:
-                    try:
-                        _openbio_validate_raw_snapshot(adata, operation)
-                    except (TypeError, ValueError) as error:
-                        warnings.warn(
-                            f"{{error}} Subsetting will proceed, but no verified full-gene Raw snapshot is retained.",
-                            UserWarning,
-                            stacklevel=2,
-                        )
                 stale = [column for column in _OPENBIO_HVG_COLUMNS if column in adata.var]
                 if (stale or "hvg" in adata.uns) and not overwrite_existing:
                     raise ValueError(
@@ -1986,22 +1622,21 @@ def highly_variable_genes(
             "at most the eligible feature count."
         )
     if flavor in LOG_HVG_FLAVORS:
-        matrix, cell_totals, state_warnings, state, evidence = _validate_logged_source(
+        matrix, cell_totals = _validate_logged_source(
             adata,
             expression,
             operation=operation,
         )
-        report_warnings.extend(state_warnings)
         gene_totals, gene_nonzero = matrix_totals_and_nonzero(matrix, axis=0)
         count_validation = False
     else:
-        matrix, cell_totals, gene_totals, state_warnings, state, evidence = _validate_strict_count_source(
+        matrix, cell_totals, gene_totals, source_warnings = _validate_strict_count_source(
             adata,
             expression,
             operation=operation,
             reject_zero_genes=False,
         )
-        report_warnings.extend(state_warnings)
+        report_warnings.extend(source_warnings)
         _, gene_nonzero = matrix_totals_and_nonzero(matrix, axis=0)
         count_validation = True
     science = dependencies.require_scientific_dependencies()
@@ -2020,20 +1655,6 @@ def highly_variable_genes(
     missing_keep = [gene for gene in requested_keep if gene not in adata.var_names]
     if missing_keep:
         report_warnings.append(f"Requested keep genes were not found: {missing_keep}")
-    raw_snapshot: dict[str, Any] = {
-        "present": adata.raw is not None,
-        "cells": int(adata.raw.n_obs) if adata.raw is not None else None,
-        "features": int(adata.raw.n_vars) if adata.raw is not None else None,
-        "validated_full_gene_snapshot": False,
-    }
-    if subset:
-        try:
-            raw_snapshot = {**_raw_snapshot_description(adata, operation=operation), "validated_full_gene_snapshot": True}
-        except (TypeError, ValueError) as error:
-            raw_snapshot["validation_issue"] = str(error)
-            report_warnings.append(
-                f"{error} Subsetting will proceed, but no verified full-gene Raw snapshot is retained."
-            )
     prior_columns = [column for column in HVG_RESULT_COLUMNS if column in adata.var]
     prior_uns = "hvg" in adata.uns
     if (prior_columns or prior_uns) and not overwrite_existing:
@@ -2204,8 +1825,6 @@ def highly_variable_genes(
             "output_cells": int(adata.n_obs),
             "output_features": int(adata.n_vars),
             "source": source_label,
-            "source_state": state,
-            "source_state_evidence": evidence,
             "source_matrix": _matrix_description(matrix),
             "count_model_validation": count_validation,
             "input_cell_totals": summarize_numeric(cell_totals),
@@ -2229,7 +1848,6 @@ def highly_variable_genes(
             "highly_variable_intersection_rate": intersection_rate,
             "prior_result_columns_replaced": prior_columns,
             "prior_hvg_uns_replaced": prior_uns,
-            "raw_snapshot": raw_snapshot,
             "raw_preserved": True,
             "subset_applied": subset,
         },
@@ -2372,12 +1990,6 @@ def scale(
             "With zero_center=False, Scanpy clips only the positive upper tail; negative values are not "
             "symmetrically truncated."
         )
-    state, evidence = _feature_expression_state(adata, expression)
-    if state in {"counts", "unknown"}:
-        report_warnings.append(
-            f"The selected source state is {state!r}; gene scaling is generally applied to a normalized "
-            "continuous expression representation."
-        )
     feature_mean, feature_std, constant_mask = _scale_feature_statistics(matrix)
     started_at = time.perf_counter()
     cells, genes = int(adata.n_obs), int(adata.n_vars)
@@ -2440,8 +2052,6 @@ def scale(
             "cells": cells,
             "features": genes,
             "source": source_label,
-            "source_state": state,
-            "source_state_evidence": evidence,
             "input_matrix": input_description,
             "feature_means_before_scaling": summarize_numeric(feature_mean),
             "feature_standard_deviations_ddof1": summarize_numeric(feature_std),

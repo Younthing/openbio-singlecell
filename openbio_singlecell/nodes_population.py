@@ -3,17 +3,12 @@ from __future__ import annotations
 from comfy_api.latest import io
 
 from .augur import AUGUR_CLASSIFIERS, AUGUR_VIEWS
-from .expression_source import ExpressionSourceSpec
-from .node_types import AnnDataType, AugurResultType, PlotResultType, SummaryResultType, TableResultType
+from .expression_source import _AUGUR_SPEC
+from .node_types import AnnDataType, AugurResultType, PlotResultType, TableResultType, analysis_outputs
 
 PRIORITY_CATEGORY = "openbio/single-cell/cell-prioritization"
 DIAGNOSTIC_CATEGORY = "openbio/single-cell/diagnostics"
-AUGUR_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="Augur count source",
-    default="X",
-    include_raw=True,
-    layer_default="counts",
-)
+AUGUR_EXPRESSION_SOURCE = _AUGUR_SPEC
 
 
 class OpenBioSingleCellAugur(io.ComfyNode):
@@ -66,11 +61,7 @@ class OpenBioSingleCellAugur(io.ComfyNode):
                     advanced=True,
                 ),
             ],
-            outputs=[
-                AugurResultType.Output(display_name="result"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AugurResultType.Output(display_name="result")),
         )
 
 
@@ -85,11 +76,7 @@ class OpenBioSingleCellAugurResults(io.ComfyNode):
                 AugurResultType.Input("result"),
                 io.Combo.Input("view", options=list(AUGUR_VIEWS), default="priorities"),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
 
@@ -122,12 +109,9 @@ class OpenBioSingleCellCellTypeCorrelation(io.ComfyNode):
                 io.Int.Input("max_groups", default=200, min=2, max=1000, advanced=True),
                 io.Int.Input("max_output_rows", default=100000, min=1, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                PlotResultType.Output(display_name="plot"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(
+                TableResultType.Output(display_name="table"), PlotResultType.Output(display_name="plot")
+            ),
         )
 
 

@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from pandas import DataFrame
 
 
-SCVI_MODEL_ARTIFACT_SCHEMA = "openbio-singlecell/scvi-model/v2"
+SCVI_MODEL_ARTIFACT_SCHEMA = "openbio-singlecell/scvi-model/v3"
 SCVI_GLOBAL_RNG_LOCK = threading.RLock()
 
 
@@ -292,7 +292,7 @@ class SCVIModel:
             raise ValueError("SCVIModel requires a trained scVI model.")
         if not isinstance(training_parameters, Mapping):
             raise TypeError("SCVIModel training_parameters must be a mapping.")
-        required_provenance = ("source", "count_source_state", "count_source_state_evidence")
+        required_provenance = ("source",)
         missing_provenance = [key for key in required_provenance if key not in training_parameters]
         if missing_provenance:
             raise ValueError(
@@ -317,21 +317,6 @@ class SCVIModel:
         self._model = model
         self._registered_adata = registered_adata
         self._training_parameters = copy.deepcopy(dict(training_parameters))
-        allowed_count_states = {
-            "counts",
-            "unknown",
-            "normalized",
-            "logged",
-            "scaled",
-            "transformed",
-            "pearson_residuals",
-            "derived",
-        }
-        if self._training_parameters["count_source_state"] not in allowed_count_states:
-            raise ValueError(
-                f"SCVIModel count_source_state must be one of {sorted(allowed_count_states)!r}; "
-                f"observed {self._training_parameters['count_source_state']!r}."
-            )
         self._diagnostics = copy.deepcopy(dict(diagnostics or {}))
         _json_safe(self._training_parameters)
         _json_safe(self._diagnostics)
@@ -401,10 +386,6 @@ class SCVIModel:
                     "fitted_state_fingerprint_sha256": self._state_fingerprint,
                     "registered_count_fingerprint_sha256": self._count_fingerprint,
                     "registered_count_source": self._registered_count_source,
-                    "registered_count_state": self._training_parameters["count_source_state"],
-                    "registered_count_state_evidence": copy.deepcopy(
-                        self._training_parameters["count_source_state_evidence"]
-                    ),
                     "registered_setup_metadata_fingerprint_sha256": self._registered_obs_fingerprint,
                     "observation_axis_fingerprint_sha256": self._observation_fingerprint,
                     "feature_axis_fingerprint_sha256": self._feature_fingerprint,

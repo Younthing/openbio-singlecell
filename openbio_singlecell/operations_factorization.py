@@ -6,8 +6,6 @@ from typing import TYPE_CHECKING, Any
 
 from .analysis_reporting import AnalysisReference, make_analysis_report, summarize_numeric
 from .analysis_utils import finish_adata, make_table_result, matrix_totals_and_nonzero
-from .artifact_codecs import read_anndata, write_table
-from .artifact_envelope import result_metadata
 from .cnmf_native_codec import CNMF_NATIVE_CODEC, checkout_cnmf_run, write_cnmf_run
 from .cnmf_run import CNMFRun
 from .cnmf_standalone import (
@@ -23,14 +21,15 @@ from .cnmf_standalone import (
 from .cnmf_standalone import (
     cnmf_rank_survey as _cnmf_rank_survey_science,
 )
-from .expression_source import DynamicExpressionSource, ExpressionSource, ExpressionSourceSpec
+from .expression_source import _CNMF_SPEC, DynamicExpressionSource, ExpressionSource
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
+    analysis_outputs,
+    read_anndata_input,
     require_artifact_input,
     require_input_names,
     require_parameters,
     write_anndata_output,
+    write_table_output,
 )
 from .worker_protocol import JSONValue, OperationContext, register_operation
 
@@ -213,12 +212,7 @@ def _warning_text(records: tuple[tuple[str, int], ...]) -> list[str]:
 
 
 class OpenBioSingleCellCNMFRankSurvey:
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="cNMF count source",
-        default="layer",
-        include_raw=True,
-        layer_default="counts",
-    )
+    EXPRESSION_SOURCE = _CNMF_SPEC
 
     @classmethod
     def execute(
@@ -270,11 +264,6 @@ class OpenBioSingleCellCNMFRankSurvey:
             ]
             warning_messages.extend(_warning_text(metadata.known_upstream_warnings))
             warning_messages.extend(metadata.input_advisories)
-            if metadata.source_state == "unknown":
-                warning_messages.append(
-                    "OpenBio provenance cannot establish the selected source's measurement scale or transformation "
-                    "history; confirm the external data contract before interpretation."
-                )
             if metadata.n_iter < 100:
                 warning_messages.append(
                     "This survey uses fewer than the commonly documented 100 NMF restarts per K; stability evidence may be weak."
@@ -324,8 +313,6 @@ class OpenBioSingleCellCNMFRankSurvey:
                     "source": _source_label(expression),
                     "source_features": metadata.input_genes,
                     "current_features": metadata.current_features,
-                    "source_state": metadata.source_state,
-                    "source_state_evidence": metadata.source_state_evidence,
                     "input_advisories": list(metadata.input_advisories),
                     "total_counts": metadata.input_total_counts,
                     "nonzero_entries": metadata.input_nonzero_entries,
@@ -368,7 +355,6 @@ class OpenBioSingleCellCNMFRankSurvey:
                 warnings=warning_messages,
                 limitations=(
                     "Rank selection remains an analyst decision supported by stability, reconstruction error, and biological interpretability.",
-                    "Numeric validation alone cannot establish an externally supplied matrix's measurement scale or transformation provenance.",
                     "The survey pools cells and may reflect Sample or Technical batch effects; it is not replicate-aware Condition inference.",
                     "The Worker-bound native run is session-only and cannot be persisted; export final annotated AnnData for reuse.",
                 ),
@@ -442,11 +428,6 @@ class OpenBioSingleCellCNMF:
         }
         warning_messages: list[str] = []
         warning_messages.extend(str(message) for message in survey["input_advisories"])
-        if survey["source_state"] == "unknown":
-            warning_messages.append(
-                "OpenBio provenance cannot establish the selected source's measurement scale or transformation "
-                "history; confirm the external data contract before interpretation."
-            )
         warning_messages.append(
             "The immutable OPENBIO_CNMF_RUN input remains owned by the Artifact Runtime. Consensus writes only to "
             "a private checkout, which the one-shot worker removes before returning."
@@ -518,8 +499,6 @@ class OpenBioSingleCellCNMF:
                 "storage_keys": state["storage_keys"],
                 "overwrote_existing": state["overwrote_existing"],
                 "input_fingerprint": survey["input_fingerprint"],
-                "source_state": survey["source_state"],
-                "source_state_evidence": survey["source_state_evidence"],
                 "input_advisories": survey["input_advisories"],
                 "backend": survey["backend"],
                 "backend_version": survey["backend_version"],
@@ -563,7 +542,6 @@ class OpenBioSingleCellCNMF:
 
 CNMF_RUN_KIND = "OPENBIO_CNMF_RUN"
 TABLE_KIND = "OPENBIO_SINGLE_CELL_TABLE"
-TABLE_CODEC = "table-jsonl-v1"
 
 
 @register_operation("openbio.node.cnmfranksurvey")
@@ -585,16 +563,15 @@ def cnmf_rank_survey_operation(
         },
         operation="cNMF Rank Survey",
     )
-    input_root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    adata = read_anndata(input_root)
+    adata = read_anndata_input(inputs)
     run, table, summary, code = OpenBioSingleCellCNMFRankSurvey.execute(adata, **parameters)
     try:
         run_root = context.create_output_directory("run")
         # Encode the worker-owned run directly; the codec deliberately avoids copy_base_adata().
         write_cnmf_run(run_root, run)
-        table_root = context.create_output_directory("k_metrics")
-        write_table(table_root, table.table, result_metadata(table))
-        records: list[JSONValue] = [
+        records = analysis_outputs(
+            summary,
+            code,
             {
                 "type": "artifact",
                 "name": "run",
@@ -602,16 +579,8 @@ def cnmf_rank_survey_operation(
                 "codec": CNMF_NATIVE_CODEC,
                 "payload": run_root.relative_to(context.output_root).as_posix(),
             },
-            {
-                "type": "artifact",
-                "name": "k_metrics",
-                "kind": TABLE_KIND,
-                "codec": TABLE_CODEC,
-                "payload": table_root.relative_to(context.output_root).as_posix(),
-            },
-            {"type": "summary", "name": "summary", "value": result_metadata(summary)},
-            {"type": "string", "name": "code", "value": code},
-        ]
+            write_table_output(context, table, name="k_metrics", kind=TABLE_KIND),
+        )
     except BaseException as primary:
         close_run_preserving_primary(run, primary, context="cNMF Rank Survey artifact encoding")
         raise
@@ -646,11 +615,7 @@ def cnmf_operation(
     with checkout_cnmf_run(run_root, checkout_parent=context.output_root) as run:
         # The consensus output is a scientifically new AnnData materialized from the saved Survey base.
         output, summary, code = OpenBioSingleCellCNMF.execute(run, **parameters)
-        return [
-            write_anndata_output(context, output),
-            {"type": "summary", "name": "summary", "value": result_metadata(summary)},
-            {"type": "string", "name": "code", "value": code},
-        ]
+        return analysis_outputs(summary, code, write_anndata_output(context, output))
 
 
 # Stable public names match operation IDs while avoiding collisions with the standalone science functions.

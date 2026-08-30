@@ -5,8 +5,6 @@ import time
 from typing import Any
 
 from .analysis_utils import make_plot_result, make_summary_result, make_table_result
-from .artifact_codecs import PLOT_CODEC, TABLE_CODEC, read_anndata, write_plot, write_table
-from .artifact_envelope import result_metadata
 from .augur import (
     AUGUR_ARTIFACT_TYPE,
     AUGUR_VIEWS,
@@ -17,54 +15,22 @@ from .augur import (
     select_augur_view,
 )
 from .augur_codec import AUGUR_CODEC, read_augur, write_augur
-from .expression_source import DynamicExpressionSource, ExpressionSourceSpec
+from .expression_source import _AUGUR_SPEC, DynamicExpressionSource
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
+    analysis_outputs,
+    read_anndata_input,
     require_artifact_input,
     require_input_names,
     require_parameters,
+    write_plot_output,
+    write_table_output,
 )
 from .population_correlation import analyze_population_centroid_correlation, population_correlation_code
 from .worker_protocol import JSONValue, OperationContext, register_operation
 
 TABLE_KIND = "OPENBIO_SINGLE_CELL_TABLE"
 PLOT_KIND = "OPENBIO_SINGLE_CELL_PLOT"
-AUGUR_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="Augur count source",
-    default="X",
-    include_raw=True,
-    layer_default="counts",
-)
-
-
-def _anndata_input(inputs: dict[str, JSONValue]) -> Any:
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    return read_anndata(root)
-
-
-def _table_output(context: OperationContext, result: Any) -> dict[str, JSONValue]:
-    root = context.create_output_directory("table")
-    write_table(root, result.table, result_metadata(result))
-    return {
-        "type": "artifact",
-        "name": "table",
-        "kind": TABLE_KIND,
-        "codec": TABLE_CODEC,
-        "payload": root.relative_to(context.output_root).as_posix(),
-    }
-
-
-def _plot_output(context: OperationContext, result: Any) -> dict[str, JSONValue]:
-    root = context.create_output_directory("plot")
-    write_plot(root, result.png, result_metadata(result))
-    return {
-        "type": "artifact",
-        "name": "plot",
-        "kind": PLOT_KIND,
-        "codec": PLOT_CODEC,
-        "payload": root.relative_to(context.output_root).as_posix(),
-    }
+AUGUR_EXPRESSION_SOURCE = _AUGUR_SPEC
 
 
 def augur_artifact_owned(
@@ -290,10 +256,12 @@ def augur(
         },
         operation="Augur Cell Prioritization",
     )
-    tables, summary, metadata, report, code = augur_artifact_owned(_anndata_input(inputs), **parameters)
+    tables, summary, metadata, report, code = augur_artifact_owned(read_anndata_input(inputs), **parameters)
     root = context.create_output_directory("result")
     write_augur(root, tables, summary, metadata)
-    return [
+    return analysis_outputs(
+        report,
+        code,
         {
             "type": "artifact",
             "name": "result",
@@ -301,9 +269,7 @@ def augur(
             "codec": AUGUR_CODEC,
             "payload": root.relative_to(context.output_root).as_posix(),
         },
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    )
 
 
 @register_operation("openbio.node.augurresults")
@@ -314,11 +280,7 @@ def augur_results(
     require_parameters(parameters, {"view"}, operation="Augur Results")
     root = require_artifact_input(inputs, "result", kind=AUGUR_ARTIFACT_TYPE, codec=AUGUR_CODEC)
     result, report, code = augur_results_artifact_owned(*read_augur(root), view=parameters["view"])
-    return [
-        _table_output(context, result),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(report, code, write_table_output(context, result, kind=TABLE_KIND))
 
 
 @register_operation("openbio.node.celltypecorrelation")
@@ -342,13 +304,13 @@ def population_centroid_correlation(
         },
         operation="Population Centroid Correlation",
     )
-    table, plot, report, code = population_correlation_owned(_anndata_input(inputs), **parameters)
-    return [
-        _table_output(context, table),
-        _plot_output(context, plot),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    table, plot, report, code = population_correlation_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(
+        report,
+        code,
+        write_table_output(context, table, kind=TABLE_KIND),
+        write_plot_output(context, plot, kind=PLOT_KIND),
+    )
 
 
 __all__ = [

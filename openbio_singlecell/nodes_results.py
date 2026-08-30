@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from comfy_api.latest import io
 
-from .expression_source import ExpressionSourceSpec
+from .expression_source import _MARKER_PLOT_SPEC, _MARKER_SPEC
 from .marker_evidence import MARKER_COLUMNS, MARKER_METHODS
-from .node_types import AnnDataType, PlotResultType, SummaryResultType, TableResultType
+from .node_types import AnnDataType, PlotResultType, TableResultType, analysis_outputs
 
 MARKER_CATEGORY = "openbio/single-cell/marker-evidence"
 PLOT_CATEGORY = "openbio/single-cell/visualization"
@@ -12,11 +12,7 @@ DIAGNOSTIC_CATEGORY = "openbio/single-cell/diagnostics"
 
 
 class OpenBioSingleCellMarkerGenes(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="Marker source",
-        default="layer",
-        layer_default="log1p_norm",
-    )
+    EXPRESSION_SOURCE = _MARKER_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -50,12 +46,9 @@ class OpenBioSingleCellMarkerGenes(io.ComfyNode):
                     advanced=True,
                 ),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                TableResultType.Output(display_name="universe"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(
+                TableResultType.Output(display_name="table"), TableResultType.Output(display_name="universe")
+            ),
         )
 
 
@@ -88,11 +81,7 @@ class OpenBioSingleCellUMAPPlot(io.ComfyNode):
                     advanced=True,
                 ),
             ],
-            outputs=[
-                PlotResultType.Output(display_name="plot"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
         )
 
 
@@ -115,22 +104,14 @@ class OpenBioSingleCellFilterMarkerGenes(io.ComfyNode):
                 io.Float.Input("max_fraction_reference", default=0.5, min=0.0, max=1.0, step=0.05),
                 io.Float.Input("max_p_adjusted", default=0.05, min=0.0, max=1.0, step=0.01),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                TableResultType.Output(display_name="universe"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(
+                TableResultType.Output(display_name="table"), TableResultType.Output(display_name="universe")
+            ),
         )
 
 
 class OpenBioSingleCellMarkerExpressionPlot(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="Marker plot source",
-        default="layer",
-        include_raw=True,
-        layer_default="log1p_norm",
-    )
+    EXPRESSION_SOURCE = _MARKER_PLOT_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -199,11 +180,7 @@ class OpenBioSingleCellMarkerExpressionPlot(io.ComfyNode):
                 ),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                PlotResultType.Output(display_name="plot"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
         )
 
 
@@ -223,11 +200,7 @@ class OpenBioSingleCellPCAMetadataAssociations(io.ComfyNode):
                 io.String.Input("continuous_obs_keys", default=""),
                 io.Float.Input("alpha", default=0.05, min=0.0, max=1.0, step=0.01, advanced=True),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
 

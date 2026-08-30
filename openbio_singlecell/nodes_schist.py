@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from comfy_api.latest import io
 
-from .node_types import AnnDataType, SummaryResultType
+from .node_types import AnnDataType, analysis_outputs
 
 SCHIST_CATEGORY = "openbio/single-cell/clustering"
 
@@ -24,11 +24,7 @@ class OpenBioSingleCellSchistNestedModel(io.ComfyNode):
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
                 io.Float.Input("max_working_memory_gib", default=8.0, min=0.001, step=0.5, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 SCHIST_NODE_CLASSES = [OpenBioSingleCellSchistNestedModel]

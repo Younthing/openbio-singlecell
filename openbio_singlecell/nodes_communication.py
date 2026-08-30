@@ -5,21 +5,17 @@ from typing import Any
 
 from comfy_api.latest import io
 
-from .expression_source import ExpressionSourceSpec
+from .expression_source import _LIANA_SPEC
 from .files import resolve_input_path
 from .liana_communication import liana_resource_cache_fingerprint
-from .node_types import AnnDataType, LianaResultType, PlotResultType, SummaryResultType
+from .node_types import AnnDataType, LianaResultType, PlotResultType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/cell-communication"
 METHODS = ["cellphonedb", "rank_aggregate"]
 
 
 class OpenBioSingleCellLianaCommunication(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="LIANA expression source",
-        include_raw=False,
-        layer_default="log1p_norm",
-    )
+    EXPRESSION_SOURCE = _LIANA_SPEC
 
     @staticmethod
     def _resolve_resource(resource: Mapping[str, object] | None) -> dict[str, str | None]:
@@ -109,11 +105,7 @@ class OpenBioSingleCellLianaCommunication(io.ComfyNode):
                     advanced=True,
                 ),
             ],
-            outputs=[
-                LianaResultType.Output(display_name="result"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(LianaResultType.Output(display_name="result")),
         )
 
     @classmethod
@@ -225,11 +217,7 @@ class OpenBioSingleCellLianaDotPlot(io.ComfyNode):
                     advanced=True,
                 ),
             ],
-            outputs=[
-                PlotResultType.Output(display_name="plot"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
         )
 
     @classmethod

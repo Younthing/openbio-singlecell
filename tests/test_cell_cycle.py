@@ -239,8 +239,9 @@ def test_cell_cycle_accepts_explicit_raw_and_signed_expert_sources(science):
     raw_output, raw_summary = _run(adata.copy(), source_kind="raw", layer_name=None)
     assert raw_output.n_obs == adata.n_obs
     assert raw_summary["key_results"]["expression_source"] == "raw.X"
-    assert raw_summary["key_results"]["expression_state_evidence"]["history_used"] is False
-    assert any("Raw was selected explicitly" in warning for warning in raw_summary["warnings"])
+    assert "expression_state" not in raw_summary["key_results"]
+    assert "expression_state_evidence" not in raw_summary["key_results"]
+    assert not any("Raw was selected explicitly" in warning for warning in raw_summary["warnings"])
 
     reproduction_input = adata.copy()
     node_output, node_report, raw_code = cell_cycle_score_owned(
@@ -263,7 +264,7 @@ def test_cell_cycle_accepts_explicit_raw_and_signed_expert_sources(science):
     signed.layers["signed"] = signed.layers["log1p_norm"] - 4.0
     signed_output, signed_summary = _run(signed, source_kind="layer", layer_name="signed")
     assert signed_output.n_obs == signed.n_obs
-    assert signed_summary["key_results"]["expression_state"] == "signed_user_selected"
+    assert "expression_state" not in signed_summary["key_results"]
     assert any("negative values" in warning for warning in signed_summary["warnings"])
 
 

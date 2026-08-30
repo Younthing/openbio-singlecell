@@ -12,7 +12,7 @@ from openbio_singlecell.nodes_differential import (
 )
 from openbio_singlecell.nodes_integration import OpenBioSingleCellSCVIIntegration
 from openbio_singlecell.operations_integration import scvi_integration
-from openbio_singlecell.scvi_model import SCVIModel
+from openbio_singlecell.scvi_model import SCVI_MODEL_ARTIFACT_SCHEMA, SCVIModel
 from tests.artifact_operation_harness import run_anndata_operation
 
 
@@ -46,11 +46,7 @@ def _run_scvi(adata, **overrides):
 
 
 def current_training_parameters(**overrides):
-    parameters = {
-        "source": "X",
-        "count_source_state": "counts",
-        "count_source_state_evidence": "test fixture raw counts",
-    }
+    parameters = {"source": "X"}
     parameters.update(overrides)
     return parameters
 
@@ -366,20 +362,13 @@ def test_scvi_model_snapshots_training_parameters(adata, science):
     assert model.training_parameters["categorical_covariates"] == ["batch"]
 
 
-@pytest.mark.parametrize("state", ["normalized", "logged", "scaled", "transformed", "pearson_residuals", "derived"])
-def test_scvi_model_preserves_non_count_expression_state_as_evidence(adata, science, state):
-    model = SCVIModel(
-        FakeTrainedSCVI(adata, science),
-        adata,
-        current_training_parameters(
-            count_source_state=state,
-            count_source_state_evidence="explicit test evidence",
-        ),
-    )
+def test_scvi_model_exposes_selected_source_without_inferred_state(adata, science):
+    model = SCVIModel(FakeTrainedSCVI(adata, science), adata, current_training_parameters())
 
-    assert model.training_parameters["count_source_state"] == state
-    assert model.evidence["registered_count_state"] == state
-    assert model.evidence["registered_count_state_evidence"] == "explicit test evidence"
+    assert SCVI_MODEL_ARTIFACT_SCHEMA == "openbio-singlecell/scvi-model/v3"
+    assert model.training_parameters == {"source": "X"}
+    assert model.evidence["registered_count_source"] == "X"
+    assert {"registered_count_state", "registered_count_state_evidence"}.isdisjoint(model.evidence)
 
 
 def test_scvi_model_snapshots_training_diagnostics(adata, science):

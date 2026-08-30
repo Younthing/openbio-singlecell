@@ -109,7 +109,7 @@ def _assert_axis_mapping_equal(actual, expected, science):
             _assert_matrix_equal(actual[key], expected[key], science)
 
 
-def _assert_expression_states_equal(actual, expected, science):
+def _assert_expression_storage_equal(actual, expected, science):
     _assert_matrix_equal(actual.X, expected.X, science)
     science.pd.testing.assert_frame_equal(actual.obs, expected.obs)
     science.pd.testing.assert_frame_equal(actual.var, expected.var)
@@ -201,9 +201,7 @@ def test_generated_basic_preprocessing_code_does_not_write_openbio_history(scien
             "normalized",
         ).result
 
-    assert "_openbio_record_operation" not in code
-    with pytest.warns(UserWarning):
-        generated = _run_code(code, function_name, adata)
+    generated = _run_code(code, function_name, adata)
     assert "openbio_singlecell" not in generated.uns
 
 
@@ -231,10 +229,8 @@ def test_normalize_total_uses_declared_source_and_preserves_all_stored_states(sc
     assert report.summary["key_results"]["raw_preserved"] is True
     _assert_report("OpenBioSingleCellNormalizeTotal", report, code)
 
-    with pytest.warns(UserWarning) as generated_warnings:
-        generated = _run_code(code, "normalize_total_expression", adata)
-    assert [str(item.message) for item in generated_warnings] == report.summary["warnings"]
-    _assert_expression_states_equal(generated, output, science)
+    generated = _run_code(code, "normalize_total_expression", adata)
+    _assert_expression_storage_equal(generated, output, science)
     with pytest.raises(ValueError, match="source layer not found"):
         _run_code(code, "normalize_total_expression", _adata(science, include_states=False))
 
@@ -248,7 +244,7 @@ def test_normalize_total_never_creates_counts_or_raw(science):
     assert _named_layer_keys(output) == set()
     assert adata.raw is None
     assert output.raw is None
-    assert any("cannot prove" in warning for warning in report.summary["warnings"])
+    assert report.summary["warnings"] == []
 
 
 @pytest.mark.parametrize("target_sum", [0.0, -1.0, float("nan"), float("inf")])
@@ -257,7 +253,7 @@ def test_normalize_total_rejects_invalid_target(science, target_sum):
         _normalize_total(_adata(science), target_sum)
 
 
-def test_normalize_total_warns_for_zero_library_and_proven_transformed_source(science):
+def test_normalize_total_warns_for_zero_library_and_allows_repeated_explicit_normalization(science):
     zero_library = _adata(science, sparse=False)
     zero_library.X = zero_library.X.copy()
     zero_library.X[1, :] = 0
@@ -269,7 +265,8 @@ def test_normalize_total_warns_for_zero_library_and_proven_transformed_source(sc
     normalized = _normalize_total(_adata(science), 100.0).result[0]
     repeated, report, _ = _normalize_total(normalized, 100.0).result
     assert repeated.shape == normalized.shape
-    assert any("normalized expression" in warning for warning in report.summary["warnings"])
+    assert any("non-integer values" in warning for warning in report.summary["warnings"])
+    assert not any("provenance" in warning or "state" in warning for warning in report.summary["warnings"])
 
 
 @pytest.mark.parametrize(("bad_value", "message"), [(float("nan"), "non-finite")])
@@ -335,7 +332,7 @@ def test_normalize_to_layer_retains_transform_math_domain_hard_gates(science, tr
         )
 
 
-def test_log1p_is_atomic_preserves_states_and_generated_code_matches(science):
+def test_log1p_uses_the_explicit_source_without_inferred_state(science):
     normalized = _normalize_total(_adata(science), 100.0).result[0]
     before = normalized.copy()
 
@@ -348,13 +345,14 @@ def test_log1p_is_atomic_preserves_states_and_generated_code_matches(science):
     _assert_matrix_equal(normalized.X, before.X, science)
     assert report.summary["warnings"] == []
     assert report.summary["key_results"]["base"] == "natural"
+    assert "source_state" not in report.summary["key_results"]
+    assert "source_state_evidence" not in report.summary["key_results"]
     _assert_report("OpenBioSingleCellLog1p", report, code)
 
     generated = _run_code(code, "log1p_expression", normalized)
-    _assert_expression_states_equal(generated, output, science)
+    _assert_expression_storage_equal(generated, output, science)
     before_second = generated.X.copy()
-    with pytest.warns(UserWarning, match="already log-transformed"):
-        generated_twice = _run_code(code, "log1p_expression", generated)
+    generated_twice = _run_code(code, "log1p_expression", generated)
     science.np.testing.assert_allclose(
         _dense(generated_twice.X, science),
         science.np.log1p(_dense(before_second, science)),
@@ -367,7 +365,7 @@ def test_log1p_does_not_create_raw_or_layers(science):
     assert output.raw is None
     assert _named_layer_keys(output) == set()
 
-def test_log1p_rejects_invalid_domain_and_nonfinite_but_warns_on_double_transform(science):
+def test_log1p_rejects_invalid_domain_and_nonfinite_but_allows_repeated_explicit_transform(science):
     negative = _adata(science, sparse=False, include_states=False)
     negative.X[0, 0] = -1
     with pytest.raises(ValueError, match="finite real log1p domain"):
@@ -381,7 +379,7 @@ def test_log1p_rejects_invalid_domain_and_nonfinite_but_warns_on_double_transfor
     logged = _log1p(_adata(science, include_states=False)).result[0]
     twice, report, _ = _log1p(logged).result
     assert science.np.isfinite(_dense(twice.X, science)).all()
-    assert any("already log-transformed" in warning for warning in report.summary["warnings"])
+    assert not any("already log-transformed" in warning for warning in report.summary["warnings"])
 
     signed = _adata(science, sparse=False, include_states=False)
     signed.X[0, 0] = -0.5
@@ -406,23 +404,10 @@ def test_normalize_total_clears_stale_log_marker_before_followup_log1p(science):
     logged, log_report, log_code = _log1p(normalized).result
     assert log_report.summary["warnings"] == []
 
-    with pytest.warns(UserWarning) as generated_warnings:
-        generated_normalized = _run_code(normalize_code, "normalize_total_expression", adata)
-    assert [str(item.message) for item in generated_warnings] == report.summary["warnings"]
+    generated_normalized = _run_code(normalize_code, "normalize_total_expression", adata)
     assert "log1p" not in generated_normalized.uns
-    with pytest.warns(UserWarning, match="source state is 'unknown'"):
-        generated_logged = _run_code(log_code, "log1p_expression", generated_normalized)
-    _assert_expression_states_equal(generated_logged, logged, science)
-
-
-def test_generated_log1p_reproduces_unknown_normalization_warning(science):
-    adata = _adata(science, include_states=False)
-    _, report, code = _log1p(adata).result
-
-    with pytest.warns(UserWarning) as generated_warnings:
-        _run_code(code, "log1p_expression", adata)
-
-    assert [str(item.message) for item in generated_warnings] == report.summary["warnings"]
+    generated_logged = _run_code(log_code, "log1p_expression", generated_normalized)
+    _assert_expression_storage_equal(generated_logged, logged, science)
 
 
 @pytest.mark.parametrize("transform", ["none", "log1p", "sqrt"])
@@ -455,10 +440,8 @@ def test_normalize_to_layer_builds_one_derived_layer_and_generated_code_matches(
     assert report.summary["key_results"]["replaced_existing_layer"] is False
     _assert_report("OpenBioSingleCellNormalizeToLayer", report, code)
 
-    with pytest.warns(UserWarning) as generated_warnings:
-        generated = _run_code(code, "normalize_expression_to_layer", adata)
-    assert [str(item.message) for item in generated_warnings] == report.summary["warnings"]
-    _assert_expression_states_equal(generated, output, science)
+    generated = _run_code(code, "normalize_expression_to_layer", adata)
+    _assert_expression_storage_equal(generated, output, science)
 
 
 @pytest.mark.parametrize(
@@ -516,7 +499,7 @@ def test_normalize_to_layer_rejects_same_source_and_unauthorized_collision(scien
     assert report.summary["key_results"]["replaced_existing_layer"] is True
 
 
-def test_normalize_to_layer_warns_for_zero_library_and_derived_count_source(science):
+def test_normalize_to_layer_warns_for_zero_library_and_allows_repeated_explicit_source(science):
     zero_library = _adata(science, sparse=False)
     zero_library.layers["counts"] = zero_library.layers["counts"].copy()
     zero_library.layers["counts"][0, :] = 0
@@ -545,7 +528,8 @@ def test_normalize_to_layer_warns_for_zero_library_and_derived_count_source(scie
         "second",
     ).result
     assert second.layers["second"].shape == derived.shape
-    assert any("logged expression" in warning for warning in report.summary["warnings"])
+    assert any("non-integer values" in warning for warning in report.summary["warnings"])
+    assert not any("provenance" in warning or "state" in warning for warning in report.summary["warnings"])
 
 
 def test_normalize_to_layer_reports_noninteger_external_count_state(science):
@@ -565,7 +549,7 @@ def test_normalize_to_layer_reports_noninteger_external_count_state(science):
     with pytest.warns(UserWarning) as generated_warnings:
         generated = _run_code(code, "normalize_expression_to_layer", adata)
     assert [str(item.message) for item in generated_warnings] == report.summary["warnings"]
-    _assert_expression_states_equal(generated, output, science)
+    _assert_expression_storage_equal(generated, output, science)
 
 
 def test_generated_normalization_code_reproduces_zero_library_warning_and_output(science):

@@ -6,30 +6,24 @@ from typing import Any
 
 from . import PLUGIN_VERSION
 from .analysis_utils import make_plot_result, make_summary_result
-from .artifact_codecs import read_anndata, write_plot
-from .artifact_envelope import result_metadata
-from .expression_source import DynamicExpressionSource, ExpressionSourceSpec
+from .expression_source import _LIANA_SPEC, DynamicExpressionSource
 from .liana_artifact_codec import LIANA_CODEC, read_liana_result, write_liana_result
 from .liana_communication import liana_communication_code, run_liana_communication
 from .liana_plot import liana_dot_plot_code, render_liana_dot_plot
 from .liana_result import validate_liana_result
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
+    analysis_outputs,
+    read_anndata_input,
     require_artifact_input,
     require_file_input,
     require_input_names,
     require_parameters,
+    write_plot_output,
 )
 from .worker_protocol import JSONValue, OperationContext, register_operation
 
 LIANA_KIND = "OPENBIO_LIANA_RESULT"
-
-LIANA_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="LIANA expression source",
-    include_raw=False,
-    layer_default="log1p_norm",
-)
+LIANA_EXPRESSION_SOURCE = _LIANA_SPEC
 
 
 def _label_list(value: str, *, label: str) -> list[str]:
@@ -251,16 +245,17 @@ def liana_communication(
     resource_mode = parameters["resource_mode"]
     expected_inputs = {"adata", "resource_csv"} if resource_mode == "local_resource" else {"adata"}
     require_input_names(inputs, expected_inputs, operation="LIANA Communication")
-    adata_root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
     resource_path = require_file_input(inputs, "resource_csv")[0] if "resource_csv" in inputs else None
     result, report, code = liana_communication_owned(
-        read_anndata(adata_root),
+        read_anndata_input(inputs),
         resource_path=resource_path,
         **parameters,
     )
     root = context.create_output_directory("result")
     write_liana_result(root, result)
-    return [
+    return analysis_outputs(
+        report,
+        code,
         {
             "type": "artifact",
             "name": "result",
@@ -268,9 +263,7 @@ def liana_communication(
             "codec": LIANA_CODEC,
             "payload": root.relative_to(context.output_root).as_posix(),
         },
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    )
 
 
 @register_operation("openbio.node.lianadotplot")
@@ -302,19 +295,11 @@ def liana_dot_plot(
         codec=LIANA_CODEC,
     )
     plotted, report, code = liana_dot_plot_owned(read_liana_result(result_root), **parameters)
-    root = context.create_output_directory("plot")
-    write_plot(root, plotted.png, result_metadata(plotted))
-    return [
-        {
-            "type": "artifact",
-            "name": "plot",
-            "kind": "OPENBIO_SINGLE_CELL_PLOT",
-            "codec": "plot-png-v1",
-            "payload": root.relative_to(context.output_root).as_posix(),
-        },
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(
+        report,
+        code,
+        write_plot_output(context, plotted, kind="OPENBIO_SINGLE_CELL_PLOT"),
+    )
 
 
 __all__ = [

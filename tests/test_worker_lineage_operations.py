@@ -35,7 +35,7 @@ def test_lineage_qc_operation_encodes_owned_characters_and_table(tmp_path, monke
         ),
     )
     monkeypatch.setattr(
-        "openbio_singlecell.operations_lineage.result_metadata",
+        "openbio_singlecell.operations_input.result_metadata",
         lambda _value: {"kind": "test"},
     )
     staging = tmp_path / "staging"
@@ -102,7 +102,7 @@ def test_plasticity_operation_publishes_a_new_anndata_without_rewriting_input(tm
 
     monkeypatch.setattr("openbio_singlecell.operations_lineage.read_tree", lambda _root: object())
     monkeypatch.setattr("openbio_singlecell.operations_lineage.plasticity_owned", fake_owned)
-    monkeypatch.setattr("openbio_singlecell.operations_lineage.result_metadata", lambda _value: {"kind": "test"})
+    monkeypatch.setattr("openbio_singlecell.operations_input.result_metadata", lambda _value: {"kind": "test"})
     staging = tmp_path / "run.partial"
     staging.mkdir()
     context = OperationContext(staging, str(uuid.uuid4()))

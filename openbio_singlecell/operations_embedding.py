@@ -12,10 +12,7 @@ from typing import TYPE_CHECKING, Any
 from . import dependencies
 from .analysis_reporting import AnalysisReference, make_analysis_report, summarize_numeric
 from .analysis_utils import finish_adata
-from .artifact_codecs import read_anndata
-from .artifact_envelope import result_metadata
-from .expression_source import DynamicExpressionSource, ExpressionSource, ExpressionSourceSpec
-from .expression_state import resolve_expression_state
+from .expression_source import _PCA_SPEC, DynamicExpressionSource, ExpressionSource
 from .graph_analysis import (
     assess_leiden_stability,
     graph_diagnostics,
@@ -26,9 +23,8 @@ from .graph_analysis import (
     validate_random_seed,
 )
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
-    require_artifact_input,
+    analysis_outputs,
+    read_anndata_input,
     require_input_names,
     require_parameters,
     write_anndata_output,
@@ -527,51 +523,11 @@ def _pca_code(expression: ExpressionSource, parameters: dict[str, Any]) -> str:
     source_kind = expression.kind
     layer_name = expression.layer_name
     return dedent(
-        f"""import warnings
-from collections.abc import Mapping
+        f"""from collections.abc import Mapping
 
 import numpy as np
 import scanpy as sc
 from scipy import sparse
-
-
-def _expression_state(adata):
-    x_state = "unknown"
-    layers = {{}}
-    metadata = adata.uns.get("openbio_singlecell")
-    history = metadata.get("analysis_history") if isinstance(metadata, Mapping) else None
-    entries = history.values() if isinstance(history, Mapping) else ()
-    for entry in entries:
-        if not isinstance(entry, Mapping):
-            continue
-        operation = entry.get("operation")
-        values = entry.get("parameters")
-        values = values if isinstance(values, Mapping) else {{}}
-        if operation == "snapshot_expression":
-            layers["counts"] = "counts"
-            if values.get("source") == "X":
-                x_state = "counts"
-        elif operation == "normalize_to_layer":
-            destination, transform = values.get("output_layer"), values.get("transform")
-            if isinstance(destination, str):
-                layers[destination] = "logged" if transform == "log1p" else "transformed" if transform == "sqrt" else "normalized"
-        elif operation == "pearson_residuals_to_layer":
-            destination = values.get("output_layer")
-            if isinstance(destination, str):
-                layers[destination] = "pearson_residuals"
-        elif operation == "scale_to_layer":
-            destination = values.get("output_layer")
-            if isinstance(destination, str):
-                layers[destination] = "scaled"
-        if operation == "normalize_total":
-            x_state = "normalized"
-        elif operation == "log1p":
-            x_state = "logged"
-    if {source_kind!r} == "layer":
-        return layers.get({layer_name!r}, "unknown")
-    if x_state == "unknown" and isinstance(adata.uns.get("log1p"), Mapping):
-        return "logged"
-    return x_state
 
 
 def run_pca(adata):
@@ -590,16 +546,6 @@ def run_pca(adata):
     values = np.asarray(matrix.data if sparse.issparse(matrix) else matrix)
     if values.size and (not np.issubdtype(values.dtype, np.number) or np.iscomplexobj(values) or not np.isfinite(values).all()):
         raise ValueError("PCA input must contain finite numeric values.")
-    state = _expression_state(output)
-    if state in {{"counts", "normalized"}}:
-        warnings.warn(
-            f"PCA is running on explicitly selected {{state!r}} expression; library size and highly expressed "
-            "features can dominate variance. Confirm this expert choice before interpretation.",
-            UserWarning,
-            stacklevel=2,
-        )
-    elif state == "unknown":
-        warnings.warn("Expression provenance is unknown; verify PCA input transformation.", UserWarning, stacklevel=2)
     if {parameters["use_hvg"]!r}:
         if "highly_variable" not in output.var or str(output.var["highly_variable"].dtype) not in {{"bool", "boolean"}} or output.var["highly_variable"].isna().any():
             raise TypeError("PCA requires a complete boolean highly_variable mask.")
@@ -652,7 +598,7 @@ def run_pca(adata):
 
 
 class OpenBioSingleCellPCA:
-    EXPRESSION_SOURCE = ExpressionSourceSpec(description="PCA source", default="layer", layer_default="log1p_norm")
+    EXPRESSION_SOURCE = _PCA_SPEC
 
     @classmethod
     def execute(
@@ -679,16 +625,7 @@ class OpenBioSingleCellPCA:
         expression = cls.EXPRESSION_SOURCE.resolve(adata, source)
         matrix = expression.matrix(adata)
         _validate_matrix(matrix, operation="PCA", expected_rows=int(adata.n_obs))
-        state, evidence = resolve_expression_state(adata, expression)
         warnings = []
-        if state in {"counts", "normalized"}:
-            warnings.append(
-                f"PCA is running on explicitly selected {state!r} expression ({evidence or 'state history'}); "
-                "library size and highly expressed features can dominate variance. Confirm this expert choice "
-                "before interpretation."
-            )
-        elif state == "unknown":
-            warnings.append("Expression provenance is unknown; verify that PCA input was appropriately transformed.")
         mask: Any = None
         selected_vars = int(adata.n_vars)
         if use_hvg:
@@ -757,8 +694,6 @@ class OpenBioSingleCellPCA:
             "n_comps": n_comps,
             "use_hvg": use_hvg,
             **expression.parameters(),
-            "expression_state": state,
-            "expression_state_evidence": evidence,
             "zero_center": True,
             "svd_solver": "arpack",
             "dtype": "float32",
@@ -780,8 +715,8 @@ class OpenBioSingleCellPCA:
             title="PCA",
             operation="pca",
             methods=(
-                f"Centered PCA used Scanpy's ARPACK path on {selected_vars} variables from {expression.kind} "
-                f"expression; the advisory expression-state audit resolved {state!r}."
+                f"Centered PCA used Scanpy's ARPACK path on {selected_vars} variables from the explicitly selected "
+                f"{expression.kind} expression source."
             ),
             results=f"Computed {n_comps} components explaining {float(variance_ratio.sum()):.3%} of selected-expression variance.",
             key_results={
@@ -1827,14 +1762,9 @@ def _run_operation(
 ) -> list[JSONValue]:
     require_input_names(inputs, {"adata"}, operation=name)
     require_parameters(parameters, expected_parameters, operation=name)
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    adata = read_anndata(root)
+    adata = read_anndata_input(inputs)
     output, summary, code = runner(adata, **parameters)
-    return [
-        write_anndata_output(context, output),
-        {"type": "summary", "name": "summary", "value": result_metadata(summary)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(summary, code, write_anndata_output(context, output))
 
 
 @register_operation("openbio.node.pca")

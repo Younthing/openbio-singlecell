@@ -205,9 +205,9 @@ feature count, grouping columns, labels, comparison groups, and output names. In
   choose a reviewed Sample-level compositional model when inferential comparison is required.
 - Every consumer declares its expression source. Count-model methods enforce the numeric domain their algorithms
   require; QC, filtering, and normalization nodes that support broader finite expert inputs disclose signed or
-  non-count-like states as warnings rather than imposing a universal count gate. For conventional practice, select
+  non-count-like values as warnings rather than imposing a universal count gate. For conventional practice, select
   a non-negative count representation. When counts live in `layers["counts"]`, select that layer directly on each
-  count-dependent node. Consumer-local sources preserve each expression state's meaning. The clustering template reads counts
+  count-dependent node. Each consumer uses the source selected on that node. The clustering template reads counts
   into `log1p_norm` without overwriting `X` or existing layers.
 - The two bundled scVI templates explicitly set `technical_batch_key="batch"`, so their input data require
   `adata.obs["batch"]`; another workflow may declare a different Technical batch key. The downstream contrast
@@ -358,7 +358,7 @@ and a working local database connection.
   original ranking instead of chaining filters. These are exploratory Cluster marker results, not Sample-level
   Condition inference.
 - UMAP Plot and Marker Expression Plot are read-only renderers. They report the actual embedding dimensions,
-  expression source/state, missing-value handling, package versions, and plot-specific method; marker plots copy only
+  expression source, missing-value handling, package versions, and plot-specific method; marker plots copy only
   selected genes and grouping metadata. Seeded violin jitter is isolated from NumPy's global random state.
 - CellTypist Annotation produces provisional per-cell model labels and score evidence from an explicitly verified
   count or CP10K/log1p source. A selected model must already exist locally; execution does not enumerate or download

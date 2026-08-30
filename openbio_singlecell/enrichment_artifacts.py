@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import hashlib
 import inspect
-import json
 import math
 import numbers
 import textwrap
@@ -10,7 +8,13 @@ from collections.abc import Mapping
 from typing import Any, Literal
 
 from .contracts import TableResult
-from .marker_evidence import MARKER_COLUMNS, MARKER_UNIVERSE_COLUMNS, validate_marker_artifact_pair
+from .marker_evidence import (
+    MARKER_COLUMNS,
+    MARKER_UNIVERSE_COLUMNS,
+    _canonical_sha256,
+    _frame_content_fingerprint,
+    validate_marker_artifact_pair,
+)
 
 ENRICHMENT_EVIDENCE_SCHEMA_VERSION = 1
 GENERIC_RANKED_ARTIFACT_ROLE = "complete_ranked_evidence"
@@ -48,45 +52,46 @@ def _declaration_value(value: Any) -> Any:
     return f"<{type(value).__module__}.{type(value).__qualname__}>"
 
 
-def _canonical_sha256(payload: Any) -> str:
-    encoder = json.JSONEncoder(
-        ensure_ascii=False,
-        allow_nan=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    digest = hashlib.sha256()
-    for chunk in encoder.iterencode(payload):
-        digest.update(chunk.encode("utf-8"))
-    return digest.hexdigest()
-
-
-def _json_cell(value: Any) -> Any:
+def _json_cell(value: Any, *, operation: str | None = None) -> Any:
     if value is None or isinstance(value, (str, bool, int)):
         return value
     if isinstance(value, numbers.Real):
         normalized = float(value)
         if not math.isfinite(normalized):
+            if operation is not None:
+                raise ValueError(f"{operation} generic evidence contains non-finite numbers.")
             raise ValueError("Enrichment evidence cannot contain non-finite numeric values.")
         return {"float_hex": normalized.hex()}
     if hasattr(value, "item"):
+        if operation is not None:
+            return _json_cell(value.item(), operation=operation)
         try:
             return _json_cell(value.item())
         except (TypeError, ValueError):
             pass
+    if operation is not None:
+        raise TypeError(f"{operation} generic evidence contains unsupported values.")
     raise TypeError(
         "Enrichment evidence content fingerprints support only strings, booleans, integers, finite real "
         f"numbers, and null values; received {type(value).__name__}."
     )
 
 
-def generic_enrichment_content_fingerprint(frame: Any, *, artifact_role: str) -> str:
+def generic_enrichment_content_fingerprint(
+    frame: Any,
+    *,
+    artifact_role: str,
+    operation: str | None = None,
+) -> str:
     """Return a canonical current-content fingerprint for a generic evidence table."""
     from pandas import DataFrame
 
     if not isinstance(frame, DataFrame):
         raise TypeError("Generic enrichment evidence must be a pandas DataFrame.")
-    rows = [[_json_cell(value) for value in row] for row in frame.itertuples(index=False, name=None)]
+    rows = [
+        [_json_cell(value, operation=operation) for value in row]
+        for row in frame.itertuples(index=False, name=None)
+    ]
     return _canonical_sha256(
         {
             "schema": f"openbio-singlecell/{artifact_role}/v1",
@@ -115,31 +120,11 @@ def enrichment_universe_content_fingerprint(frame: Any) -> str:
         raise ValueError(
             f"Tested-gene universe must use the exact canonical columns in order: {MARKER_UNIVERSE_COLUMNS}."
         )
-    encoder = json.JSONEncoder(
-        ensure_ascii=False,
-        allow_nan=False,
-        separators=(",", ":"),
-        sort_keys=True,
+    return _frame_content_fingerprint(
+        frame,
+        artifact="tested-gene-universe",
+        numeric_columns={"universe_rank"},
     )
-    digest = hashlib.sha256()
-
-    def update(value: Any) -> None:
-        for chunk in encoder.iterencode(value):
-            digest.update(chunk.encode("utf-8"))
-
-    digest.update(b'{"columns":')
-    update(list(frame.columns))
-    digest.update(b',"rows":[')
-    first = True
-    for gene, rank in frame.itertuples(index=False, name=None):
-        if not first:
-            digest.update(b",")
-        update([gene, float(rank).hex()])
-        first = False
-    digest.update(b'],"schema":')
-    update("openbio-singlecell/tested-gene-universe/v2")
-    digest.update(b"}")
-    return digest.hexdigest()
 
 
 def generic_ranking_fingerprint(
@@ -189,23 +174,44 @@ def _source_parameters(result: TableResult, *, artifact_name: str) -> Mapping[st
     return source_parameters
 
 
-def _validated_universe(frame: Any, *, np: Any, pd: Any) -> list[str]:
+def _validated_universe(
+    frame: Any,
+    *,
+    np: Any,
+    pd: Any,
+    operation: str | None = None,
+) -> list[str]:
     if not isinstance(frame, pd.DataFrame):
+        if operation is not None:
+            raise TypeError(f"{operation} universe must be a pandas DataFrame or table artifact.")
         raise TypeError("Tested-gene universe must be a pandas DataFrame.")
     if list(frame.columns) != MARKER_UNIVERSE_COLUMNS:
+        if operation is not None:
+            raise ValueError(f"{operation} universe must use canonical gene/universe_rank columns.")
         raise ValueError(
             f"Tested-gene universe must use the exact canonical columns in order: {MARKER_UNIVERSE_COLUMNS}."
         )
     genes = frame["gene"].tolist()
-    for gene in genes:
-        if not isinstance(gene, str) or not gene.strip() or gene != gene.strip():
-            raise ValueError("Tested-gene universe identifiers must be nonblank strings without whitespace.")
-    if not genes or len(genes) != len(set(genes)):
-        raise ValueError("Tested-gene universe identifiers must be nonempty and unique.")
+    if operation is not None:
+        if not genes or len(genes) != len(set(genes)):
+            raise ValueError(f"{operation} universe genes must be nonempty and unique.")
+        for gene in genes:
+            if not isinstance(gene, str) or not gene.strip() or gene != gene.strip():
+                raise ValueError(f"{operation} universe genes must be nonblank strings without whitespace.")
+    else:
+        for gene in genes:
+            if not isinstance(gene, str) or not gene.strip() or gene != gene.strip():
+                raise ValueError("Tested-gene universe identifiers must be nonblank strings without whitespace.")
+        if not genes or len(genes) != len(set(genes)):
+            raise ValueError("Tested-gene universe identifiers must be nonempty and unique.")
     ranks = frame["universe_rank"]
     if pd.api.types.is_bool_dtype(ranks.dtype) or not pd.api.types.is_numeric_dtype(ranks.dtype):
+        if operation is not None:
+            raise TypeError(f"{operation} universe ranks must be numeric and non-boolean.")
         raise TypeError("Tested-gene universe ranks must be numeric and non-boolean.")
     if not bool(np.array_equal(ranks.to_numpy(dtype=float), np.arange(1, len(genes) + 1, dtype=float))):
+        if operation is not None:
+            raise ValueError(f"{operation} universe ranks must be consecutive and one-based.")
         raise ValueError("Tested-gene universe ranks must be consecutive, one-based, and order-stable.")
     return genes
 
@@ -216,14 +222,24 @@ def _selected_comparison_frame(
     comparison_column: str,
     selector: str,
     pd: Any,
+    operation: str | None = None,
 ) -> tuple[Any, str, list[str]]:
     if comparison_column not in frame:
+        if operation is not None:
+            raise ValueError(f"{operation} table is missing comparison/gene columns.")
         raise ValueError(f"Enrichment evidence comparison column not found: {comparison_column!r}.")
     labels = frame[comparison_column].tolist()
     for label in labels:
         if not isinstance(label, str) or not label.strip() or label != label.strip():
+            if operation is not None:
+                raise ValueError(f"{operation} comparison identifiers are invalid.")
             raise ValueError("Enrichment evidence comparisons must be nonblank strings without whitespace.")
     ordered_labels = list(dict.fromkeys(labels))
+    if operation is not None:
+        selected = frame.loc[frame[comparison_column] == selector].copy().reset_index(drop=True)
+        if selected.empty:
+            raise ValueError(f"{operation} comparison {selector!r} is absent or empty.")
+        return selected, selector, ordered_labels
     selector = selector.strip() if isinstance(selector, str) else selector
     if not isinstance(selector, str):
         raise TypeError("Enrichment comparison selector must be a string.")
@@ -614,21 +630,12 @@ def _standalone_validate_pinned_enrichment_pair(
     expected_universe_content_fingerprint,
 ):
     """Revalidate current frame bytes against runtime-pinned enrichment identities."""
-    import hashlib
-    import json
-    import math
-    import numbers
     from collections.abc import Mapping
 
     import numpy as np
     import pandas as pd
 
     operation = "Pinned enrichment evidence"
-
-    def valid_sha256(value):
-        return (
-            isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
-        )
 
     for name, value in (
         ("analysis", expected_analysis_fingerprint),
@@ -637,7 +644,7 @@ def _standalone_validate_pinned_enrichment_pair(
         ("table content", expected_table_content_fingerprint),
         ("universe content", expected_universe_content_fingerprint),
     ):
-        if not valid_sha256(value):
+        if not _valid_sha256(value):
             raise ValueError(f"{operation} expected {name} SHA-256 is invalid.")
 
     def unwrap(value, *, name):
@@ -656,73 +663,12 @@ def _standalone_validate_pinned_enrichment_pair(
 
     table, table_parameters, _ = unwrap(table_input, name="table")
     universe, universe_parameters, _ = unwrap(universe_input, name="universe")
-    if list(universe.columns) != ["gene", "universe_rank"]:
-        raise ValueError(f"{operation} universe must use canonical gene/universe_rank columns.")
-    universe_genes = universe["gene"].tolist()
-    if not universe_genes or len(universe_genes) != len(set(universe_genes)):
-        raise ValueError(f"{operation} universe genes must be nonempty and unique.")
-    for gene in universe_genes:
-        if not isinstance(gene, str) or not gene.strip() or gene != gene.strip():
-            raise ValueError(f"{operation} universe genes must be nonblank strings without whitespace.")
-    ranks = universe["universe_rank"]
-    if pd.api.types.is_bool_dtype(ranks.dtype) or not pd.api.types.is_numeric_dtype(ranks.dtype):
-        raise TypeError(f"{operation} universe ranks must be numeric and non-boolean.")
-    if not bool(np.array_equal(ranks.to_numpy(dtype=float), np.arange(1, len(universe_genes) + 1, dtype=float))):
-        raise ValueError(f"{operation} universe ranks must be consecutive and one-based.")
-
-    def sha256_json(payload):
-        encoder = json.JSONEncoder(
-            ensure_ascii=False,
-            allow_nan=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-        digest = hashlib.sha256()
-        for chunk in encoder.iterencode(payload):
-            digest.update(chunk.encode("utf-8"))
-        return digest.hexdigest()
-
-    observed_universe_identity = sha256_json(
-        {
-            "schema": "openbio-singlecell/tested-gene-universe-identity/v2",
-            "ordered_genes": universe_genes,
-        }
-    )
+    universe_genes = _validated_universe(universe, np=np, pd=pd, operation=operation)
+    observed_universe_identity = enrichment_universe_identity_fingerprint(universe_genes)
     if observed_universe_identity != expected_universe_fingerprint:
         raise ValueError(f"{operation} universe identity changed.")
 
-    def marker_frame_fingerprint(frame, *, artifact, numeric_columns):
-        encoder = json.JSONEncoder(
-            ensure_ascii=False,
-            allow_nan=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-        digest = hashlib.sha256()
-
-        def update(value):
-            for chunk in encoder.iterencode(value):
-                digest.update(chunk.encode("utf-8"))
-
-        digest.update(b'{"columns":')
-        update(list(frame.columns))
-        digest.update(b',"rows":[')
-        first = True
-        for row in frame.itertuples(index=False, name=None):
-            encoded = [
-                float(value).hex() if column in numeric_columns else value
-                for column, value in zip(frame.columns, row, strict=True)
-            ]
-            if not first:
-                digest.update(b",")
-            update(encoded)
-            first = False
-        digest.update(b'],"schema":')
-        update(f"openbio-singlecell/{artifact}/v2")
-        digest.update(b"}")
-        return digest.hexdigest()
-
-    observed_universe_content = marker_frame_fingerprint(
+    observed_universe_content = _frame_content_fingerprint(
         universe,
         artifact="tested-gene-universe",
         numeric_columns={"universe_rank"},
@@ -732,13 +678,13 @@ def _standalone_validate_pinned_enrichment_pair(
 
     if comparison_column not in table or gene_column not in table:
         raise ValueError(f"{operation} table is missing comparison/gene columns.")
-    comparison_values = table[comparison_column].tolist()
-    for value in comparison_values:
-        if not isinstance(value, str) or not value.strip() or value != value.strip():
-            raise ValueError(f"{operation} comparison identifiers are invalid.")
-    selected = table.loc[table[comparison_column] == comparison].copy().reset_index(drop=True)
-    if selected.empty:
-        raise ValueError(f"{operation} comparison {comparison!r} is absent or empty.")
+    selected, _, _ = _selected_comparison_frame(
+        table,
+        comparison_column=comparison_column,
+        selector=comparison,
+        pd=pd,
+        operation=operation,
+    )
     selected_genes = selected[gene_column].tolist()
     for gene in selected_genes:
         if not isinstance(gene, str) or not gene.strip() or gene != gene.strip():
@@ -749,52 +695,26 @@ def _standalone_validate_pinned_enrichment_pair(
         raise ValueError(f"{operation} table contains genes outside the paired universe.")
 
     if artifact_family == "marker_v2":
-        marker_columns = [
-            "group",
-            "gene",
-            "rank",
-            "score",
-            "log2_fold_change_approx",
-            "p_value",
-            "p_adjusted",
-            "fraction_in_group",
-            "fraction_reference",
-        ]
-        if list(table.columns) != marker_columns or comparison_column != "group" or gene_column != "gene":
+        if list(table.columns) != MARKER_COLUMNS or comparison_column != "group" or gene_column != "gene":
             raise ValueError(f"{operation} marker table schema changed.")
-        numeric_columns = set(marker_columns[2:])
+        numeric_columns = set(MARKER_COLUMNS[2:])
         for column in numeric_columns:
             values = table[column]
             if pd.api.types.is_bool_dtype(values.dtype) or not pd.api.types.is_numeric_dtype(values.dtype):
                 raise TypeError(f"{operation} marker numeric column {column!r} is invalid.")
             if not bool(np.isfinite(values.to_numpy(dtype=float)).all()):
                 raise ValueError(f"{operation} marker numeric column {column!r} is non-finite.")
-        observed_table_content = marker_frame_fingerprint(
+        observed_table_content = _frame_content_fingerprint(
             table,
             artifact="marker-table",
             numeric_columns=numeric_columns,
         )
     elif artifact_family == "generic_v1":
         expected_role = "complete_ranked_evidence" if purpose == "ranked" else "selected_gene_evidence"
-
-        def json_cell(value):
-            if value is None or isinstance(value, (str, bool, int)):
-                return value
-            if isinstance(value, numbers.Real):
-                normalized = float(value)
-                if not math.isfinite(normalized):
-                    raise ValueError(f"{operation} generic evidence contains non-finite numbers.")
-                return {"float_hex": normalized.hex()}
-            if hasattr(value, "item"):
-                return json_cell(value.item())
-            raise TypeError(f"{operation} generic evidence contains unsupported values.")
-
-        observed_table_content = sha256_json(
-            {
-                "schema": f"openbio-singlecell/{expected_role}/v1",
-                "columns": list(table.columns),
-                "rows": [[json_cell(value) for value in row] for row in table.itertuples(index=False, name=None)],
-            }
+        observed_table_content = generic_enrichment_content_fingerprint(
+            table,
+            artifact_role=expected_role,
+            operation=operation,
         )
     else:
         raise ValueError(f"{operation} artifact family is unsupported: {artifact_family!r}.")
@@ -839,7 +759,29 @@ def _standalone_validate_pinned_enrichment_pair(
 
 
 def pinned_enrichment_validation_code() -> str:
-    return textwrap.dedent(inspect.getsource(_standalone_validate_pinned_enrichment_pair)).strip()
+    functions = (
+        _canonical_sha256,
+        _valid_sha256,
+        _json_cell,
+        generic_enrichment_content_fingerprint,
+        enrichment_universe_identity_fingerprint,
+        _validated_universe,
+        _selected_comparison_frame,
+        _frame_content_fingerprint,
+        _standalone_validate_pinned_enrichment_pair,
+    )
+    constants = (
+        f"_SHA256_LENGTH = {_SHA256_LENGTH!r}",
+        f"MARKER_COLUMNS = {MARKER_COLUMNS!r}",
+        f"MARKER_UNIVERSE_COLUMNS = {MARKER_UNIVERSE_COLUMNS!r}",
+    )
+    return "\n\n".join(
+        (
+            "import hashlib\nimport json\nimport math\nimport numbers\nfrom typing import Any",
+            "\n".join(constants),
+            *(textwrap.dedent(inspect.getsource(function)).strip() for function in functions),
+        )
+    )
 
 
 __all__ = [

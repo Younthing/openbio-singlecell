@@ -7,13 +7,10 @@ from typing import Any, Literal
 from . import dependencies
 from .analysis_reporting import AnalysisReference, make_analysis_report, summarize_numeric
 from .analysis_utils import finish_adata, validate_count_expression
-from .artifact_codecs import read_anndata
-from .artifact_envelope import result_metadata
-from .expression_source import ExpressionSource, ExpressionSourceSpec
+from .expression_source import _SCRUBLET_SPEC, ExpressionSource
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
-    require_artifact_input,
+    analysis_outputs,
+    read_anndata_input,
     require_input_names,
     require_parameters,
     write_anndata_output,
@@ -21,6 +18,7 @@ from .operations_input import (
 from .worker_protocol import JSONValue, OperationContext, ProtocolError, register_operation
 
 CORRECTION_SOFTWARE_PACKAGES = ("scanpy", "anndata", "numpy", "pandas", "scipy")
+SCRUBLET_SOURCE = _SCRUBLET_SPEC
 SCANPY_REFERENCE = AnalysisReference(
     citation=(
         "Wolf FA, Angerer P, Theis FJ. SCANPY: large-scale single-cell gene expression data analysis. "
@@ -59,14 +57,6 @@ ANNDATA_REFERENCE = AnalysisReference(
     url="https://anndata.readthedocs.io/en/stable/generated/anndata.AnnData.html",
     kind="software_documentation",
 )
-SCRUBLET_SOURCE = ExpressionSourceSpec(
-    description="Scrublet count expression source",
-    default="X",
-    include_raw=True,
-    layer_input_id="source_layer",
-    layer_default="counts",
-)
-
 
 def _input_anndata(
     inputs: dict[str, JSONValue],
@@ -77,16 +67,11 @@ def _input_anndata(
 ) -> Any:
     require_input_names(inputs, {"adata"}, operation=operation)
     require_parameters(parameters, expected_parameters, operation=operation)
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    return read_anndata(root)
+    return read_anndata_input(inputs)
 
 
 def _records(context: OperationContext, adata: Any, report: Any, code: str) -> list[JSONValue]:
-    return [
-        write_anndata_output(context, adata),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(report, code, write_anndata_output(context, adata))
 
 
 def _string(value: JSONValue, *, name: str, allow_empty: bool = False) -> str:

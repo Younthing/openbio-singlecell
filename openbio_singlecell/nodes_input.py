@@ -12,7 +12,7 @@ from .files import (
     resolve_input_path,
     tenx_mtx_fingerprint,
 )
-from .node_types import AnnDataType, SummaryResultType
+from .node_types import AnnDataType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/input"
 DIAGNOSTIC_CATEGORY = "openbio/single-cell/diagnostics"
@@ -273,10 +273,7 @@ class OpenBioSingleCellAnnDataSummary(io.ComfyNode):
             category=DIAGNOSTIC_CATEGORY,
             description="Report a bounded structural diagnostic without returning large data to the main process.",
             inputs=[AnnDataType.Input("adata")],
-            outputs=[
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(),
         )
 
 

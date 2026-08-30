@@ -11,7 +11,7 @@ from textwrap import dedent
 from typing import TYPE_CHECKING, Any
 
 from . import PLUGIN_VERSION
-from .pyscenic_import import _software_versions
+from .analysis_reporting import _package_version, collect_software_versions
 from .scenic_artifact import (
     SCENIC_BINARY_ARTIFACT_SCHEMA_VERSION,
     SCENIC_BINARY_ARTIFACT_TYPE,
@@ -470,7 +470,7 @@ def binarize_scenic_activity(
         "parameters": parameters,
         "references": copy.deepcopy(SCENIC_BINARIZATION_REFERENCES),
         "software_versions": {
-            **_software_versions(
+            **collect_software_versions(
                 ["numpy", "pandas", "scipy", "scikit-learn"], openbio_version=openbio_version
             ),
             "pyscenic-method": "0.12.1",
@@ -505,7 +505,8 @@ def scenic_binarization_code(
         validate_scenic_result_artifact,
         _binary_fingerprint,
         SCENICBinaryArtifact,
-        _software_versions,
+        _package_version,
+        collect_software_versions,
         _gcm,
         _lcm,
         _touch_differences,
@@ -530,10 +531,8 @@ def scenic_binarization_code(
 import collections
 import copy
 import hashlib
-import importlib.metadata
 import json
 import math
-import platform
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any

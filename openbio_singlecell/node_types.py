@@ -18,7 +18,13 @@ CNVStateType = io.Custom("OPENBIO_CNV_STATE")
 VelocityStateType = io.Custom("OPENBIO_VELOCITY_STATE")
 WorkerType = io.Custom("OPENBIO_WORKER")
 
+
+def analysis_outputs(*primary: io.Output) -> list[io.Output]:
+    return [*primary, SummaryResultType.Output(display_name="summary"), io.String.Output("code")]
+
+
 __all__ = [
+    "analysis_outputs",
     "AnnDataType",
     "AugurResultType",
     "CassiopeiaCharactersType",

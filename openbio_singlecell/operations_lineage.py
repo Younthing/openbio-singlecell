@@ -6,8 +6,6 @@ from typing import Any
 
 from . import PLUGIN_VERSION
 from .analysis_utils import finish_adata, make_summary_result, make_table_result
-from .artifact_codecs import read_anndata, write_table
-from .artifact_envelope import result_metadata
 from .cassiopeia_codec import (
     CHARACTERS_CODEC,
     TREE_CODEC,
@@ -25,20 +23,20 @@ from .cassiopeia_tree import (
     reconstruct_cassiopeia_tree,
 )
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
+    analysis_outputs,
+    read_anndata_input,
     require_artifact_input,
     require_file_input,
     require_input_names,
     require_parameters,
     write_anndata_output,
+    write_table_output,
 )
 from .worker_protocol import JSONValue, OperationContext, register_operation
 
 CHARACTERS_KIND = "OPENBIO_CASSIOPEIA_CHARACTERS"
 TREE_KIND = "OPENBIO_CASSIOPEIA_TREE"
 TABLE_KIND = "OPENBIO_SINGLE_CELL_TABLE"
-TABLE_CODEC = "table-jsonl-v1"
 
 
 def _summary_result(
@@ -102,18 +100,6 @@ def _artifact_record(
         "name": name,
         "kind": kind,
         "codec": codec,
-        "payload": root.relative_to(context.output_root).as_posix(),
-    }
-
-
-def _table_record(context: OperationContext, result: Any) -> dict[str, JSONValue]:
-    root = context.create_output_directory("table")
-    write_table(root, result.table, result_metadata(result))
-    return {
-        "type": "artifact",
-        "name": "table",
-        "kind": TABLE_KIND,
-        "codec": TABLE_CODEC,
         "payload": root.relative_to(context.output_root).as_posix(),
     }
 
@@ -259,7 +245,9 @@ def cassiopeia_lineage_qc(
     )
     path, _provenance = require_file_input(inputs, "allele_table_file")
     characters, table, summary, code = lineage_qc_owned(path, **parameters)
-    return [
+    return analysis_outputs(
+        summary,
+        code,
         _artifact_record(
             context,
             name="characters",
@@ -268,10 +256,8 @@ def cassiopeia_lineage_qc(
             writer=write_characters,
             value=characters,
         ),
-        _table_record(context, table),
-        {"type": "summary", "name": "summary", "value": result_metadata(summary)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+        write_table_output(context, table, kind=TABLE_KIND),
+    )
 
 
 @register_operation("openbio.node.reconstructcassiopeiatree")
@@ -288,7 +274,9 @@ def reconstruct_cassiopeia(
     )
     root = require_artifact_input(inputs, "characters", kind=CHARACTERS_KIND, codec=CHARACTERS_CODEC)
     tree, summary, code = reconstruct_owned(read_characters(root), **parameters)
-    return [
+    return analysis_outputs(
+        summary,
+        code,
         _artifact_record(
             context,
             name="tree",
@@ -297,9 +285,7 @@ def reconstruct_cassiopeia(
             writer=write_tree,
             value=tree,
         ),
-        {"type": "summary", "name": "summary", "value": result_metadata(summary)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    )
 
 
 @register_operation("openbio.node.cassiopeiaexpansiontest")
@@ -316,11 +302,11 @@ def cassiopeia_expansion(
     )
     root = require_artifact_input(inputs, "tree", kind=TREE_KIND, codec=TREE_CODEC)
     table, summary, code = expansion_owned(read_tree(root), **parameters)
-    return [
-        _table_record(context, table),
-        {"type": "summary", "name": "summary", "value": result_metadata(summary)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(
+        summary,
+        code,
+        write_table_output(context, table, kind=TABLE_KIND),
+    )
 
 
 @register_operation("openbio.node.cassiopeiaplasticity")
@@ -343,15 +329,14 @@ def cassiopeia_plasticity(
         },
         operation="Cassiopeia Plasticity",
     )
-    adata_root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
     tree_root = require_artifact_input(inputs, "tree", kind=TREE_KIND, codec=TREE_CODEC)
-    adata, table, summary, code = plasticity_owned(read_anndata(adata_root), read_tree(tree_root), **parameters)
-    return [
+    adata, table, summary, code = plasticity_owned(read_anndata_input(inputs), read_tree(tree_root), **parameters)
+    return analysis_outputs(
+        summary,
+        code,
         write_anndata_output(context, adata),
-        _table_record(context, table),
-        {"type": "summary", "name": "summary", "value": result_metadata(summary)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+        write_table_output(context, table, kind=TABLE_KIND),
+    )
 
 
 __all__ = [

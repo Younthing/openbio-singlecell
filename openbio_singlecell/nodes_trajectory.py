@@ -2,17 +2,12 @@ from __future__ import annotations
 
 from comfy_api.latest import io
 
-from .expression_source import ExpressionSourceSpec
-from .node_types import AnnDataType, SummaryResultType
+from .expression_source import _CELL_CYCLE_SPEC
+from .node_types import AnnDataType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/trajectory"
 ANNOTATION_CATEGORY = "openbio/single-cell/annotation"
-CELL_CYCLE_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="Cell-cycle expression source; full-gene log-normalized values are recommended",
-    default="layer",
-    include_raw=True,
-    layer_default="log1p_norm",
-)
+CELL_CYCLE_EXPRESSION_SOURCE = _CELL_CYCLE_SPEC
 
 
 class OpenBioSingleCellCellCycleScore(io.ComfyNode):
@@ -49,11 +44,7 @@ class OpenBioSingleCellCellCycleScore(io.ComfyNode):
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 class OpenBioSingleCellDiffusionMap(io.ComfyNode):
@@ -74,11 +65,7 @@ class OpenBioSingleCellDiffusionMap(io.ComfyNode):
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 class OpenBioSingleCellPAGA(io.ComfyNode):
@@ -95,11 +82,7 @@ class OpenBioSingleCellPAGA(io.ComfyNode):
                 io.String.Input("neighbors_key", default="neighbors"),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 class OpenBioSingleCellDPT(io.ComfyNode):
@@ -140,11 +123,7 @@ class OpenBioSingleCellDPT(io.ComfyNode):
                 io.Int.Input("n_dcs", default=10, min=2, max=4096),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 TRAJECTORY_NODE_CLASSES = [

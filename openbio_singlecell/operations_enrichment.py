@@ -5,14 +5,13 @@ from typing import Any
 
 from . import PLUGIN_VERSION, dependencies
 from .analysis_utils import finish_adata, make_summary_result, make_table_result
-from .artifact_codecs import read_anndata, read_table, write_table
-from .artifact_envelope import result_metadata, table_from_metadata
+from .artifact_envelope import table_from_metadata
 from .dgidb_artifact_codec import DGIDB_CODEC, read_dgidb_resource, write_dgidb_resource
 from .dgidb_resource import dgidb_resource_code, load_dgidb_resource, validate_dgidb_resource
 from .drug_enrichment import drug_gsea_code, drug_ora_code, run_drug_gsea, run_drug_ora
 from .drug_score import drug_score_code, run_drug_score
 from .enrichment_artifacts import validate_enrichment_artifact_pair
-from .expression_source import DynamicExpressionSource, ExpressionSourceSpec
+from .expression_source import _AUCELL_SPEC, _DRUG_SCORE_SPEC, _GENE_PANEL_SPEC, _GSVA_SPEC, DynamicExpressionSource
 from .gene_set_scoring import (
     gene_set_scoring_code,
     run_aucell_scores,
@@ -21,13 +20,15 @@ from .gene_set_scoring import (
 )
 from .generic_ora import build_generic_ora_summary, generic_ora_code, run_generic_ora_evidence
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
+    analysis_outputs,
+    read_anndata_input,
+    read_table_input,
     require_artifact_input,
     require_file_input,
     require_input_names,
     require_parameters,
     write_anndata_output,
+    write_table_output,
 )
 from .pathway_score_contrast import pathway_score_contrast_code, run_pathway_score_contrast
 from .ranked_enrichment import build_ranked_gsea_summary, ranked_gsea_code, run_ranked_gsea_evidence
@@ -36,30 +37,10 @@ from .worker_protocol import JSONValue, OperationContext, ProtocolError, registe
 DGIDB_KIND = "OPENBIO_DGIDB_RESOURCE"
 TABLE_KIND = "OPENBIO_SINGLE_CELL_TABLE"
 TABLE_CODEC = "table-jsonl-v1"
-AUCELL_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="AUCell expression source",
-    include_raw=True,
-    layer_default="log1p_norm",
-)
-GSVA_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="GSVA expression source",
-    include_raw=True,
-    layer_default="log1p_norm",
-)
-GENE_PANEL_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="Gene panel expression source",
-    include_raw=True,
-    layer_default="log1p_norm",
-)
-DRUG_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="Explicit drug-score expression source",
-    include_raw=True,
-    layer_default="log1p_norm",
-)
-
-
-def _anndata_input(inputs: dict[str, JSONValue]) -> Any:
-    return read_anndata(require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC))
+AUCELL_EXPRESSION_SOURCE = _AUCELL_SPEC
+GSVA_EXPRESSION_SOURCE = _GSVA_SPEC
+GENE_PANEL_EXPRESSION_SOURCE = _GENE_PANEL_SPEC
+DRUG_EXPRESSION_SOURCE = _DRUG_SCORE_SPEC
 
 
 def _requested_path(provenance: dict[str, JSONValue], *, resource: str) -> str:
@@ -70,8 +51,7 @@ def _requested_path(provenance: dict[str, JSONValue], *, resource: str) -> str:
 
 
 def _table_input(inputs: dict[str, JSONValue], name: str) -> Any:
-    root = require_artifact_input(inputs, name, kind=TABLE_KIND, codec=TABLE_CODEC)
-    table, metadata = read_table(root)
+    table, metadata = read_table_input(inputs, name, kind=TABLE_KIND)
     return table_from_metadata(metadata, table)
 
 
@@ -80,32 +60,12 @@ def _dgidb_input(inputs: dict[str, JSONValue]) -> Any:
     return read_dgidb_resource(root)
 
 
-def _table_output(context: OperationContext, result: Any) -> dict[str, JSONValue]:
-    root = context.create_output_directory("table")
-    write_table(root, result.table, result_metadata(result))
-    return {
-        "type": "artifact",
-        "name": "table",
-        "kind": TABLE_KIND,
-        "codec": TABLE_CODEC,
-        "payload": root.relative_to(context.output_root).as_posix(),
-    }
-
-
 def _anndata_records(context: OperationContext, output: Any, report: Any, code: str) -> list[JSONValue]:
-    return [
-        write_anndata_output(context, output),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(report, code, write_anndata_output(context, output))
 
 
 def _table_records(context: OperationContext, result: Any, report: Any, code: str) -> list[JSONValue]:
-    return [
-        _table_output(context, result),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(report, code, write_table_output(context, result, kind=TABLE_KIND))
 
 
 def load_dgidb_resource_owned(
@@ -189,7 +149,9 @@ def load_dgidb_resource_operation(
     )
     root = context.create_output_directory("resource")
     write_dgidb_resource(root, resource)
-    return [
+    return analysis_outputs(
+        report,
+        code,
         {
             "type": "artifact",
             "name": "resource",
@@ -197,9 +159,7 @@ def load_dgidb_resource_operation(
             "codec": DGIDB_CODEC,
             "payload": root.relative_to(context.output_root).as_posix(),
         },
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    )
 
 
 def aucell_scores_owned(
@@ -305,7 +265,7 @@ def aucell_scores_operation(
     return _anndata_records(
         context,
         *aucell_scores_owned(
-            _anndata_input(inputs),
+            read_anndata_input(inputs),
             gene_sets_path=str(path),
             requested_resource_path=_requested_path(provenance, resource="Gene-set resource"),
             **parameters,
@@ -428,7 +388,7 @@ def gsva_scores_operation(
     return _anndata_records(
         context,
         *gsva_scores_owned(
-            _anndata_input(inputs),
+            read_anndata_input(inputs),
             gene_sets_path=str(path),
             requested_resource_path=_requested_path(provenance, resource="Gene-set resource"),
             **parameters,
@@ -535,7 +495,7 @@ def gene_panel_scores_operation(
     )
     path, provenance = require_file_input(inputs, "gene_sets_file")
     output, report, code = gene_panel_scores_owned(
-        _anndata_input(inputs),
+        read_anndata_input(inputs),
         gene_sets_path=str(path),
         requested_resource_path=_requested_path(provenance, resource="Gene-set resource"),
         **parameters,
@@ -642,7 +602,7 @@ def pathway_score_ttest_operation(
         },
         operation="Pathway Score T-Test",
     )
-    return _table_records(context, *pathway_score_ttest_owned(_anndata_input(inputs), **parameters))
+    return _table_records(context, *pathway_score_ttest_owned(read_anndata_input(inputs), **parameters))
 
 
 def ranked_gsea_owned(
@@ -987,7 +947,7 @@ def drug_scores_operation(
     )
     return _anndata_records(
         context,
-        *drug_scores_owned(_anndata_input(inputs), _dgidb_input(inputs), **parameters),
+        *drug_scores_owned(read_anndata_input(inputs), _dgidb_input(inputs), **parameters),
     )
 
 

@@ -7,15 +7,14 @@ from typing import Any
 
 from . import PLUGIN_VERSION, dependencies
 from .analysis_utils import make_summary_result, make_table_result
-from .artifact_codecs import TABLE_CODEC, read_anndata, write_table
-from .artifact_envelope import result_metadata
-from .expression_source import ExpressionSourceSpec
+from .expression_source import _PSEUDOBULK_SPEC
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
+    analysis_outputs,
+    read_anndata_input,
     require_artifact_input,
     require_input_names,
     require_parameters,
+    write_table_output,
 )
 from .pseudobulk import build_pseudobulk_summary, pseudobulk_code, run_pseudobulk
 from .pseudobulk_artifact_codec import (
@@ -42,13 +41,7 @@ from .worker_protocol import JSONValue, OperationContext, ProtocolError, registe
 TABLE_KIND = "OPENBIO_SINGLE_CELL_TABLE"
 SCVI_MODEL_KIND = "OPENBIO_SCVI_MODEL"
 SCVI_MODEL_CODEC = "scvi-native-directory"
-
-PSEUDOBULK_SOURCE = ExpressionSourceSpec(
-    description="Pseudobulk raw-count source",
-    default="layer",
-    include_raw=True,
-    layer_default="counts",
-)
+PSEUDOBULK_SOURCE = _PSEUDOBULK_SPEC
 
 
 def _strict_source(value: JSONValue, adata: Any) -> Any:
@@ -314,7 +307,6 @@ def run_scvi_differential_owned(
 
 
 def _table_record(context: OperationContext, result: Any) -> dict[str, JSONValue]:
-    root = context.create_output_directory("table")
     table = result.table
     science = dependencies.require_scientific_dependencies()
     nullable_float_columns = [
@@ -328,21 +320,7 @@ def _table_record(context: OperationContext, result: Any) -> dict[str, JSONValue
         table = table.copy(deep=False)
         for name in nullable_float_columns:
             table[name] = table[name].astype(science.pd.Float64Dtype())
-    write_table(root, table, result_metadata(result))
-    return {
-        "type": "artifact",
-        "name": "table",
-        "kind": TABLE_KIND,
-        "codec": TABLE_CODEC,
-        "payload": root.relative_to(context.output_root).as_posix(),
-    }
-
-
-def _small_records(report: Any, code: str) -> list[JSONValue]:
-    return [
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return write_table_output(context, result, kind=TABLE_KIND, table=table)
 
 
 @register_operation("openbio.node.pseudobulk")
@@ -365,14 +343,16 @@ def pseudobulk(
     }
     require_input_names(inputs, {"adata"}, operation="Pseudobulk")
     require_parameters(parameters, expected, operation="Pseudobulk")
-    adata = read_anndata(require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC))
+    adata = read_anndata_input(inputs)
     expression = _strict_source(parameters["source"], adata)
     owned_parameters = dict(parameters)
     owned_parameters["source"] = expression.parameters()
     artifact, report, code = run_pseudobulk_owned(adata, **owned_parameters)
     root = context.create_output_directory("pseudobulk")
     write_pseudobulk(root, artifact)
-    return [
+    return analysis_outputs(
+        report,
+        code,
         {
             "type": "artifact",
             "name": "pseudobulk",
@@ -380,8 +360,7 @@ def pseudobulk(
             "codec": PSEUDOBULK_CODEC,
             "payload": root.relative_to(context.output_root).as_posix(),
         },
-        *_small_records(report, code),
-    ]
+    )
 
 
 _ENGINE_PARAMETERS = {
@@ -421,7 +400,7 @@ def pseudobulk_edger(
 ) -> list[JSONValue]:
     artifact = _pseudobulk_engine_input(inputs, parameters, operation="Pseudobulk edgeR", deseq2=False)
     result, report, code = run_pseudobulk_edger_owned(artifact, **parameters)
-    return [_table_record(context, result), *_small_records(report, code)]
+    return analysis_outputs(report, code, _table_record(context, result))
 
 
 @register_operation("openbio.node.pseudobulkdeseq2")
@@ -432,7 +411,7 @@ def pseudobulk_deseq2(
 ) -> list[JSONValue]:
     artifact = _pseudobulk_engine_input(inputs, parameters, operation="Pseudobulk DESeq2", deseq2=True)
     result, report, code = run_pseudobulk_deseq2_owned(artifact, **parameters)
-    return [_table_record(context, result), *_small_records(report, code)]
+    return analysis_outputs(report, code, _table_record(context, result))
 
 
 def _scvi_training_parameters(adata: Any) -> dict[str, Any]:
@@ -497,11 +476,11 @@ def scvi_differential_expression(
         },
         description="scVI mode",
     )
-    adata = read_anndata(require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC))
+    adata = read_anndata_input(inputs)
     model_root = require_artifact_input(inputs, "model", kind=SCVI_MODEL_KIND, codec=SCVI_MODEL_CODEC)
     model = _load_scvi_model(model_root, adata)
     result, report, code = run_scvi_differential_owned(adata, model, **owned_parameters)
-    return [_table_record(context, result), *_small_records(report, code)]
+    return analysis_outputs(report, code, _table_record(context, result))
 
 
 __all__ = [

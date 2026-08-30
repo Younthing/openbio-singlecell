@@ -225,8 +225,7 @@ def test_pca_umap_and_force_graph_generated_code_matches(science):
     pca_result, pca_code = pca_output[0], pca_output[2]
     namespace: dict[str, object] = {}
     exec(pca_code, namespace)
-    with pytest.warns(UserWarning, match="provenance is unknown"):
-        generated_pca = namespace["run_pca"](adata)
+    generated_pca = namespace["run_pca"](adata)
     assert science.np.allclose(generated_pca.obsm["X_pca"], pca_result.obsm["X_pca"])
     assert science.np.allclose(generated_pca.varm["PCs"], pca_result.varm["PCs"])
 
@@ -276,12 +275,11 @@ def test_pca_sparse_preflight_does_not_densify_expression(science, monkeypatch):
 
     namespace: dict[str, object] = {}
     exec(code, namespace)
-    with pytest.warns(UserWarning, match="provenance is unknown"):
-        generated = namespace["run_pca"](adata)
+    generated = namespace["run_pca"](adata)
     assert generated.obsm["X_pca"].shape == (30, 4)
 
 
-def test_pca_generated_code_recognizes_scale_to_layer_provenance(science):
+def test_pca_does_not_infer_expression_state_from_history(science):
     rng = science.np.random.default_rng(29)
     adata = science.ad.AnnData(rng.normal(size=(30, 8)))
     adata.layers["log1p_norm"] = adata.X.copy()
@@ -296,55 +294,14 @@ def test_pca_generated_code_recognizes_scale_to_layer_provenance(science):
     }
     scaled.uns["openbio_singlecell"] = metadata
 
-    _, report, _ = _run(pca, scaled, n_comps=4, use_hvg=False)
-    assert not any("provenance is unknown" in item for item in report.summary["warnings"])
-    assert report.summary["parameters"]["expression_state"] == "scaled"
-    assert report.summary["parameters"]["expression_state_evidence"] == "OpenBio Scale history"
+    _, report, code = _run(pca, scaled, n_comps=4, use_hvg=False)
+    assert "expression_state" not in report.summary["parameters"]
+    assert "expression_state_evidence" not in report.summary["parameters"]
 
     namespace: dict[str, object] = {}
     exec(code, namespace)
-    assert namespace["_expression_state"](scaled) == "scaled"
     generated = namespace["run_pca"](scaled)
     assert generated.obsm["X_pca"].shape == (30, 4)
-
-
-def test_pca_runtime_and_generated_code_disclose_snapshot_expression_x_counts(science):
-    rng = science.np.random.default_rng(37)
-    valid = science.ad.AnnData(rng.normal(size=(30, 8)))
-    valid.uns["log1p"] = {"base": None}
-    _, _, code = _run(
-        pca,
-        valid,
-        n_comps=3,
-        use_hvg=False,
-        source={"source": "X"},
-    )
-    namespace = {}
-    exec(code, namespace)
-
-    counts = science.ad.AnnData(rng.poisson(2.0, size=(30, 8)))
-    metadata = ensure_metadata(counts)
-    metadata["analysis_history"] = {
-        "snapshot": {
-            "operation": "snapshot_expression",
-            "parameters": {"source": "X", "layer_name": "counts"},
-        }
-    }
-    counts.uns["openbio_singlecell"] = metadata
-
-    assert namespace["_expression_state"](counts) == "counts"
-    output, report, _ = _run(
-        pca,
-        counts,
-        n_comps=3,
-        use_hvg=False,
-        source={"source": "X"},
-    )
-    assert output.obsm["X_pca"].shape == (30, 3)
-    assert any("explicitly selected 'counts' expression" in warning for warning in report.summary["warnings"])
-    with pytest.warns(UserWarning, match="explicitly selected 'counts' expression"):
-        generated = namespace["run_pca"](counts)
-    assert science.np.allclose(generated.obsm["X_pca"], output.obsm["X_pca"])
 
 
 def test_pca_output_budget_accounts_for_full_axis_loadings_with_hvg(science):

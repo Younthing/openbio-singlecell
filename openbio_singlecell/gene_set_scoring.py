@@ -151,96 +151,17 @@ def _standalone_score_gene_sets(
     value_max = float(np.max(semantic_values))
     integer_like = bool(np.allclose(semantic_values, np.rint(semantic_values), rtol=0.0, atol=1e-8))
 
-    def expression_state():
-        if source_kind == "raw":
-            return "counts", "OpenBio Raw snapshot semantic contract"
-        x_state = "unknown"
-        x_evidence = None
-        layer_states = {}
-        metadata = adata.uns.get("openbio_singlecell")
-        history = metadata.get("analysis_history") if isinstance(metadata, Mapping) else None
-        entries = history.values() if isinstance(history, Mapping) else ()
-        for entry in entries:
-            if not isinstance(entry, Mapping):
-                continue
-            history_operation = entry.get("operation")
-            parameters = entry.get("parameters")
-            parameters = parameters if isinstance(parameters, Mapping) else {}
-            if history_operation == "snapshot_expression":
-                layer_states["counts"] = ("counts", "OpenBio Snapshot Expression history")
-                if parameters.get("source") == "X":
-                    x_state, x_evidence = "counts", "OpenBio Snapshot Expression history"
-            elif history_operation == "normalize_to_layer":
-                output_layer = parameters.get("output_layer")
-                transform = parameters.get("transform")
-                if isinstance(output_layer, str):
-                    state = {"log1p": "logged", "sqrt": "transformed", "none": "normalized"}.get(
-                        transform, "normalized"
-                    )
-                    layer_states[output_layer] = (state, "OpenBio Normalize To Layer history")
-            elif history_operation == "pearson_residuals_to_layer":
-                output_layer = parameters.get("output_layer")
-                if isinstance(output_layer, str):
-                    layer_states[output_layer] = (
-                        "pearson_residuals",
-                        "OpenBio Pearson Residuals history",
-                    )
-            elif history_operation == "scale_to_layer":
-                output_layer = parameters.get("output_layer")
-                if isinstance(output_layer, str):
-                    layer_states[output_layer] = ("scaled", "OpenBio Scale history")
-            if history_operation == "normalize_total":
-                x_state, x_evidence = "normalized", "OpenBio Normalize Total history"
-            elif history_operation == "log1p":
-                x_state, x_evidence = "logged", "OpenBio Log1p history"
-        if source_kind == "layer":
-            return layer_states.get(layer_name, ("unknown", None))
-        if x_state == "unknown" and isinstance(adata.uns.get("log1p"), Mapping):
-            return "logged", "AnnData uns['log1p'] marker"
-        return x_state, x_evidence
-
-    resolved_state, state_evidence = expression_state()
     warnings = []
-    normalized_states = {"normalized", "logged", "transformed"}
     if method == "gsva" and kernel == "poisson_counts":
-        if resolved_state not in {"counts", "unknown"}:
-            warnings.append(
-                f"Poisson GSVA is using values described as {resolved_state!r} ({state_evidence}); the numeric "
-                "integer-count domain was verified, but mutable provenance was not used as an authority gate."
-            )
         if value_min < 0.0 or not integer_like:
             raise ValueError("Poisson GSVA requires finite nonnegative integer count values.")
-        if resolved_state == "unknown":
-            warnings.append(
-                "The integer count layer lacks OpenBio count-state provenance; the caller must verify its Raw-count contract."
-            )
     else:
         if method == "gsva" and kernel not in {"gaussian_normalized", "empirical"}:
             raise ValueError("GSVA kernel must be 'gaussian_normalized', 'poisson_counts', or 'empirical'.")
-        if resolved_state == "counts":
+        if integer_like and value_min >= 0.0:
             warnings.append(
-                f"{operation} is using explicitly selected count-like expression. Normalized continuous expression "
+                f"{operation} is using nonnegative integer-like/count-like values. Normalized continuous expression "
                 "is recommended for this configuration; sparsity, ties, and score scale can differ."
-            )
-        elif resolved_state in {"scaled", "pearson_residuals"}:
-            warnings.append(
-                f"{operation} is using explicitly selected {resolved_state!r} values ({state_evidence}); scores "
-                "remain calculable but describe that transformed representation rather than normalized abundance."
-            )
-        if resolved_state == "unknown" and integer_like and value_min >= 0.0:
-            warnings.append(
-                f"{operation} source has unknown provenance and is nonnegative integer-like/count-like. "
-                "The expert-selected calculation remains available, but normalized continuous expression is "
-                "recommended and the caller must interpret the resulting tie structure and score scale."
-            )
-        elif resolved_state == "unknown":
-            warnings.append(
-                "Expression provenance is unknown but values are non-count-like; scoring assumes the caller supplied normalized continuous expression."
-            )
-        elif resolved_state not in normalized_states and resolved_state != "counts":
-            warnings.append(
-                f"{operation} is using nonstandard expression state {resolved_state!r}; the explicitly selected "
-                "finite values were passed unchanged."
             )
 
     def expression_fingerprint():
@@ -335,8 +256,6 @@ def _standalone_score_gene_sets(
     expression_provenance = {
         "source": source_kind,
         "layer_name": layer_name if source_kind == "layer" else None,
-        "state": resolved_state,
-        "state_evidence": state_evidence,
         "sparse": bool(sparse.issparse(matrix)),
         "observations": len(observation_names),
         "features": len(feature_names),

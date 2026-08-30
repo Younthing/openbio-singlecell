@@ -627,7 +627,7 @@ def test_pseudobulk_exact_sums_missing_profiles_filter_summary_code_and_immutabi
     expected_t_s1 = _matrix_values(adata.raw.X, science)[:2].sum(axis=0)
     science.np.testing.assert_array_equal(_matrix_values(output.X, science)[0], expected_t_s1)
     assert output.obs["openbio_n_cells"].tolist() == [2, 2, 2, 2, 2, 2, 2, 2]
-    assert metadata["count_state"] == "raw_counts"
+    assert metadata["schema_version"] == 2
     assert metadata["aggregation_mode"] == "sum"
     assert metadata["backend"]["cell_qc_column"] == qc_name
     assert report.summary["key_results"]["profiles_before_qc"] == 10
@@ -698,8 +698,6 @@ def test_pseudobulk_explicit_x_source_is_independent_of_raw_and_formal_status_is
     )
     output, metadata = validate_pseudobulk_artifact(artifact)
     science.np.testing.assert_array_equal(_matrix_values(output.X, science)[0], selected_x[:2].sum(axis=0))
-    assert metadata["count_source"]["raw_equivalence_required"] is False
-    assert metadata["count_source"]["history_provenance_required"] is False
     assert metadata["count_source"]["feature_axis"] == "adata.var_names"
     assert x_report.summary["key_results"]["declarations"]["count_source"] == (
         "caller_selected_and_declared_raw_counts"
@@ -831,11 +829,7 @@ def test_pseudobulk_named_counts_layer_is_explicit_and_exact(science, monkeypatc
         "kind": "layer",
         "layer_name": "counts",
         "label": "layers['counts']",
-        "state": "raw_counts",
-        "state_basis": "caller_declared_with_numeric_count_validation",
         "feature_axis": "adata.var_names",
-        "history_provenance_required": False,
-        "raw_equivalence_required": False,
     }
     assert report.summary["parameters"]["count_source"] == metadata["count_source"]
     assert output.var_names.equals(adata.raw.var_names)

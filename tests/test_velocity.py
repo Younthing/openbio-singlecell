@@ -927,6 +927,23 @@ def test_generated_sources_compile_are_standalone_and_match_portable_results():
     assert observed_summary == expected_summary
 
 
+def test_generated_sources_exclude_unrelated_velocity_operations():
+    implementations = {
+        "prepare": "prepare_velocity_abundances",
+        "moments": "compute_velocity_moments",
+        "estimate": "estimate_rna_velocity",
+        "recover": "recover_velocity_dynamics",
+        "graph": "build_velocity_graph",
+        "ranking": "rank_recovered_dynamics",
+        "stream": "render_velocity_stream",
+    }
+    for operation, implementation in implementations.items():
+        source = velocity_code(operation)
+        assert f"def {implementation}(" in source
+        for unrelated in set(implementations.values()) - {implementation}:
+            assert f"def {unrelated}(" not in source
+
+
 def test_real_scvelo_034_full_cpu_smoke_when_wheel_is_provided(monkeypatch):
     wheel = os.environ.get("OPENBIO_SCVELO_WHEEL")
     if not wheel:

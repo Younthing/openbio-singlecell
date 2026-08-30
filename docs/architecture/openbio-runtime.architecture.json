@@ -1,0 +1,376 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "OpenBio 当前科学节点运行时架构",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/Younthing/openbio-singlecell.git",
+      "revision": "9e6b1b4928e4ec8421e2609d4d7aba7fb2e68a2f"
+    },
+    "viewBox": [1950, 820],
+    "views": [
+      {
+        "id": "execution-path",
+        "label": "科学节点主路径",
+        "focus": [
+          "node-schema",
+          "node-adapter",
+          "artifact-service",
+          "worker-entry",
+          "operation-dispatch",
+          "scientific-implementation",
+          "file-artifact",
+          "ticket-cache"
+        ],
+        "note": "从 ComfyUI 节点 schema 进入一次性 Worker，最后只把 ArtifactTicket 留在主进程。"
+      },
+      {
+        "id": "process-boundaries",
+        "label": "进程与文件边界",
+        "focus": [
+          "artifact-service",
+          "worker-entry",
+          "operation-dispatch",
+          "scientific-implementation",
+          "file-artifact",
+          "ticket-cache"
+        ],
+        "note": "科学库对象只存在于 one-shot Worker；主进程通过文件与进程内 ticket 衔接。"
+      },
+      {
+        "id": "persistence-branch",
+        "label": "Persisted artifact 支路",
+        "focus": ["ticket-cache", "persist-node", "persisted-artifact"],
+        "note": "Persist Artifact 只把可移植文件复制到持久目录，不生成可恢复的工作流值。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "node-schema",
+      "type": "frontend",
+      "label": "ComfyUI 工作流 / 节点 schema",
+      "sublabel": "io.Schema：输入、输出与参数",
+      "tag": "主进程",
+      "sources": [
+        {
+          "path": "openbio_singlecell/nodes_qc.py",
+          "line": 21,
+          "end_line": 42,
+          "label": "节点 schema 示例"
+        },
+        {
+          "path": "openbio_singlecell/extension.py",
+          "line": 37,
+          "end_line": 68,
+          "label": "节点注册与适配"
+        }
+      ],
+      "pos": [50, 110],
+      "size": [190, 82]
+    },
+    {
+      "id": "node-adapter",
+      "type": "backend",
+      "label": "node_adapter",
+      "sublabel": "追加 worker 输入；替换 execute",
+      "tag": "主进程",
+      "sources": [
+        {
+          "path": "openbio_singlecell/node_adapter.py",
+          "line": 45,
+          "end_line": 61,
+          "label": "科学节点适配"
+        }
+      ],
+      "pos": [310, 110],
+      "size": [190, 82]
+    },
+    {
+      "id": "artifact-service",
+      "type": "backend",
+      "label": "artifact_service / RunLease",
+      "sublabel": "解析 ticket；创建 run；验证并发布",
+      "tag": "主进程",
+      "sources": [
+        {
+          "path": "openbio_singlecell/artifact_service.py",
+          "line": 317,
+          "end_line": 375,
+          "label": "节点执行编排"
+        },
+        {
+          "path": "openbio_singlecell/artifact_runtime.py",
+          "line": 358,
+          "end_line": 376,
+          "label": "创建 RunLease"
+        }
+      ],
+      "pos": [570, 110],
+      "size": [210, 82]
+    },
+    {
+      "id": "worker-entry",
+      "type": "backend",
+      "label": "one-shot Worker",
+      "sublabel": "python -I worker_entry.py",
+      "tag": "新进程 / 每次调用",
+      "sources": [
+        {
+          "path": "openbio_singlecell/worker_client.py",
+          "line": 275,
+          "end_line": 307,
+          "label": "启动隔离子进程"
+        },
+        {
+          "path": "openbio_singlecell/worker_entry.py",
+          "line": 36,
+          "end_line": 58,
+          "label": "Worker 入口"
+        }
+      ],
+      "pos": [570, 370],
+      "size": [210, 82]
+    },
+    {
+      "id": "operation-dispatch",
+      "type": "backend",
+      "label": "worker operation",
+      "sublabel": "allowlist 注册与 operation ID 分派",
+      "tag": "Worker 进程",
+      "sources": [
+        {
+          "path": "openbio_singlecell/worker_protocol.py",
+          "line": 279,
+          "end_line": 308,
+          "label": "注册与分派"
+        },
+        {
+          "path": "openbio_singlecell/worker_operations.py",
+          "line": 3,
+          "end_line": 26,
+          "label": "加载操作模块"
+        }
+      ],
+      "pos": [850, 370],
+      "size": [210, 82]
+    },
+    {
+      "id": "scientific-implementation",
+      "type": "backend",
+      "label": "科学实现",
+      "sublabel": "operations_*.py → Scanpy / 科学库",
+      "tag": "Worker 私有对象",
+      "sources": [
+        {
+          "path": "openbio_singlecell/operations_qc.py",
+          "line": 324,
+          "end_line": 418,
+          "label": "科学计算示例"
+        },
+        {
+          "path": "openbio_singlecell/operations_qc.py",
+          "line": 517,
+          "end_line": 540,
+          "label": "operation 适配层"
+        }
+      ],
+      "pos": [1130, 370],
+      "size": [210, 82]
+    },
+    {
+      "id": "file-artifact",
+      "type": "database",
+      "label": "File artifact",
+      "sublabel": ".partial → manifest.json → .ready",
+      "tag": "临时文件系统",
+      "sources": [
+        {
+          "path": "openbio_singlecell/artifact_runtime.py",
+          "line": 242,
+          "end_line": 303,
+          "label": "原子发布文件产物"
+        },
+        {
+          "path": "openbio_singlecell/worker_protocol.py",
+          "line": 45,
+          "end_line": 52,
+          "label": "Worker 输出目录"
+        }
+      ],
+      "pos": [1410, 370],
+      "size": [210, 82]
+    },
+    {
+      "id": "ticket-cache",
+      "type": "database",
+      "label": "ArtifactTicket / ComfyUI cache",
+      "sublabel": "缓存只保留进程内 ticket，不保留文件内容",
+      "tag": "Classic / None / LRU",
+      "sources": [
+        {
+          "path": "openbio_singlecell/artifact_runtime.py",
+          "line": 209,
+          "end_line": 228,
+          "label": "ArtifactTicket"
+        },
+        {
+          "path": "openbio_singlecell/artifact_runtime.py",
+          "line": 402,
+          "end_line": 437,
+          "label": "ticket 解析与校验"
+        },
+        {
+          "path": "openbio_singlecell/cache_policy.py",
+          "line": 4,
+          "end_line": 14,
+          "label": "缓存策略约束"
+        }
+      ],
+      "pos": [1410, 110],
+      "size": [210, 82]
+    },
+    {
+      "id": "persist-node",
+      "type": "backend",
+      "label": "Persist Artifact 节点",
+      "sublabel": "显式耐久化；无 Restore 工作流值",
+      "tag": "主进程",
+      "sources": [
+        {
+          "path": "openbio_singlecell/nodes_output.py",
+          "line": 305,
+          "end_line": 347,
+          "label": "持久化输出节点"
+        }
+      ],
+      "pos": [1700, 110],
+      "size": [190, 82]
+    },
+    {
+      "id": "persisted-artifact",
+      "type": "database",
+      "label": "Persisted artifact",
+      "sublabel": "复制文件 + manifest + SHA-256",
+      "tag": "ComfyUI output",
+      "sources": [
+        {
+          "path": "openbio_singlecell/artifact_persist.py",
+          "line": 237,
+          "end_line": 304,
+          "label": "耐久化实现"
+        }
+      ],
+      "pos": [1700, 630],
+      "size": [190, 82]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "ComfyUI 主进程",
+      "wraps": ["node-schema", "node-adapter", "artifact-service", "ticket-cache", "persist-node"],
+      "pad": 28
+    },
+    {
+      "kind": "region",
+      "label": "one-shot Worker 进程（每次科学节点调用新建）",
+      "wraps": ["worker-entry", "operation-dispatch", "scientific-implementation"],
+      "pad": 28
+    }
+  ],
+  "connections": [
+    {
+      "id": "schema-to-adapter",
+      "from": "node-schema",
+      "to": "node-adapter",
+      "label": "适配",
+      "variant": "emphasis"
+    },
+    {
+      "id": "adapter-to-service",
+      "from": "node-adapter",
+      "to": "artifact-service",
+      "label": "委派",
+      "variant": "emphasis"
+    },
+    {
+      "id": "service-to-worker",
+      "from": "artifact-service",
+      "to": "worker-entry",
+      "label": "JSON 请求",
+      "labelAt": [675, 230],
+      "variant": "emphasis"
+    },
+    {
+      "id": "worker-to-operation",
+      "from": "worker-entry",
+      "to": "operation-dispatch",
+      "label": "加载",
+      "variant": "emphasis"
+    },
+    {
+      "id": "operation-to-science",
+      "from": "operation-dispatch",
+      "to": "scientific-implementation",
+      "label": "调用",
+      "variant": "emphasis"
+    },
+    {
+      "id": "science-to-file",
+      "from": "scientific-implementation",
+      "to": "file-artifact",
+      "label": "写入",
+      "variant": "emphasis"
+    },
+    {
+      "id": "file-to-ticket",
+      "from": "file-artifact",
+      "to": "ticket-cache",
+      "label": "原子发布",
+      "variant": "emphasis"
+    },
+    {
+      "id": "ticket-to-persist",
+      "from": "ticket-cache",
+      "to": "persist-node",
+      "label": "显式持久化",
+      "variant": "dashed"
+    },
+    {
+      "id": "persist-to-durable",
+      "from": "persist-node",
+      "to": "persisted-artifact",
+      "label": "复制 + 校验",
+      "labelAt": [1795, 410],
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "进程隔离",
+      "items": [
+        "ComfyUI 主进程只编排请求、租约与 ArtifactTicket",
+        "每次科学节点调用启动一个隔离 Worker，结束后不保留科学库工作区"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "文件与缓存生命周期",
+      "items": [
+        "一个 RunLease 原子发布该次运行的全部 File artifacts",
+        "缓存命中直接复用 ArtifactTicket，不启动 Worker；RAM-pressure cache 被拒绝"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "耐久边界",
+      "items": [
+        "Persisted artifact 是可移植文件产物的显式耐久副本",
+        "scVI / cNMF 原生目录受 Worker identity 绑定，不能持久化或恢复"
+      ]
+    }
+  ]
+}

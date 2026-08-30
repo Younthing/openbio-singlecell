@@ -3,19 +3,14 @@ from __future__ import annotations
 from comfy_api.latest import io
 
 from .cnmf_standalone import CNMF_LOCAL_NEIGHBORHOOD_SIZE
-from .expression_source import ExpressionSourceSpec
-from .node_types import AnnDataType, CNMFRunType, SummaryResultType, TableResultType
+from .expression_source import _CNMF_SPEC
+from .node_types import AnnDataType, CNMFRunType, TableResultType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/factorization"
 
 
 class OpenBioSingleCellCNMFRankSurvey(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="cNMF count source",
-        default="layer",
-        include_raw=True,
-        layer_default="counts",
-    )
+    EXPRESSION_SOURCE = _CNMF_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -33,12 +28,9 @@ class OpenBioSingleCellCNMFRankSurvey(io.ComfyNode):
                 io.Int.Input("num_highvar_genes", default=2000, min=1),
                 io.Int.Input("random_seed", default=123, min=0, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                CNMFRunType.Output(display_name="run"),
-                TableResultType.Output(display_name="k_metrics"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(
+                CNMFRunType.Output(display_name="run"), TableResultType.Output(display_name="k_metrics")
+            ),
         )
 
 
@@ -65,11 +57,7 @@ class OpenBioSingleCellCNMF(io.ComfyNode):
                 io.Int.Input("n_top_genes", default=100, min=1, max=2**31 - 1, advanced=True),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 

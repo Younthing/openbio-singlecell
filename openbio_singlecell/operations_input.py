@@ -6,7 +6,7 @@ import os
 import posixpath
 import time
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from itertools import islice
 from pathlib import Path
 from textwrap import dedent
@@ -15,7 +15,7 @@ from typing import Any
 from . import dependencies
 from .analysis_reporting import AnalysisReference, make_analysis_report
 from .analysis_utils import validate_count_expression
-from .artifact_codecs import read_anndata, write_anndata
+from .artifact_codecs import PLOT_CODEC, TABLE_CODEC, read_anndata, read_table, write_anndata, write_plot, write_table
 from .artifact_envelope import result_metadata
 from .contracts import ensure_metadata
 from .worker_protocol import JSONValue, OperationContext, ProtocolError, register_operation
@@ -124,16 +124,80 @@ def require_parameters(parameters: dict[str, JSONValue], expected: set[str], *, 
         raise ProtocolError(f"{operation} parameters must be exactly {sorted(expected)!r}.")
 
 
+def read_anndata_input(inputs: dict[str, JSONValue], name: str = "adata") -> Any:
+    return read_anndata(require_artifact_input(inputs, name, kind=ANNDATA_KIND, codec=ANNDATA_CODEC))
+
+
+def read_table_input(
+    inputs: dict[str, JSONValue],
+    name: str,
+    *,
+    kind: str,
+    codec: str = TABLE_CODEC,
+) -> tuple[Any, dict[str, Any]]:
+    return read_table(require_artifact_input(inputs, name, kind=kind, codec=codec))
+
+
+def _artifact_output(
+    context: OperationContext,
+    root: Path,
+    *,
+    name: str,
+    kind: str,
+    codec: str,
+) -> dict[str, JSONValue]:
+    return {
+        "type": "artifact",
+        "name": name,
+        "kind": kind,
+        "codec": codec,
+        "payload": root.relative_to(context.output_root).as_posix(),
+    }
+
+
 def write_anndata_output(context: OperationContext, adata: Any) -> dict[str, JSONValue]:
     root = context.create_output_directory("adata")
     write_anndata(root, adata)
-    return {
-        "type": "artifact",
-        "name": "adata",
-        "kind": ANNDATA_KIND,
-        "codec": ANNDATA_CODEC,
-        "payload": root.relative_to(context.output_root).as_posix(),
-    }
+    return _artifact_output(context, root, name="adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
+
+
+def write_table_output(
+    context: OperationContext,
+    result: Any,
+    *,
+    kind: str,
+    name: str = "table",
+    table: Any | None = None,
+    json_list_columns: Sequence[str] = (),
+) -> dict[str, JSONValue]:
+    root = context.create_output_directory(name)
+    write_table(
+        root,
+        result.table if table is None else table,
+        result_metadata(result),
+        json_list_columns=json_list_columns,
+    )
+    return _artifact_output(context, root, name=name, kind=kind, codec=TABLE_CODEC)
+
+
+def write_plot_output(
+    context: OperationContext,
+    result: Any,
+    *,
+    kind: str,
+    name: str = "plot",
+) -> dict[str, JSONValue]:
+    root = context.create_output_directory(name)
+    write_plot(root, result.png, result_metadata(result))
+    return _artifact_output(context, root, name=name, kind=kind, codec=PLOT_CODEC)
+
+
+def analysis_outputs(report: Any, code: str, *outputs: JSONValue) -> list[JSONValue]:
+    return [
+        *outputs,
+        {"type": "summary", "name": "summary", "value": result_metadata(report)},
+        {"type": "string", "name": "code", "value": code},
+    ]
 
 
 def _sanitize_embedded_provenance(value: Any) -> Any:
@@ -959,8 +1023,7 @@ def anndata_summary(
 ) -> list[JSONValue]:
     require_input_names(inputs, {"adata"}, operation="AnnData Summary")
     require_parameters(parameters, set(), operation="AnnData Summary")
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    adata = read_anndata(root)
+    adata = read_anndata_input(inputs)
     started_at = time.perf_counter()
     cells, genes = int(adata.n_obs), int(adata.n_vars)
     key_results = _anndata_summary_key_results(adata)
@@ -1022,10 +1085,7 @@ def anndata_summary(
         started_at=started_at,
         code=_anndata_summary_code(),
     )
-    return [
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(report, code)
 
 
 def load_h5ad(
@@ -1073,7 +1133,6 @@ def load_h5ad(
             "reader_parameters": {"backed": None, "make_var_names_unique": make_var_names_unique},
             "shape": [int(adata.n_obs), int(adata.n_vars)],
             "axis_names": axis_audit,
-            "expression_state": "not_inferred",
             "warnings": source_warnings,
         }
     )
@@ -1092,6 +1151,7 @@ def load_h5ad(
 __all__ = [
     "ANNDATA_CODEC",
     "ANNDATA_KIND",
+    "analysis_outputs",
     "anndata_summary",
     "load_10x_h5",
     "load_10x_mtx",
@@ -1102,5 +1162,9 @@ __all__ = [
     "require_file_input",
     "require_input_names",
     "require_parameters",
+    "read_anndata_input",
+    "read_table_input",
     "write_anndata_output",
+    "write_plot_output",
+    "write_table_output",
 ]

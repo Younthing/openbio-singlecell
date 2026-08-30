@@ -14,32 +14,24 @@ from .annotation_core import (
     run_celltypist_annotation,
     run_map_cluster_annotations,
 )
-from .artifact_codecs import read_anndata, read_table, write_table
-from .artifact_envelope import result_metadata, table_from_metadata
-from .expression_source import DynamicExpressionSource, ExpressionSourceSpec
+from .artifact_envelope import table_from_metadata
+from .expression_source import _CELLTYPIST_SPEC, DynamicExpressionSource
 from .marker_evidence import validate_marker_artifact_pair
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
-    require_artifact_input,
+    analysis_outputs,
+    read_anndata_input,
+    read_table_input,
     require_file_input,
     require_input_names,
     require_parameters,
     write_anndata_output,
+    write_table_output,
 )
 from .ora_evidence import build_marker_ora_summary, marker_ora_evidence_code, run_marker_ora_evidence
 from .worker_protocol import JSONValue, OperationContext, ProtocolError, register_operation
 
 TABLE_KIND = "OPENBIO_SINGLE_CELL_TABLE"
-TABLE_CODEC = "table-jsonl-v1"
-
-CELLTYPIST_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="CellTypist expression source",
-    default="X",
-    include_raw=True,
-    layer_input_id="layer_name",
-    layer_default="counts",
-)
+CELLTYPIST_EXPRESSION_SOURCE = _CELLTYPIST_SPEC
 
 ANNOTATION_PRACTICE_REFERENCE = AnalysisReference(
     citation=(
@@ -75,35 +67,13 @@ JSON_REFERENCE = AnalysisReference(
 )
 
 
-def _anndata_input(inputs: dict[str, JSONValue], name: str = "adata") -> Any:
-    root = require_artifact_input(inputs, name, kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    return read_anndata(root)
-
-
 def _table_input(inputs: dict[str, JSONValue], name: str) -> Any:
-    root = require_artifact_input(inputs, name, kind=TABLE_KIND, codec=TABLE_CODEC)
-    table, metadata = read_table(root)
+    table, metadata = read_table_input(inputs, name, kind=TABLE_KIND)
     return table_from_metadata(metadata, table)
 
 
-def _table_output(context: OperationContext, result: Any) -> dict[str, JSONValue]:
-    root = context.create_output_directory("table")
-    write_table(root, result.table, result_metadata(result))
-    return {
-        "type": "artifact",
-        "name": "table",
-        "kind": TABLE_KIND,
-        "codec": TABLE_CODEC,
-        "payload": root.relative_to(context.output_root).as_posix(),
-    }
-
-
 def _result_records(context: OperationContext, output: Any, report: Any, code: str) -> list[JSONValue]:
-    return [
-        write_anndata_output(context, output),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(report, code, write_anndata_output(context, output))
 
 
 def celltypist_owned(
@@ -407,7 +377,7 @@ def celltypist_annotation(
         "overwrite_existing",
     }
     require_parameters(parameters, expected, operation="CellTypist Annotation")
-    return _result_records(context, *celltypist_owned(_anndata_input(inputs), **parameters))
+    return _result_records(context, *celltypist_owned(read_anndata_input(inputs), **parameters))
 
 
 @register_operation("openbio.node.markeroraevidence")
@@ -435,11 +405,7 @@ def marker_ora_evidence(
         requested_resource_path=requested,
         **parameters,
     )
-    return [
-        _table_output(context, result),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(report, code, write_table_output(context, result, kind=TABLE_KIND))
 
 
 @register_operation("openbio.node.mapclusterannotations")
@@ -456,7 +422,7 @@ def map_cluster_annotations(
         "overwrite_existing",
     }
     require_parameters(parameters, expected, operation="Map Cluster Annotations")
-    return _result_records(context, *map_cluster_annotations_owned(_anndata_input(inputs), **parameters))
+    return _result_records(context, *map_cluster_annotations_owned(read_anndata_input(inputs), **parameters))
 
 
 __all__ = [

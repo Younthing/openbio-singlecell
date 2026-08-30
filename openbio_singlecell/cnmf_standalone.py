@@ -51,7 +51,7 @@ def _load_science() -> None:
 
 
 CNMF_REQUIRED_VERSION = "1.7.1"
-CNMF_ADAPTER_VERSION = 3
+CNMF_ADAPTER_VERSION = 4
 CNMF_LOCAL_NEIGHBORHOOD_SIZE = 0.30
 CNMF_STATISTICS_DENSITY_THRESHOLD = 2.0
 CNMF_RESOURCE_BUDGET_BYTES = 2 * 1024**3
@@ -140,8 +140,6 @@ class CNMFRunMetadata:
     installed_distribution_attested: bool
     source_kind: str
     source_layer: str | None
-    source_state: str
-    source_state_evidence: str | None
     input_advisories: tuple[str, ...]
     input_cells: int
     input_genes: int
@@ -244,10 +242,6 @@ def _validate_run_records(metadata: Any, metrics: Any) -> None:
         raise RuntimeError("OPENBIO_CNMF_RUN X/Raw source cannot name a layer.")
     if metadata.source_kind == "layer" and not isinstance(metadata.source_layer, str):
         raise RuntimeError("OPENBIO_CNMF_RUN layer source must name its layer.")
-    if metadata.source_state not in {"unknown", "counts", "normalized", "logged", "scaled", "derived"}:
-        raise RuntimeError("OPENBIO_CNMF_RUN source state is invalid.")
-    if metadata.source_state_evidence is not None and not isinstance(metadata.source_state_evidence, str):
-        raise RuntimeError("OPENBIO_CNMF_RUN source-state evidence must be text or null.")
     if not isinstance(metadata.input_advisories, tuple) or any(
         not isinstance(message, str) or not message for message in metadata.input_advisories
     ):
@@ -791,49 +785,6 @@ def _validate_axis_identifiers(identifiers: Any, *, axis_name: str, operation: s
         )
 
 
-def _history_entries(adata: Any) -> list[Mapping[str, Any]]:
-    metadata = adata.uns.get("openbio_singlecell")
-    if not isinstance(metadata, Mapping):
-        return []
-    history = metadata.get("analysis_history")
-    if not isinstance(history, Mapping):
-        return []
-    return [entry for entry in history.values() if isinstance(entry, Mapping)]
-
-
-def _expression_state(adata: Any, source_kind: str, source_layer: str | None) -> tuple[str, str | None]:
-    if source_kind == "raw":
-        return "unknown", "Explicit adata.raw selection; Raw processing history was not attested"
-    x_state = "unknown"
-    x_evidence: str | None = None
-    layer_states: dict[str, tuple[str, str]] = {}
-    for entry in _history_entries(adata):
-        operation = entry.get("operation")
-        parameters = entry.get("parameters")
-        parameters = parameters if isinstance(parameters, Mapping) else {}
-        if operation == "snapshot_expression":
-            layer_states["counts"] = ("counts", "OpenBio Snapshot Expression history")
-            if parameters.get("source") == "X":
-                x_state, x_evidence = "counts", "OpenBio Snapshot Expression history"
-        elif operation in {"normalize_to_layer", "pearson_residuals_to_layer"}:
-            output_layer = parameters.get("output_layer")
-            if isinstance(output_layer, str):
-                layer_states[output_layer] = ("derived", f"OpenBio {operation} history")
-        elif operation == "scale_to_layer":
-            output_layer = parameters.get("output_layer")
-            if isinstance(output_layer, str):
-                layer_states[output_layer] = ("scaled", "OpenBio Scale history")
-        if operation == "normalize_total":
-            x_state, x_evidence = "normalized", "OpenBio Normalize Total history"
-        elif operation == "log1p":
-            x_state, x_evidence = "logged", "OpenBio Log1p history"
-    if source_kind == "layer":
-        return layer_states.get(str(source_layer), ("unknown", None))
-    if x_state == "unknown" and isinstance(adata.uns.get("log1p"), Mapping):
-        return "logged", "AnnData uns['log1p'] marker"
-    return x_state, x_evidence
-
-
 def _parse_source(source: str) -> tuple[str, str | None]:
     if source == "X":
         return "X", None
@@ -887,20 +838,14 @@ def _matrix_totals(matrix: Any, axis: int) -> np.ndarray:
 
 def _validate_counts(
     adata: Any, source_kind: str, source_layer: str | None
-) -> tuple[Any, Any, Any, np.ndarray, np.ndarray, int, float, str, str | None, tuple[str, ...]]:
+) -> tuple[Any, Any, Any, np.ndarray, np.ndarray, int, float, tuple[str, ...]]:
     matrix = _selected_matrix(adata, source_kind, source_layer)
     source_obs, source_vars = _source_axes(adata, source_kind)
     if tuple(matrix.shape) != (len(source_obs), len(source_vars)):
         raise ValueError("cNMF expression source must align exactly to its declared observation/feature axes.")
     _validate_axis_identifiers(source_obs, axis_name="source obs_names", operation="cNMF Rank Survey")
     _validate_axis_identifiers(source_vars, axis_name="source var_names", operation="cNMF Rank Survey")
-    state, evidence = _expression_state(adata, source_kind, source_layer)
     advisories: list[str] = []
-    if state in {"normalized", "logged", "scaled", "derived"}:
-        advisories.append(
-            f"The selected source is proven to be {state} expression ({evidence}); official UMI practice uses "
-            "filtered untransformed counts, so interpret this expert-selected run cautiously."
-        )
     values = _matrix_values(matrix)
     if values.dtype.kind not in "iuf" or not bool(np.isfinite(values).all()):
         raise ValueError("cNMF count source must contain finite numeric values.")
@@ -936,8 +881,6 @@ def _validate_counts(
         gene_totals,
         nonzero,
         float(cell_totals.sum()),
-        state,
-        evidence,
         tuple(advisories),
     )
 
@@ -1571,8 +1514,6 @@ def cnmf_rank_survey(
         _,
         nonzero,
         total_counts,
-        source_state,
-        source_evidence,
         input_advisories,
     ) = _validate_counts(adata, source_kind, source_layer)
     source_cells = len(source_obs)
@@ -1766,8 +1707,6 @@ def cnmf_rank_survey(
             installed_distribution_attested=False,
             source_kind=source_kind,
             source_layer=source_layer,
-            source_state=source_state,
-            source_state_evidence=source_evidence,
             input_advisories=tuple(advisories),
             input_cells=source_cells,
             input_genes=source_features,
@@ -2270,8 +2209,6 @@ def cnmf_consensus_programs(
         "survey": {
             "source_features": run.metadata.input_genes,
             "current_features": run.metadata.current_features,
-            "source_state": run.metadata.source_state,
-            "source_state_evidence": run.metadata.source_state_evidence,
             "input_advisories": list(run.metadata.input_advisories),
             "n_iter": run.metadata.n_iter,
             "num_highvar_genes": run.metadata.num_highvar_genes,

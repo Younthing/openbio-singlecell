@@ -434,32 +434,27 @@ def test_snapshot_expression_creates_canonical_states_from_declared_layer(data_a
 
 
 @pytest.mark.parametrize(
-    ("mutator", "message"),
+    "mutator",
     [
-        (lambda value, science: setattr(value, "X", science.np.zeros(value.shape)), "no positive"),
-        (
-            lambda value, science: setattr(value, "X", science.np.full(value.shape, -1.0)),
-            "negative expression",
-        ),
-        (
-            lambda value, science: setattr(value, "X", science.np.full(value.shape, science.np.nan)),
-            "non-finite",
-        ),
-        (lambda value, science: setattr(value, "obs_names", ["c", "c", "d", "e"]), "unique"),
-        (lambda value, science: setattr(value, "var_names", ["g", "g", "h", "i"]), "unique"),
+        lambda value, science: setattr(value, "X", science.np.zeros(value.shape)),
+        lambda value, science: setattr(value, "X", science.np.full(value.shape, -1.0)),
+        lambda value, science: setattr(value, "X", science.np.full(value.shape, science.np.nan)),
+        lambda value, science: setattr(value, "obs_names", ["c", "c", "d", "e"]),
+        lambda value, science: setattr(value, "var_names", ["g", "g", "h", "i"]),
     ],
 )
-def test_snapshot_expression_discloses_selected_source_advisories(
+def test_snapshot_expression_honors_selected_source_without_state_inference(
     data_adata,
     science,
     mutator,
-    message,
 ):
     mutator(data_adata, science)
     output, report, code = _execute_snapshot(data_adata).result
     assert output.raw is not None
-    assert any(message in warning for warning in report.summary["warnings"])
-    assert report.summary["key_results"]["history_used"] is False
+    assert "history_used" not in report.summary["key_results"]
+    assert "full_gene_status" not in report.summary["key_results"]
+    assert "expression_audit" not in report.summary["key_results"]
+    assert not any("verified" in warning or "post-QC" in warning for warning in report.summary["warnings"])
     namespace = {}
     exec(code, namespace)
     equivalent = namespace["create_raw_snapshot"](data_adata)
@@ -484,8 +479,8 @@ def test_snapshot_expression_overwrite_and_noninteger_disclosure(data_adata, sci
     noninteger = data_adata.copy()
     noninteger.X = science.np.asarray(_dense(noninteger.X, science), dtype=float) + 0.25
     _, noninteger_report, _ = _execute_snapshot(noninteger).result
-    assert noninteger_report.summary["key_results"]["integer_like"] is False
-    assert any("non-integer" in warning for warning in noninteger_report.summary["warnings"])
+    assert "integer_like" not in noninteger_report.summary["key_results"]
+    assert not any("non-integer" in warning for warning in noninteger_report.summary["warnings"])
 
 
 def test_snapshot_generated_code_quotes_arbitrary_layer_names(data_adata):

@@ -534,11 +534,9 @@ def test_augur_exact_backend_calls_summary_and_input_immutability(augur_adata, s
     assert summary["key_results"]["raw_snapshot_features"] == augur_adata.raw.n_vars
     assert summary["key_results"]["input_current_features"] == augur_adata.n_vars
     assert summary["key_results"]["count_source"] == {
-        "state": "raw_counts",
         "source": "raw.X",
         "selection": "explicit",
         "integer_like": True,
-        "full_gene_status": "user_declared_not_programmatically_verifiable",
     }
     assert summary["key_results"]["sample_audit"]["minimum_two_samples_per_arm"] is True
     assert summary["key_results"]["technical_batch_audit"]["perfect_condition_confounding"] is False
@@ -732,12 +730,10 @@ def test_augur_preserves_expert_selected_noninteger_sources(
 
     source = summary["key_results"]["count_source"]
     assert source["integer_like"] is False
-    assert source["state"] == "user_selected_expression"
+    assert "state" not in source
+    assert "full_gene_status" not in source
     assert any("not integer-like" in warning for warning in summary["warnings"])
-    if source_kind == "raw":
-        assert source["full_gene_status"] == "user_declared_not_programmatically_verifiable"
-    else:
-        assert source["full_gene_status"] == "not_claimed"
+    if source_kind != "raw":
         assert summary["key_results"]["raw_snapshot_features"] is None
         assert summary["key_results"]["raw_snapshot_fingerprint_sha256"] is None
 

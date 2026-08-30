@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import time
 from copy import deepcopy
 
 import pytest
 
+from openbio_singlecell import PLUGIN_VERSION
 from openbio_singlecell.analysis_reporting import (
     AnalysisReference,
+    collect_software_versions,
     make_analysis_report,
     summarize_numeric,
 )
@@ -20,6 +23,12 @@ REFERENCE = AnalysisReference(
     url="https://doi.org/10.0000/example",
     kind="method",
 )
+
+
+def test_collect_software_versions_uses_the_plugin_contract_version(monkeypatch):
+    monkeypatch.setattr(importlib.metadata, "version", lambda _package: "distribution-version")
+
+    assert collect_software_versions(())["openbio-singlecell"] == PLUGIN_VERSION
 
 
 def _summary_result_fields() -> dict[str, object]:

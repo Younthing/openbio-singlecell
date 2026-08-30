@@ -33,7 +33,6 @@ def _artifact_provenance() -> dict[str, object]:
         "method": "CollecTRI ULM",
         "expression": {
             "source": "X",
-            "state": "logged",
             "feature_axis_sha256": "f" * 64,
         },
         "resource": {
@@ -612,7 +611,11 @@ def test_collectri_ulm_local_contract_exact_call_full_bh_and_generated_parity(sc
     assert len(resource["file_sha256"]) == 64
     assert len(resource["canonical_network_sha256"]) == 64
     assert resource["accounting"]["duplicate_rows_removed"] == 1
-    assert summary["key_results"]["expression"]["feature_axis_sha256"]
+    expression = summary["key_results"]["expression"]
+    assert expression["source"] == "X"
+    assert expression["feature_axis_sha256"]
+    assert "state" not in expression
+    assert "state_evidence" not in expression
     assert summary["key_results"]["degrees_freedom"] == 6
     assert summary["parameters"]["raw"] is False
     assert summary["parameters"]["empty"] is False

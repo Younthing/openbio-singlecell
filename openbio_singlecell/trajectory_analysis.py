@@ -4,15 +4,14 @@ import hashlib
 import inspect
 import json
 import math
-import platform
 import textwrap
 import threading
 import warnings
 from collections.abc import Mapping, Sequence
-from importlib import metadata
 from typing import Any
 
 from . import PLUGIN_VERSION
+from .analysis_reporting import _package_version, collect_software_versions
 
 DIFFMAP_NODE_ID = "OpenBioSingleCellDiffusionMap"
 PAGA_NODE_ID = "OpenBioSingleCellPAGA"
@@ -359,18 +358,6 @@ def _ta_warning_messages(records):
     return messages
 
 
-def _ta_versions(*, openbio_version, packages):
-    versions = {"python": platform.python_version(), "openbio-singlecell": str(openbio_version)}
-    for package in packages:
-        if package in versions:
-            continue
-        try:
-            versions[package] = metadata.version(package)
-        except metadata.PackageNotFoundError:
-            versions[package] = "not-installed"
-    return versions
-
-
 def _ta_references(operation):
     scanpy = {
         "citation": "Wolf FA, Angerer P, Theis FJ. SCANPY: large-scale single-cell gene expression data analysis. Genome Biology. 2018;19:15.",
@@ -663,9 +650,9 @@ def _ta_run_diffusion_map(
     except ValueError as error:
         raise RuntimeError(f"Diffusion Map backend returned scientifically inconsistent eigenpairs: {error}") from error
     output_fingerprint = _ta_diffmap_output_fingerprint(coordinates, eigenvalues, numpy=numpy)
-    versions = _ta_versions(
-        openbio_version=openbio_version,
-        packages=("scanpy", "anndata", "numpy", "pandas", "scipy"),
+    versions = collect_software_versions(
+        ("scanpy", "anndata", "numpy", "pandas", "scipy"),
+        openbio_version=str(openbio_version),
     )
     provenance = {
         "schema": _TA_DIFFMAP_SCHEMA,
@@ -1088,9 +1075,9 @@ def _ta_run_paga(
         scipy_csgraph=scipy_csgraph,
     )
     output_fingerprint = _ta_paga_output_fingerprint(connectivities, tree, sizes, partition, numpy=numpy)
-    versions = _ta_versions(
-        openbio_version=openbio_version,
-        packages=("scanpy", "anndata", "numpy", "pandas", "scipy", "igraph"),
+    versions = collect_software_versions(
+        ("scanpy", "anndata", "numpy", "pandas", "scipy", "igraph"),
+        openbio_version=str(openbio_version),
     )
     provenance = {
         "schema": _TA_PAGA_SCHEMA,
@@ -1448,9 +1435,9 @@ def _ta_run_dpt(
     if output.uns.get("iroot") != root_index:
         raise RuntimeError("DPT backend changed the selected root index.")
     output_fingerprint = _ta_hash_array(pseudotime, numpy=numpy)
-    versions = _ta_versions(
-        openbio_version=openbio_version,
-        packages=("scanpy", "anndata", "numpy", "pandas", "scipy"),
+    versions = collect_software_versions(
+        ("scanpy", "anndata", "numpy", "pandas", "scipy"),
+        openbio_version=str(openbio_version),
     )
     provenance = {
         "schema": _TA_DPT_SCHEMA,
@@ -1551,7 +1538,8 @@ _TA_COMMON_STANDALONE_HELPERS = (
     _ta_numeric_summary,
     _ta_graph_diagnostics,
     _ta_warning_messages,
-    _ta_versions,
+    _package_version,
+    collect_software_versions,
     _ta_references,
     _ta_summary,
     _ta_validate_dense_float,
@@ -1656,11 +1644,9 @@ import hashlib
 import inspect
 import json
 import math
-import platform
 import threading
 import warnings
 from collections.abc import Mapping, Sequence
-from importlib import metadata
 
 {declarations}
 

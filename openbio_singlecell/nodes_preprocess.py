@@ -2,18 +2,20 @@ from __future__ import annotations
 
 from comfy_api.latest import io
 
-from .expression_source import ExpressionSourceSpec
-from .node_types import AnnDataType, SummaryResultType
+from .expression_source import (
+    _HVG_SPEC,
+    _NORMALIZE_LAYER_SPEC,
+    _NORMALIZE_TOTAL_SPEC,
+    _PEARSON_RESIDUAL_SPEC,
+    _SCALE_SPEC,
+)
+from .node_types import AnnDataType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/preprocessing"
 
 
 class OpenBioSingleCellNormalizeTotal(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="Normalize Total source",
-        layer_input_id="source_layer",
-        layer_default="counts",
-    )
+    EXPRESSION_SOURCE = _NORMALIZE_TOTAL_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -26,11 +28,7 @@ class OpenBioSingleCellNormalizeTotal(io.ComfyNode):
                 io.Float.Input("target_sum", default=10000.0, step=1000.0),
                 cls.EXPRESSION_SOURCE.input(),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 
@@ -42,20 +40,12 @@ class OpenBioSingleCellLog1p(io.ComfyNode):
             display_name="Log1p",
             category=CATEGORY,
             inputs=[AnnDataType.Input("adata")],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 
 class OpenBioSingleCellNormalizeToLayer(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="Normalize source",
-        layer_input_id="source_layer",
-        layer_default="counts",
-    )
+    EXPRESSION_SOURCE = _NORMALIZE_LAYER_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -72,21 +62,12 @@ class OpenBioSingleCellNormalizeToLayer(io.ComfyNode):
                 io.String.Input("output_layer", default="log1p_norm", advanced=True),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 
 class OpenBioSingleCellPearsonResidualsToLayer(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="Pearson residual source",
-        default="layer",
-        layer_input_id="source_layer",
-        layer_default="counts",
-    )
+    EXPRESSION_SOURCE = _PEARSON_RESIDUAL_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -109,20 +90,12 @@ class OpenBioSingleCellPearsonResidualsToLayer(io.ComfyNode):
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
                 io.Float.Input("max_dense_gib", default=2.0, step=0.25, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 
 class OpenBioSingleCellHighlyVariableGenes(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="Highly Variable Genes source",
-        default="layer",
-        layer_default="log1p_norm",
-    )
+    EXPRESSION_SOURCE = _HVG_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -155,20 +128,12 @@ class OpenBioSingleCellHighlyVariableGenes(io.ComfyNode):
                 io.Int.Input("n_bins", default=20, min=1, advanced=True),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 
 class OpenBioSingleCellScale(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="Scale source",
-        default="layer",
-        layer_default="log1p_norm",
-    )
+    EXPRESSION_SOURCE = _SCALE_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -187,11 +152,7 @@ class OpenBioSingleCellScale(io.ComfyNode):
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
                 io.Float.Input("max_dense_gib", default=2.0, step=0.25, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 

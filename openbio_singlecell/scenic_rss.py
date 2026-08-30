@@ -9,7 +9,7 @@ from textwrap import dedent
 from typing import TYPE_CHECKING, Any
 
 from . import PLUGIN_VERSION
-from .pyscenic_import import _software_versions
+from .analysis_reporting import _package_version, collect_software_versions
 from .scenic_artifact import (
     SCENIC_MEMBERSHIP_COLUMNS,
     SCENIC_RESULT_ARTIFACT_SCHEMA_VERSION,
@@ -252,7 +252,7 @@ def compute_scenic_rss(
         "parameters": parameters,
         "references": copy.deepcopy(SCENIC_RSS_REFERENCES),
         "software_versions": {
-            **_software_versions(
+            **collect_software_versions(
                 ["anndata", "numpy", "pandas", "scipy"], openbio_version=openbio_version
             ),
             "pyscenic-method": "0.12.1",
@@ -285,7 +285,8 @@ def scenic_rss_code(
         _strict_provenance,
         _result_fingerprint,
         validate_scenic_result_artifact,
-        _software_versions,
+        _package_version,
+        collect_software_versions,
         _canonical_annotation,
         compute_scenic_rss,
     )
@@ -295,10 +296,8 @@ def scenic_rss_code(
 
 import copy
 import hashlib
-import importlib.metadata
 import json
 import math
-import platform
 from collections.abc import Mapping, Sequence
 from typing import Any
 

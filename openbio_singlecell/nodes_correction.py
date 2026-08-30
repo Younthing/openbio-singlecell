@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from comfy_api.latest import io
 
-from .expression_source import ExpressionSourceSpec
-from .node_types import AnnDataType, SummaryResultType
+from .expression_source import _SCRUBLET_SPEC
+from .node_types import AnnDataType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/correction"
 MAX_RANDOM_SEED = 2**31 - 1
@@ -30,22 +30,12 @@ class OpenBioSingleCellMarkMADOutliers(io.ComfyNode):
                 io.Boolean.Input("scale_mad", default=False, advanced=True),
                 io.Int.Input("minimum_group_size", default=3, min=1, max=MAX_RANDOM_SEED, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 
 class OpenBioSingleCellScrublet(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="Scrublet count expression source",
-        default="X",
-        include_raw=True,
-        layer_input_id="source_layer",
-        layer_default="counts",
-    )
+    EXPRESSION_SOURCE = _SCRUBLET_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -66,11 +56,7 @@ class OpenBioSingleCellScrublet(io.ComfyNode):
                 io.Int.Input("n_neighbors", default=0, min=0, max=1_000_000, advanced=True),
                 cls.EXPRESSION_SOURCE.input(),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 
@@ -85,11 +71,7 @@ class OpenBioSingleCellFilterDoublets(io.ComfyNode):
                 AnnDataType.Input("adata"),
                 io.String.Input("prediction_column", default="predicted_doublet", advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 

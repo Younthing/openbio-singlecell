@@ -5,12 +5,9 @@ from typing import Any
 
 from . import PLUGIN_VERSION
 from .analysis_utils import finish_adata, make_summary_result
-from .artifact_codecs import read_anndata
-from .artifact_envelope import result_metadata
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
-    require_artifact_input,
+    analysis_outputs,
+    read_anndata_input,
     require_input_names,
     require_parameters,
     write_anndata_output,
@@ -98,13 +95,8 @@ def schist_nested_model(
         },
         operation="Schist Nested-SBM Hierarchy",
     )
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    output, report, code = schist_nested_model_owned(read_anndata(root), **parameters)
-    return [
-        write_anndata_output(context, output),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    output, report, code = schist_nested_model_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(report, code, write_anndata_output(context, output))
 
 
 __all__ = ["schist_nested_model", "schist_nested_model_owned"]

@@ -5,9 +5,9 @@ from comfy_api.latest import io
 from .node_types import (
     AnnDataType,
     PlotResultType,
-    SummaryResultType,
     TableResultType,
     VelocityStateType,
+    analysis_outputs,
 )
 
 CATEGORY = "openbio/single-cell/velocity"
@@ -38,11 +38,7 @@ class OpenBioSingleCellVelocityFilterAndNormalize(io.ComfyNode):
                 ),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                VelocityStateType.Output(display_name="velocity_state"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(VelocityStateType.Output(display_name="velocity_state")),
         )
 
 
@@ -66,11 +62,7 @@ class OpenBioSingleCellVelocityMoments(io.ComfyNode):
                 io.Float.Input("max_dense_gib", default=2.0, min=1e-12, advanced=True),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                VelocityStateType.Output(display_name="velocity_state"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(VelocityStateType.Output(display_name="velocity_state")),
         )
 
 
@@ -96,11 +88,7 @@ class OpenBioSingleCellEstimateVelocity(io.ComfyNode):
                 io.Float.Input("min_likelihood", default=0.001, min=0.0, advanced=True),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                VelocityStateType.Output(display_name="velocity_state"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(VelocityStateType.Output(display_name="velocity_state")),
         )
 
 
@@ -127,11 +115,7 @@ class OpenBioSingleCellVelocityGraph(io.ComfyNode):
                 io.Int.Input("n_jobs", default=1, min=1, max=1024, advanced=True),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                VelocityStateType.Output(display_name="velocity_state"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(VelocityStateType.Output(display_name="velocity_state")),
         )
 
 
@@ -156,11 +140,7 @@ class OpenBioSingleCellRecoverDynamics(io.ComfyNode):
                 io.Float.Input("max_dense_gib", default=2.0, min=1e-12, advanced=True),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                VelocityStateType.Output(display_name="velocity_state"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(VelocityStateType.Output(display_name="velocity_state")),
         )
 
 
@@ -180,11 +160,7 @@ class OpenBioSingleCellVelocityGeneRanking(io.ComfyNode):
                 io.Boolean.Input("include_failed", default=False, advanced=True),
                 io.Int.Input("max_output_rows", default=100_000, min=1, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
 
@@ -204,11 +180,7 @@ class OpenBioSingleCellVelocityStreamPlot(io.ComfyNode):
                 io.Float.Input("smooth", default=0.5, min=1e-12, advanced=True),
                 io.Float.Input("min_mass", default=1.0, min=0.0, advanced=True),
             ],
-            outputs=[
-                PlotResultType.Output(display_name="plot"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
         )
 
 

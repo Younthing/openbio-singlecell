@@ -726,6 +726,9 @@ def test_drug_score_allows_count_like_and_all_zero_cells_with_cautious_generated
     output, summary = run_drug_score(adata, resource, **parameters, pertpy_module=backend)
     expected = counts[:, :3].mean(axis=1)
     science.np.testing.assert_allclose(output.obs["score"], expected)
+    assert summary["parameters"]["source"] == source_kind
+    assert "expression_state" not in summary["key_results"]
+    assert "expression_state_evidence" not in summary["key_results"]
     assert summary["key_results"]["all_zero_observation_count"] == 1
     assert any("count-like" in warning for warning in summary["warnings"])
     assert any("all zero" in warning for warning in summary["warnings"])

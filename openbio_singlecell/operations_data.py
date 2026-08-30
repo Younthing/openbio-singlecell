@@ -12,13 +12,10 @@ from typing import Any
 from . import dependencies
 from .analysis_reporting import AnalysisReference, make_analysis_report
 from .analysis_utils import finish_adata
-from .artifact_codecs import read_anndata
-from .artifact_envelope import result_metadata
-from .expression_source import ExpressionSource, ExpressionSourceSpec
+from .expression_source import _SNAPSHOT_SPEC, ExpressionSource
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
-    require_artifact_input,
+    analysis_outputs,
+    read_anndata_input,
     require_file_input,
     require_input_names,
     require_parameters,
@@ -32,13 +29,7 @@ CANONICAL_COUNTS_LAYER = "counts"
 ORIGINAL_FEATURE_NAMES_COLUMN = "feature_names_before_gtf"
 GTF_MATCH_COLUMN = "gtf_match_type"
 GTF_MAPPED_COLUMN = "gtf_mapped"
-SNAPSHOT_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="Raw snapshot source",
-    default="X",
-    include_raw=False,
-    layer_input_id="source_layer",
-    layer_default="counts",
-)
+SNAPSHOT_EXPRESSION_SOURCE = _SNAPSHOT_SPEC
 ANNDATA_REFERENCE = AnalysisReference(
     citation=(
         "Virshup I, Rybakov S, Theis FJ, Angerer P, Wolf FA. anndata: Access and store annotated data "
@@ -219,33 +210,6 @@ def _matrix_description(matrix: Any) -> dict[str, Any]:
         "shape": [int(value) for value in matrix.shape],
         "dtype": str(matrix.dtype),
         "storage": storage,
-    }
-
-
-def _expression_snapshot_audit(matrix: Any) -> dict[str, Any]:
-    science = dependencies.require_scientific_dependencies()
-    values = matrix.data if science.sparse.issparse(matrix) else science.np.asarray(matrix).ravel()
-    values = science.np.asarray(values)
-    finite_mask = science.np.isfinite(values)
-    finite_values = values[finite_mask]
-    nonfinite_count = int(values.size - finite_values.size)
-    negative_count = int((finite_values < 0).sum())
-    positive_count = int((finite_values > 0).sum())
-    finite_integer_like = bool(
-        finite_values.size == 0
-        or science.np.allclose(finite_values, science.np.rint(finite_values), rtol=0.0, atol=1e-8)
-    )
-    return {
-        "stored_value_count": int(values.size),
-        "nonfinite_value_count": nonfinite_count,
-        "negative_value_count": negative_count,
-        "positive_value_count": positive_count,
-        "finite_values_integer_like": finite_integer_like,
-        "integer_like": nonfinite_count == 0 and finite_integer_like,
-        "finite_expression_sum": float(finite_values.sum()) if finite_values.size else 0.0,
-        "count_state_verified": bool(
-            nonfinite_count == 0 and negative_count == 0 and positive_count > 0 and finite_integer_like
-        ),
     }
 
 
@@ -975,11 +939,7 @@ def _gtf_identity_code(id_source: str, id_column: str, gene_name_column: str) ->
 
 
 def _result_records(context: OperationContext, adata: Any, report: Any, code: str) -> list[dict[str, JSONValue]]:
-    return [
-        write_anndata_output(context, adata),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(report, code, write_anndata_output(context, adata))
 
 
 @register_operation("openbio.node.snapshotexpression")
@@ -994,17 +954,10 @@ def snapshot_expression(
     source = parameters["source"]
     if source is not None and not isinstance(source, dict):
         raise ProtocolError("source must be a DynamicCombo object or null.")
-    input_root = require_artifact_input(
-        inputs,
-        "adata",
-        kind=ANNDATA_KIND,
-        codec=ANNDATA_CODEC,
-    )
-    adata = read_anndata(input_root)
+    adata = read_anndata_input(inputs)
     science = dependencies.require_scientific_dependencies()
     expression = SNAPSHOT_EXPRESSION_SOURCE.resolve(adata, source)
     matrix = expression.matrix(adata)
-    expression_audit = _expression_snapshot_audit(matrix)
     existing_destinations = []
     if adata.raw is not None:
         existing_destinations.append("raw")
@@ -1028,10 +981,7 @@ def snapshot_expression(
         **expression.parameters(),
         "overwrite_existing": overwrite_existing,
     }
-    warnings_list = [
-        "The object alone cannot prove that the declared source contains the complete post-QC feature set; "
-        "confirm snapshot timing from the workflow and source provenance.",
-    ]
+    warnings_list = []
     if cells == 0 or genes == 0:
         warnings_list.append(
             "The declared source has an empty observation or variable axis; an empty snapshot was created."
@@ -1045,26 +995,6 @@ def snapshot_expression(
         warnings_list.append(
             "Variable names are not unique; the snapshot preserves them, and later name-based feature selection "
             "may be ambiguous."
-        )
-    if expression_audit["nonfinite_value_count"]:
-        warnings_list.append(
-            f"The declared source contains {expression_audit['nonfinite_value_count']} non-finite stored "
-            "value(s); it was snapshotted by explicit expert choice and is not verified as a count matrix."
-        )
-    if expression_audit["negative_value_count"]:
-        warnings_list.append(
-            f"The declared source contains {expression_audit['negative_value_count']} negative expression "
-            "value(s); it is not verified as an unnormalized count matrix."
-        )
-    if expression_audit["positive_value_count"] == 0:
-        warnings_list.append(
-            "The declared source contains no positive finite stored values; it was snapshotted by explicit "
-            "expert choice."
-        )
-    if not expression_audit["finite_values_integer_like"]:
-        warnings_list.append(
-            "The declared source contains non-integer finite values and is not verified as an unnormalized UMI "
-            "count matrix."
         )
     finish_adata(
         adata,
@@ -1088,42 +1018,28 @@ def snapshot_expression(
         methods=(
             f"Copied the user-selected expression source {_display_expression_source(expression)!r} into the "
             "repository's conventional AnnData counts layer and initialized raw from the same matrix while "
-            "preserving current X; matrix-value properties were audited but did not override the selection."
+            "preserving current X."
         ),
         results=(
             f"Retained a user-selected Raw snapshot for {cells:,} cells and {genes:,} features "
-            f"({nonzero:,} non-zero entries; finite expression sum "
-            f"{expression_audit['finite_expression_sum']:,.6g}); count-state interpretation was "
-            f"{'supported by the value audit' if expression_audit['count_state_verified'] else 'not verified'}."
+            f"({nonzero:,} non-zero entries)."
         ),
         key_results={
             "cells": cells,
             "features": genes,
             "source": _display_expression_source(expression),
             "matrix": _matrix_description(matrix),
-            "expression_audit": expression_audit,
-            "total_expression": (
-                expression_audit["finite_expression_sum"] if expression_audit["nonfinite_value_count"] == 0 else None
-            ),
             "nonzero_entries": nonzero,
-            "integer_like": expression_audit["integer_like"],
             "canonical_layer": CANONICAL_COUNTS_LAYER,
             "raw_created": True,
             "x_preserved": True,
             "overwritten_destinations": existing_destinations if overwrite_existing else [],
-            "history_used": False,
-            "full_gene_status": "user_declared_not_programmatically_verified",
         },
         parameters=parameters_report,
         references=[ANNDATA_REFERENCE],
         software_packages=["anndata", "numpy", "pandas", "scipy"],
         warnings=warnings_list,
-        limitations=[
-            "Matrix-value advisories describe the selected source but do not override the expert's explicit "
-            "storage choice.",
-            "An arbitrary AnnData object does not provide enough evidence to prove that all assayed genes are "
-            "still present or that QC has already been completed.",
-        ],
+        limitations=["The snapshot preserves the selected values without interpreting their preprocessing state."],
         input_cells=cells,
         input_genes=genes,
         started_at=started_at,
@@ -1148,13 +1064,7 @@ def subset_observations(
     values = _required_string(parameters["values"], name="values")
     invert = _required_bool(parameters["invert"], name="invert")
     missing_policy = _required_string(parameters["missing_policy"], name="missing_policy")
-    input_root = require_artifact_input(
-        inputs,
-        "adata",
-        kind=ANNDATA_KIND,
-        codec=ANNDATA_CODEC,
-    )
-    adata = read_anndata(input_root)
+    adata = read_anndata_input(inputs)
     if not column:
         raise ValueError("Observation annotation name cannot be empty.")
     if column not in adata.obs:
@@ -1281,20 +1191,8 @@ def merge_observation_annotations(
     source_column = _required_string(parameters["source_column"], name="source_column").strip()
     target_column = _required_string(parameters["target_column"], name="target_column").strip()
     conflict_policy = _required_string(parameters["conflict_policy"], name="conflict_policy")
-    adata_root = require_artifact_input(
-        inputs,
-        "adata",
-        kind=ANNDATA_KIND,
-        codec=ANNDATA_CODEC,
-    )
-    subset_root = require_artifact_input(
-        inputs,
-        "subset_adata",
-        kind=ANNDATA_KIND,
-        codec=ANNDATA_CODEC,
-    )
-    adata = read_anndata(adata_root)
-    subset_adata = read_anndata(subset_root)
+    adata = read_anndata_input(inputs)
+    subset_adata = read_anndata_input(inputs, "subset_adata")
     if not source_column or not target_column:
         raise ValueError("Source and target observation annotation names cannot be empty.")
     if source_column not in subset_adata.obs:
@@ -1431,14 +1329,8 @@ def map_gene_ids_from_gtf(
         parameters["gene_name_column"],
         name="gene_name_column",
     ).strip()
-    adata_root = require_artifact_input(
-        inputs,
-        "adata",
-        kind=ANNDATA_KIND,
-        codec=ANNDATA_CODEC,
-    )
     gtf_path, provenance = require_file_input(inputs, "gtf_path")
-    adata = read_anndata(adata_root)
+    adata = read_anndata_input(inputs)
     _validate_gtf_identity_inputs(
         adata,
         id_source=id_source,

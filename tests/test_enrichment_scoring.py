@@ -475,7 +475,7 @@ def test_gsva_uses_exact_reviewed_decoupler_arguments_and_empirical_kernel(
     assert report.summary["parameters"]["kcdf"] is None
 
 
-def test_real_poisson_gsva_requires_and_uses_explicit_count_state(science, comfy_directories):
+def test_real_poisson_gsva_requires_numeric_counts_without_inferred_state(science, comfy_directories):
     pytest.importorskip("decoupler")
     input_dir, _, _ = comfy_directories
     _write_resource(input_dir / "sets.csv")
@@ -500,7 +500,10 @@ def test_real_poisson_gsva_requires_and_uses_explicit_count_state(science, comfy
             output_key="poisson_gsva",
         )
     )
-    assert report.summary["key_results"]["expression"]["state"] == "counts"
+    expression = report.summary["key_results"]["expression"]
+    assert expression["source"] == "raw"
+    assert "state" not in expression
+    assert "state_evidence" not in expression
     assert report.summary["parameters"]["kcdf"] == "poisson"
     assert science.np.isfinite(output.obsm["poisson_gsva"].to_numpy(dtype=float)).all()
     namespace = {}
@@ -723,7 +726,10 @@ def test_scoring_allows_explicit_count_like_expression_with_cautious_generated_p
         )
     )
     assert any("count-like" in warning for warning in report.summary["warnings"])
-    assert report.summary["key_results"]["expression"]["state"] in {"counts", "unknown"}
+    expression = report.summary["key_results"]["expression"]
+    assert expression["source"] == source_kind
+    assert "state" not in expression
+    assert "state_evidence" not in expression
     namespace = {}
     exec(compile(code, f"<{entrypoint}-{source_kind}-counts>", "exec"), namespace)
     generated, generated_summary = namespace[entrypoint](adata)
@@ -787,7 +793,7 @@ def _pathway_adata_with_artifact(science):
         storage="obsm",
         score_key="scores",
         resource={"sha256": "a" * 64, "metadata": {"name": "fixture"}},
-        expression={"source": "X", "state": "logged", "content_sha256": "b" * 64},
+        expression={"source": "X", "content_sha256": "b" * 64},
         parameters={"min_targets": 2},
         references=references,
         np=science.np,
@@ -975,7 +981,7 @@ def test_pathway_contrast_allows_two_samples_per_arm_with_warning_and_generated_
         storage="obsm",
         score_key="scores",
         resource={"sha256": "a" * 64, "metadata": {"name": "fixture"}},
-        expression={"source": "X", "state": "logged", "content_sha256": "b" * 64},
+        expression={"source": "X", "content_sha256": "b" * 64},
         parameters={"min_targets": 2},
         references=[
             {
@@ -1022,7 +1028,7 @@ def test_pathway_contrast_fails_closed_on_zero_variance_family_member(science):
         storage="obsm",
         score_key="scores",
         resource={"sha256": "a" * 64, "metadata": {"name": "fixture"}},
-        expression={"source": "X", "state": "logged", "content_sha256": "b" * 64},
+        expression={"source": "X", "content_sha256": "b" * 64},
         parameters={"min_targets": 2},
         references=[
             {

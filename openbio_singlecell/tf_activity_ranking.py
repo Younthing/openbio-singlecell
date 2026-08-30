@@ -10,7 +10,8 @@ from textwrap import dedent
 from typing import TYPE_CHECKING, Any
 
 from . import PLUGIN_VERSION
-from .collectri_ulm import DECOUPLER_VERSION, _bh_adjust, _signature_shape, _software_versions
+from .analysis_reporting import _package_version, collect_software_versions
+from .collectri_ulm import DECOUPLER_VERSION, _bh_adjust, _signature_shape
 from .tf_activity_artifact import (
     TF_ACTIVITY_ARTIFACT_SCHEMA_VERSION,
     TF_ACTIVITY_ARTIFACT_TYPE,
@@ -632,7 +633,7 @@ def rank_tf_activities(
         },
         "parameters": parameters,
         "references": references,
-        "software_versions": _software_versions(
+        "software_versions": collect_software_versions(
             ["anndata", "decoupler", "numpy", "pandas", "scipy"],
             openbio_version=openbio_version,
         ),
@@ -640,7 +641,7 @@ def rank_tf_activities(
         "limitations": [
             "Cell-level tests do not use biological Sample as the replicate and cannot support a Condition claim.",
             "Ranking describes activity-score association with supplied annotations, not TF binding or causality.",
-            "Results inherit expression-state, feature-axis, identifier, and CollecTRI coverage limitations from the activity artifact.",
+            "Results inherit expression-source, feature-axis, identifier, and CollecTRI coverage limitations from the activity artifact.",
             "Technical batch, repeated measures, and donor effects are not modeled by rankby_group.",
         ],
     }
@@ -669,7 +670,8 @@ def rank_tf_activities_code(
             validate_tf_activity_artifact,
             _signature_shape,
             _bh_adjust,
-            _software_versions,
+            _package_version,
+            collect_software_versions,
             _validate_decoupler_ranking,
             _canonical_annotation,
             _parse_reference,
@@ -690,9 +692,7 @@ import importlib
 import inspect
 import json
 import math
-import platform
 from collections.abc import Mapping, Sequence
-from importlib import metadata as importlib_metadata
 from typing import Any
 
 PLUGIN_VERSION = {PLUGIN_VERSION!r}

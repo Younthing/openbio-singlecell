@@ -6,21 +6,15 @@ from typing import Any
 from comfy_api.latest import io
 
 from .annotation_core import celltypist_model_fingerprint
-from .expression_source import ExpressionSourceSpec
+from .expression_source import _CELLTYPIST_SPEC
 from .files import input_file_fingerprint, resolve_input_path
-from .node_types import AnnDataType, SummaryResultType, TableResultType
+from .node_types import AnnDataType, TableResultType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/annotation"
 
 
 class OpenBioSingleCellCellTypistAnnotation(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="CellTypist expression source",
-        default="X",
-        include_raw=True,
-        layer_input_id="layer_name",
-        layer_default="counts",
-    )
+    EXPRESSION_SOURCE = _CELLTYPIST_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -48,11 +42,7 @@ class OpenBioSingleCellCellTypistAnnotation(io.ComfyNode):
                 io.String.Input("metadata_key", default="celltypist", advanced=True),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
     @classmethod
@@ -78,11 +68,7 @@ class OpenBioSingleCellMarkerORAEvidence(io.ComfyNode):
                 io.Int.Input("min_overlap", default=2, min=1, max=2**31 - 1, advanced=True),
                 io.Float.Input("max_p_adjusted", default=0.05, min=0.0, max=1.0, step=0.01),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
     @classmethod
@@ -128,11 +114,7 @@ class OpenBioSingleCellMapClusterAnnotations(io.ComfyNode):
                 ),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 

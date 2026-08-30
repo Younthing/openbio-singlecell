@@ -15,16 +15,21 @@ from .analysis_utils import (
     matrix_totals_and_nonzero,
     validate_count_expression,
 )
-from .artifact_codecs import read_anndata, write_plot
-from .artifact_envelope import result_metadata
-from .expression_source import DynamicExpressionSource, ExpressionSource, ExpressionSourceSpec
+from .expression_source import (
+    _CALCULATE_QC_SPEC,
+    _FILTER_CELLS_SPEC,
+    _FILTER_GENES_SPEC,
+    _QC_PLOTS_SPEC,
+    DynamicExpressionSource,
+    ExpressionSource,
+)
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
-    require_artifact_input,
+    analysis_outputs,
+    read_anndata_input,
     require_input_names,
     require_parameters,
     write_anndata_output,
+    write_plot_output,
 )
 from .worker_protocol import JSONValue, OperationContext, register_operation
 
@@ -33,7 +38,10 @@ if TYPE_CHECKING:
 
 
 PLOT_KIND = "OPENBIO_SINGLE_CELL_PLOT"
-PLOT_CODEC = "plot-png-v1"
+CALCULATE_QC_EXPRESSION_SOURCE = _CALCULATE_QC_SPEC
+FILTER_CELLS_EXPRESSION_SOURCE = _FILTER_CELLS_SPEC
+FILTER_GENES_EXPRESSION_SOURCE = _FILTER_GENES_SPEC
+QC_PLOTS_EXPRESSION_SOURCE = _QC_PLOTS_SPEC
 QC_SOFTWARE_PACKAGES = ("scanpy", "anndata", "numpy", "pandas", "scipy", "matplotlib")
 SCANPY_REFERENCE = AnalysisReference(
     citation=(
@@ -65,35 +73,6 @@ MITO_QC_REFERENCE = AnalysisReference(
 QC_LIMITATIONS = (
     "QC distributions and filtering thresholds are assay-, tissue-, and Sample-dependent; review them by Sample "
     "rather than treating the configured values as universal cutoffs.",
-)
-
-CALCULATE_QC_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="QC count expression source",
-    default="X",
-    include_raw=True,
-    layer_input_id="source_layer",
-    layer_default="counts",
-)
-FILTER_CELLS_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="Cell-filter count expression source",
-    default="X",
-    include_raw=True,
-    layer_input_id="source_layer",
-    layer_default="counts",
-)
-FILTER_GENES_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="Gene-filter count expression source",
-    default="X",
-    include_raw=True,
-    layer_input_id="source_layer",
-    layer_default="counts",
-)
-QC_PLOTS_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="QC plot expression source",
-    default="X",
-    include_raw=True,
-    layer_input_id="source_layer",
-    layer_default="counts",
 )
 
 
@@ -557,13 +536,8 @@ def calculate_qc(
         },
         operation=operation,
     )
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    output, report, code = calculate_qc_owned(read_anndata(root), **parameters)
-    return [
-        write_anndata_output(context, output),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    output, report, code = calculate_qc_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(report, code, write_anndata_output(context, output))
 
 
 def _filter_cells_code(expression: ExpressionSource, parameters: dict[str, object]) -> str:
@@ -831,13 +805,8 @@ def filter_cells(
         },
         operation=operation,
     )
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    output, report, code = filter_cells_owned(read_anndata(root), **parameters)
-    return [
-        write_anndata_output(context, output),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    output, report, code = filter_cells_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(report, code, write_anndata_output(context, output))
 
 
 def _gene_filter_statistics(
@@ -1102,13 +1071,8 @@ def filter_genes(
         },
         operation=operation,
     )
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    output, report, code = filter_genes_owned(read_anndata(root), **parameters)
-    return [
-        write_anndata_output(context, output),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    output, report, code = filter_genes_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(report, code, write_anndata_output(context, output))
 
 
 def _qc_plot_metric_values(matrix, source_var, numpy, scipy_sparse):
@@ -1225,18 +1189,6 @@ def _qc_plots_code(expression: ExpressionSource) -> str:
     ).strip()
     imports = "import numpy as np\nfrom matplotlib.figure import Figure\nfrom scipy import sparse"
     return "\n\n".join((imports, helper_source, implementation))
-
-
-def _write_plot_output(context: OperationContext, result: Any) -> dict[str, JSONValue]:
-    root = context.create_output_directory("plot")
-    write_plot(root, result.png, result_metadata(result))
-    return {
-        "type": "artifact",
-        "name": "plot",
-        "kind": PLOT_KIND,
-        "codec": PLOT_CODEC,
-        "payload": root.relative_to(context.output_root).as_posix(),
-    }
 
 
 def qc_plots_owned(
@@ -1384,13 +1336,8 @@ def qc_plots(
     operation = "QC Plots"
     require_input_names(inputs, {"adata"}, operation=operation)
     require_parameters(parameters, {"source"}, operation=operation)
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    result, report, code = qc_plots_owned(read_anndata(root), **parameters)
-    return [
-        _write_plot_output(context, result),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    result, report, code = qc_plots_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, result, kind=PLOT_KIND))
 
 
 __all__ = [

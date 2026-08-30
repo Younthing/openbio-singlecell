@@ -633,57 +633,29 @@ def test_marker_dotplot_statistics_use_strict_cutoff_and_null_undefined_means(pl
     assert any("reported as null" in warning for warning in details["warnings"])
 
 
-def test_marker_raw_expression_state_requires_evidence(plot_adata, science):
-    _, unknown, _ = marker_expression_plot_owned(
-        plot_adata,
-        genes="G1,G2",
-        groupby="cluster",
-        plot={"plot": "matrixplot", "standard_scale": "none"},
-        source={"source": "raw"},
-    )
-    assert unknown.summary["key_results"]["expression_state"] == "unknown"
-    assert unknown.summary["key_results"]["expression_evidence"] is None
-    assert any("without assuming counts" in warning for warning in unknown.summary["warnings"])
-
-    snapshot = plot_adata.copy()
-    snapshot.layers["counts"] = snapshot.raw.X[:, : snapshot.n_vars].copy()
-    snapshot.uns["openbio_singlecell"]["analysis_history"]["000001"] = {
+def test_marker_raw_source_ignores_history_and_does_not_infer_state(plot_adata, science):
+    adata = plot_adata.copy()
+    adata.layers["counts"] = science.sparse.csr_matrix(science.np.zeros(adata.shape))
+    adata.uns["openbio_singlecell"]["analysis_history"]["000001"] = {
         "operation": "snapshot_expression",
         "parameters": {"destination": "layer_and_raw", "layer_name": "counts", "source": "X"},
     }
-    _, counts, counts_code = marker_expression_plot_owned(
-        snapshot,
+    plotted, summary, code = marker_expression_plot_owned(
+        adata,
         genes="G1,RAW_ONLY",
         groupby="cluster",
         plot={"plot": "matrixplot", "standard_scale": "none"},
         source={"source": "raw"},
     )
-    assert counts.summary["key_results"]["expression_state"] == "counts"
-    assert "Snapshot Expression" in counts.summary["key_results"]["expression_evidence"]
-    assert any("proven count-scale" in warning for warning in counts.summary["warnings"])
+    assert plotted.png.startswith(PNG_SIGNATURE)
+    assert summary.summary["parameters"]["source"] == "raw"
+    assert summary.summary["key_results"]["source_kind"] == "raw"
+    assert "expression_state" not in summary.summary["key_results"]
+    assert "expression_evidence" not in summary.summary["key_results"]
+    assert not any("history" in warning.lower() or "count-scale" in warning for warning in summary.summary["warnings"])
     namespace = {}
-    exec(counts_code, namespace)
-    assert namespace["plot_marker_expression"](snapshot).startswith(PNG_SIGNATURE)
-
-    external_logged = plot_adata.copy()
-    logged = science.np.log1p(_dense(external_logged.raw.X, science)[:, : external_logged.n_vars])
-    external_logged.X = science.sparse.csr_matrix(logged)
-    external_logged.raw = science.ad.AnnData(
-        science.sparse.csr_matrix(logged),
-        obs=external_logged.obs.copy(),
-        var=external_logged.var.copy(),
-    )
-    external_logged.uns["log1p"] = {"base": None}
-    _, logged_summary, _ = marker_expression_plot_owned(
-        external_logged,
-        genes="G1,G2",
-        groupby="cluster",
-        plot={"plot": "matrixplot", "standard_scale": "none"},
-        source={"source": "raw"},
-    )
-    assert logged_summary.summary["key_results"]["expression_state"] == "logged"
-    assert "Raw values equal proven current X" in logged_summary.summary["key_results"]["expression_evidence"]
-    assert not any("count-scale" in warning for warning in logged_summary.summary["warnings"])
+    exec(code, namespace)
+    assert namespace["plot_marker_expression"](adata).startswith(PNG_SIGNATURE)
 
 
 def test_marker_violin_seed_is_deterministic_and_restores_numpy_rng(plot_adata, science):

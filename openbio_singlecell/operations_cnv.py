@@ -4,8 +4,6 @@ import time
 from typing import Any
 
 from .analysis_utils import finish_adata, make_summary_result, make_table_result
-from .artifact_codecs import TABLE_CODEC, read_anndata, write_anndata, write_table
-from .artifact_envelope import result_metadata
 from .cnv_analysis import (
     analyze_cnv_pca,
     analyze_cnv_score,
@@ -14,41 +12,21 @@ from .cnv_analysis import (
     cnv_score_code,
     infer_cnv_code,
 )
-from .expression_source import ExpressionSourceSpec
+from .expression_source import _CNV_SPEC
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
+    analysis_outputs,
+    read_anndata_input,
     require_artifact_input,
     require_input_names,
     require_parameters,
+    write_anndata_output,
+    write_table_output,
 )
 from .staged_state_codec import CNV_STATE_CODEC, read_cnv_state, write_cnv_state
 from .worker_protocol import JSONValue, OperationContext, ProtocolError, register_operation
 
 CNV_STATE_KIND = "OPENBIO_CNV_STATE"
-CNV_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="Full-gene normalized log-expression source for CNV inference",
-    default="layer",
-    include_raw=False,
-    layer_default="log1p_norm",
-)
-
-
-def _write_anndata_output(context: OperationContext, adata: Any) -> dict[str, JSONValue]:
-    root = context.create_output_directory("adata")
-    write_anndata(root, adata)
-    return {
-        "type": "artifact",
-        "name": "adata",
-        "kind": ANNDATA_KIND,
-        "codec": ANNDATA_CODEC,
-        "payload": root.relative_to(context.output_root).as_posix(),
-    }
-
-
-def _anndata_root(inputs: dict[str, JSONValue], name: str) -> Any:
-    root = require_artifact_input(inputs, name, kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    return read_anndata(root)
+CNV_EXPRESSION_SOURCE = _CNV_SPEC
 
 
 def _state_root(inputs: dict[str, JSONValue]) -> Any:
@@ -115,7 +93,7 @@ def infer_cnv(
         },
         operation=operation,
     )
-    adata = _anndata_root(inputs, "adata")
+    adata = read_anndata_input(inputs)
     source_value = parameters["source"]
     if not isinstance(source_value, dict):
         raise ProtocolError("Infer CNV source must be a DynamicCombo JSON object.")
@@ -141,7 +119,9 @@ def infer_cnv(
     )
     root = context.create_output_directory("cnv_state")
     write_cnv_state(root, state)
-    return [
+    return analysis_outputs(
+        report,
+        infer_cnv_code(**analysis_parameters),
         {
             "type": "artifact",
             "name": "cnv_state",
@@ -149,9 +129,7 @@ def infer_cnv(
             "codec": CNV_STATE_CODEC,
             "payload": root.relative_to(context.output_root).as_posix(),
         },
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": infer_cnv_code(**analysis_parameters)},
-    ]
+    )
 
 
 @register_operation("openbio.node.cnvpca")
@@ -194,11 +172,7 @@ def cnv_pca(
         genes=genes,
         random_seed=random_seed,
     )
-    return [
-        _write_anndata_output(context, output),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": cnv_pca_code(**parameters)},
-    ]
+    return analysis_outputs(report, cnv_pca_code(**parameters), write_anndata_output(context, output))
 
 
 @register_operation("openbio.node.cnvscore")
@@ -215,7 +189,7 @@ def cnv_score(
         operation=operation,
     )
     state = _state_root(inputs)
-    adata = _anndata_root(inputs, "adata")
+    adata = read_anndata_input(inputs)
     cells, genes = int(adata.n_obs), int(adata.n_vars)
     started_at = time.perf_counter()
     output, table, summary = analyze_cnv_score(state, adata, _owned=True, **parameters)
@@ -250,20 +224,12 @@ def cnv_score(
         cells=cells,
         genes=genes,
     )
-    table_root = context.create_output_directory("table")
-    write_table(table_root, table, result_metadata(table_result))
-    return [
-        _write_anndata_output(context, output),
-        {
-            "type": "artifact",
-            "name": "table",
-            "kind": "OPENBIO_SINGLE_CELL_TABLE",
-            "codec": TABLE_CODEC,
-            "payload": table_root.relative_to(context.output_root).as_posix(),
-        },
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": cnv_score_code(**parameters)},
-    ]
+    return analysis_outputs(
+        report,
+        cnv_score_code(**parameters),
+        write_anndata_output(context, output),
+        write_table_output(context, table_result, kind="OPENBIO_SINGLE_CELL_TABLE"),
+    )
 
 
 __all__ = [

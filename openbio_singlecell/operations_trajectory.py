@@ -6,14 +6,11 @@ from collections.abc import Mapping
 from typing import Any
 
 from .analysis_utils import finish_adata, make_summary_result
-from .artifact_codecs import read_anndata
-from .artifact_envelope import result_metadata
 from .cell_cycle import analyze_cell_cycle_score, cell_cycle_code
-from .expression_source import DynamicExpressionSource, ExpressionSourceSpec
+from .expression_source import _CELL_CYCLE_SPEC, DynamicExpressionSource
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
-    require_artifact_input,
+    analysis_outputs,
+    read_anndata_input,
     require_input_names,
     require_parameters,
     write_anndata_output,
@@ -28,12 +25,7 @@ from .trajectory_analysis import (
 )
 from .worker_protocol import JSONValue, OperationContext, register_operation
 
-CELL_CYCLE_EXPRESSION_SOURCE = ExpressionSourceSpec(
-    description="Cell-cycle expression source; full-gene log-normalized values are recommended",
-    default="layer",
-    include_raw=True,
-    layer_default="log1p_norm",
-)
+CELL_CYCLE_EXPRESSION_SOURCE = _CELL_CYCLE_SPEC
 
 
 def parse_dpt_root_value(value_type: object, value: object) -> str | int | float:
@@ -63,17 +55,12 @@ def parse_dpt_root_value(value_type: object, value: object) -> str | int | float
 
 
 def _input_adata(inputs: dict[str, JSONValue]) -> Any:
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    return read_anndata(root)
+    return read_anndata_input(inputs)
 
 
 def _records(context: OperationContext, result: tuple[Any, Any, str]) -> list[JSONValue]:
     output, report, code = result
-    return [
-        write_anndata_output(context, output),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(report, code, write_anndata_output(context, output))
 
 
 def cell_cycle_score_owned(

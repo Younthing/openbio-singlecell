@@ -8,15 +8,12 @@ import inspect
 import json
 import math
 import os
-import platform
 from collections.abc import Mapping, Sequence
-from importlib import metadata as importlib_metadata
 from textwrap import dedent
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from . import PLUGIN_VERSION
-from .expression_state import _history_entries, resolve_expression_state
+from .analysis_reporting import _package_version, collect_software_versions
 from .tf_activity_artifact import (
     TF_ACTIVITY_ARTIFACT_SCHEMA_VERSION,
     TF_ACTIVITY_ARTIFACT_TYPE,
@@ -426,16 +423,6 @@ def _bh_adjust(pvalues: Any, *, numpy: Any) -> Any:
     return result
 
 
-def _software_versions(packages: Sequence[str], *, openbio_version: str) -> dict[str, str]:
-    versions = {"python": platform.python_version(), "openbio-singlecell": openbio_version}
-    for package in packages:
-        try:
-            versions[package] = importlib_metadata.version(package)
-        except importlib_metadata.PackageNotFoundError:
-            versions[package] = "not-installed"
-    return versions
-
-
 def run_collectri_ulm(
     adata: AnnData,
     *,
@@ -495,7 +482,6 @@ def run_collectri_ulm(
     if source_kind == "X":
         matrix = adata.X
         feature_values = adata.var_names.tolist()
-        expression = SimpleNamespace(kind="X", layer_name=None)
     elif source_kind == "layer":
         if not isinstance(layer_name, str) or not layer_name or layer_name != layer_name.strip():
             raise ValueError("CollecTRI named layer must be a canonical nonblank string.")
@@ -503,7 +489,6 @@ def run_collectri_ulm(
             raise ValueError(f"CollecTRI expression layer not found: {layer_name!r}.")
         matrix = adata.layers[layer_name]
         feature_values = adata.var_names.tolist()
-        expression = SimpleNamespace(kind="layer", layer_name=layer_name)
     else:
         raise ValueError("CollecTRI source_kind must be 'X' or 'layer'; Raw snapshot is not accepted.")
     features, feature_axis_sha256 = _strict_axis(feature_values, label="feature identifier")
@@ -542,33 +527,11 @@ def run_collectri_ulm(
         integer_like = bool(np.allclose(dense_view, np.rint(dense_view), rtol=0.0, atol=1e-8))
     if not bool((row_variance > 0.0).all()):
         raise ValueError("CollecTRI ULM requires nonconstant expression across features for every observation.")
-    expression_state, state_evidence = resolve_expression_state(adata, expression)
     warnings: list[str] = []
-    if expression_state == "counts" or (
-        expression_state == "unknown" and integer_like and value_min >= 0.0
-    ):
+    if integer_like and value_min >= 0.0:
         warnings.append(
             "The explicitly selected expression is count-like. ULM remains numerically defined, but its normal-error "
             "interpretation and activity scale may not match the recommended normalized continuous input."
-        )
-    elif expression_state == "pearson_residuals":
-        warnings.append(
-            "The explicitly selected expression is described as Pearson residuals. ULM will use those values "
-            "unchanged; activities describe the residual representation rather than normalized abundance."
-        )
-    elif expression_state == "unknown":
-        warnings.append(
-            "Expression provenance is unknown but values are non-count-like; ULM assumes normalized continuous expression."
-        )
-    elif expression_state == "scaled":
-        warnings.append(
-            "Feature-scaled normalized expression is allowed by decoupler, but scaling changes feature importance "
-            "and makes activities depend on the included observations."
-        )
-    elif expression_state not in {"normalized", "logged", "transformed"}:
-        warnings.append(
-            f"Expression state {expression_state!r} is not a standard CollecTRI input classification; the "
-            "explicitly selected finite values were used unchanged."
         )
     expression_sha256 = _matrix_fingerprint(
         matrix, observations=observations, features=features, numpy=np, sparse=sparse
@@ -827,8 +790,6 @@ def run_collectri_ulm(
     expression_provenance = {
         "source": source_kind,
         "layer_name": layer_name if source_kind == "layer" else None,
-        "state": expression_state,
-        "state_evidence": state_evidence,
         "observations": len(observations),
         "features": len(features),
         "observation_axis_sha256": observation_axis_sha256,
@@ -968,7 +929,9 @@ def run_collectri_ulm(
         },
         "parameters": parameters,
         "references": copy.deepcopy(COLLECTRI_REFERENCES),
-        "software_versions": _software_versions(software_packages, openbio_version=openbio_version),
+        "software_versions": collect_software_versions(
+            software_packages, openbio_version=openbio_version
+        ),
         "warnings": warnings,
         "limitations": [
             "Activity signs describe concordance with a signed regulon and do not establish direct binding or causality.",
@@ -1013,8 +976,6 @@ def collectri_ulm_code(
             build_tf_activity_artifact,
             _portable_tf_activity_payload,
             validate_tf_activity_artifact,
-            _history_entries,
-            resolve_expression_state,
             _strict_axis,
             _strict_metadata,
             _file_sha256,
@@ -1025,7 +986,8 @@ def collectri_ulm_code(
             _validate_decoupler_ulm,
             _matrix_fingerprint,
             _bh_adjust,
-            _software_versions,
+            _package_version,
+            collect_software_versions,
             run_collectri_ulm,
         )
     )
@@ -1053,10 +1015,7 @@ import inspect
 import json
 import math
 import os
-import platform
 from collections.abc import Mapping, Sequence
-from importlib import metadata as importlib_metadata
-from types import SimpleNamespace
 from typing import Any
 
 PLUGIN_VERSION = {PLUGIN_VERSION!r}

@@ -2,19 +2,14 @@ from __future__ import annotations
 
 from comfy_api.latest import io
 
-from .expression_source import ExpressionSourceSpec
-from .node_types import AnnDataType, PseudobulkType, SCVIModelType, SummaryResultType, TableResultType
+from .expression_source import _PSEUDOBULK_SPEC
+from .node_types import AnnDataType, PseudobulkType, SCVIModelType, TableResultType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/differential-expression"
 
 
 class OpenBioSingleCellPseudobulk(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="Pseudobulk raw-count source",
-        default="layer",
-        include_raw=True,
-        layer_default="counts",
-    )
+    EXPRESSION_SOURCE = _PSEUDOBULK_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -35,11 +30,7 @@ class OpenBioSingleCellPseudobulk(io.ComfyNode):
                 io.Int.Input("min_cells", default=10, min=1, max=2**31 - 1),
                 io.Int.Input("min_counts", default=1000, min=0, max=2**31 - 1),
             ],
-            outputs=[
-                PseudobulkType.Output(display_name="pseudobulk"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(PseudobulkType.Output(display_name="pseudobulk")),
         )
 
 
@@ -64,11 +55,7 @@ class OpenBioSingleCellPseudobulkEdgeR(io.ComfyNode):
                 io.Int.Input("large_n", default=10, min=0, max=2**31 - 1, advanced=True),
                 io.Float.Input("min_prop", default=0.7, min=0.0, max=1.0, step=0.05, advanced=True),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
 
@@ -94,11 +81,7 @@ class OpenBioSingleCellPseudobulkDESeq2(io.ComfyNode):
                 io.Float.Input("min_prop", default=0.7, min=0.0, max=1.0, step=0.05, advanced=True),
                 io.Int.Input("n_cpus", default=1, min=1, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
 
@@ -160,11 +143,7 @@ class OpenBioSingleCellSCVIDifferentialExpression(io.ComfyNode):
                 io.Int.Input("n_samples_overall", default=5000, min=1, max=2**31 - 1, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
 

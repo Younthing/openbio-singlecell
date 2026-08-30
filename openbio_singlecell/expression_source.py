@@ -158,3 +158,90 @@ class ExpressionSourceSpec:
         if self.default == "layer":
             value[self.layer_input_id] = self.layer_default
         return value
+
+
+_CELLTYPIST_SPEC = ExpressionSourceSpec(description="CellTypist expression source", include_raw=True)
+_CNV_SPEC = ExpressionSourceSpec(
+    description="Full-gene normalized log-expression source for CNV inference",
+    default="layer",
+    layer_default="log1p_norm",
+)
+_LIANA_SPEC = ExpressionSourceSpec(description="LIANA expression source", layer_default="log1p_norm")
+_SCRUBLET_SPEC = ExpressionSourceSpec(
+    description="Scrublet count expression source",
+    include_raw=True,
+    layer_input_id="source_layer",
+)
+_SNAPSHOT_SPEC = ExpressionSourceSpec(description="Raw snapshot source", layer_input_id="source_layer")
+_PSEUDOBULK_SPEC = ExpressionSourceSpec(
+    description="Pseudobulk raw-count source", default="layer", include_raw=True
+)
+_PCA_SPEC = ExpressionSourceSpec(description="PCA source", default="layer", layer_default="log1p_norm")
+_AUCELL_SPEC = ExpressionSourceSpec(
+    description="AUCell expression source", include_raw=True, layer_default="log1p_norm"
+)
+_GSVA_SPEC = ExpressionSourceSpec(
+    description="GSVA expression source", include_raw=True, layer_default="log1p_norm"
+)
+_GENE_PANEL_SPEC = ExpressionSourceSpec(
+    description="Gene panel expression source", include_raw=True, layer_default="log1p_norm"
+)
+_DRUG_SCORE_SPEC = ExpressionSourceSpec(
+    description="Explicit drug-score expression source",
+    include_raw=True,
+    layer_default="log1p_norm",
+)
+_CNMF_SPEC = ExpressionSourceSpec(description="cNMF count source", default="layer", include_raw=True)
+_SCVI_SPEC = ExpressionSourceSpec(
+    description="scVI counts source", default="layer", layer_input_id="counts_layer"
+)
+_AUGUR_SPEC = ExpressionSourceSpec(description="Augur count source", include_raw=True)
+_NORMALIZE_TOTAL_SPEC = ExpressionSourceSpec(description="Normalize Total source", layer_input_id="source_layer")
+_NORMALIZE_LAYER_SPEC = ExpressionSourceSpec(description="Normalize source", layer_input_id="source_layer")
+_PEARSON_RESIDUAL_SPEC = ExpressionSourceSpec(
+    description="Pearson residual source",
+    default="layer",
+    layer_input_id="source_layer",
+)
+_HVG_SPEC = ExpressionSourceSpec(
+    description="Highly Variable Genes source", default="layer", layer_default="log1p_norm"
+)
+_SCALE_SPEC = ExpressionSourceSpec(description="Scale source", default="layer", layer_default="log1p_norm")
+_CALCULATE_QC_SPEC = ExpressionSourceSpec(
+    description="QC count expression source",
+    include_raw=True,
+    layer_input_id="source_layer",
+)
+_FILTER_CELLS_SPEC = ExpressionSourceSpec(
+    description="Cell-filter count expression source",
+    include_raw=True,
+    layer_input_id="source_layer",
+)
+_FILTER_GENES_SPEC = ExpressionSourceSpec(
+    description="Gene-filter count expression source",
+    include_raw=True,
+    layer_input_id="source_layer",
+)
+_QC_PLOTS_SPEC = ExpressionSourceSpec(
+    description="QC plot expression source",
+    include_raw=True,
+    layer_input_id="source_layer",
+)
+_COLLECTRI_SPEC = ExpressionSourceSpec(
+    description="CollecTRI normalized expression source",
+    default="layer",
+    layer_default="log1p_norm",
+)
+_MARKER_SPEC = ExpressionSourceSpec(description="Marker source", default="layer", layer_default="log1p_norm")
+_MARKER_PLOT_SPEC = ExpressionSourceSpec(
+    description="Marker plot source",
+    default="layer",
+    include_raw=True,
+    layer_default="log1p_norm",
+)
+_CELL_CYCLE_SPEC = ExpressionSourceSpec(
+    description="Cell-cycle expression source; full-gene log-normalized values are recommended",
+    default="layer",
+    include_raw=True,
+    layer_default="log1p_norm",
+)

@@ -1423,12 +1423,7 @@ def _run_augur_artifact_owned(
     if not integer_like:
         report_warnings.append(
             "The explicitly selected expression source is nonnegative but not integer-like; it was preserved "
-            "without coercion. Confirm that this state is appropriate for Pertpy Augur normalization."
-        )
-    if source_kind != "raw":
-        report_warnings.append(
-            f"The expert explicitly selected {source_label} instead of Raw; count-state and feature completeness "
-            "are user-declared and were not independently proven."
+            "without coercion. Confirm that this input is appropriate for Pertpy Augur normalization."
         )
     if not sample_condition_mapping_valid:
         report_warnings.append(
@@ -1492,11 +1487,6 @@ def _run_augur_artifact_owned(
         )
     if len(selected_samples_by_condition[control]) != len(selected_samples_by_condition[treatment]):
         report_warnings.append("Selected Conditions contain unequal numbers of biological Samples.")
-    if source_kind == "raw":
-        report_warnings.append(
-            "Raw feature completeness is user-declared and cannot be proven from the AnnData object; verify the "
-            "snapshot timing and feature inventory for the study."
-        )
     results_text = (
         f"Augur produced exploratory cell-level cross-validation priorities for {len(eligible):,} population(s); "
         f"the highest rank contains {len(top_records):,} population(s) with mean classifier AUC "
@@ -1506,10 +1496,6 @@ def _run_augur_artifact_owned(
         ("pertpy", "scikit-learn", "anndata", "numpy", "pandas", "scipy", "scikit-misc")
     )
     versions["pertpy"] = pertpy_version
-    source_state = "raw_counts" if source_kind == "raw" and integer_like else "user_selected_expression"
-    full_gene_status = (
-        "user_declared_not_programmatically_verifiable" if source_kind == "raw" else "not_claimed"
-    )
     summary = {
         "schema_version": AUGUR_SUMMARY_SCHEMA,
         "node_id": AUGUR_PRODUCER_NODE_ID,
@@ -1551,11 +1537,9 @@ def _run_augur_artifact_owned(
             "technical_batch_audit": batch_audit,
             "annotation_status": annotation_status,
             "count_source": {
-                "state": source_state,
                 "source": source_label,
                 "selection": "explicit",
                 "integer_like": integer_like,
-                "full_gene_status": full_gene_status,
             },
             "selected_source_fingerprint_sha256": selected_source_fingerprint,
             "raw_snapshot_fingerprint_sha256": (
@@ -1575,8 +1559,7 @@ def _run_augur_artifact_owned(
             "Sample support and batch audits improve reviewability but do not make this a replicate-aware Condition analysis.",
             "Cell abundance, library properties, donor composition, population labeling, and Technical batch can influence classifier performance.",
             "Priorities and feature importance depend on the classifier, random feature subsets, fold assignment, and Pertpy 1.3.0 implementation.",
-            "The selected expression matrix is structurally validated, while its biological state and feature "
-            "completeness remain a user-declared study contract.",
+            "The selected expression matrix is structurally validated; source choice remains part of the workflow.",
         ],
     }
     return _build_augur_artifact(tables=tables, summary=summary, numpy=np, pandas=pd)

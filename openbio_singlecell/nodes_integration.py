@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from comfy_api.latest import io
 
-from .expression_source import ExpressionSourceSpec
-from .node_types import AnnDataType, SCVIModelType, SummaryResultType, TableResultType
+from .expression_source import _SCVI_SPEC
+from .node_types import AnnDataType, SCVIModelType, TableResultType, analysis_outputs
 
 INTEGRATION_CATEGORY = "openbio/single-cell/batch-integration"
 CLUSTERING_CATEGORY = "openbio/single-cell/clustering"
@@ -40,21 +40,12 @@ class OpenBioSingleCellHarmonyIntegration(io.ComfyNode):
                 io.Int.Input("max_iter_kmeans", default=4, min=1, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 
 class OpenBioSingleCellSCVIIntegration(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="scVI counts source",
-        default="layer",
-        layer_input_id="counts_layer",
-        layer_default="counts",
-    )
+    EXPRESSION_SOURCE = _SCVI_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -89,12 +80,9 @@ class OpenBioSingleCellSCVIIntegration(io.ComfyNode):
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SCVIModelType.Output(display_name="model"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(
+                AnnDataType.Output(display_name="adata"), SCVIModelType.Output(display_name="model")
+            ),
         )
 
 
@@ -116,12 +104,10 @@ class OpenBioSingleCellLeidenResolutionSweep(io.ComfyNode):
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
+            outputs=analysis_outputs(
                 AnnDataType.Output(display_name="adata"),
                 TableResultType.Output(display_name="resolution_metrics"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            ),
         )
 
 

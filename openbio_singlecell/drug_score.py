@@ -39,7 +39,6 @@ def _standalone_run_drug_score(
     import inspect as runtime_inspect
     import json
     import platform
-    from collections.abc import Mapping
     from importlib import metadata as importlib_metadata
 
     import anndata as ad
@@ -151,80 +150,12 @@ def _standalone_run_drug_score(
         or np.allclose(semantic_values, np.rint(semantic_values), rtol=0.0, atol=1e-8)
     )
 
-    def expression_state():
-        x_state = "unknown"
-        x_evidence = None
-        layer_states = {}
-        metadata_root = adata.uns.get("openbio_singlecell")
-        history = metadata_root.get("analysis_history") if isinstance(metadata_root, Mapping) else None
-        entries = history.values() if isinstance(history, Mapping) else ()
-        for entry in entries:
-            if not isinstance(entry, Mapping):
-                continue
-            history_operation = entry.get("operation")
-            parameters = entry.get("parameters")
-            parameters = parameters if isinstance(parameters, Mapping) else {}
-            if history_operation == "snapshot_expression":
-                layer_states["counts"] = ("counts", "OpenBio Snapshot Expression history")
-                if parameters.get("source") == "X":
-                    x_state, x_evidence = "counts", "OpenBio Snapshot Expression history"
-            elif history_operation == "normalize_to_layer":
-                output_layer = parameters.get("output_layer")
-                transform = parameters.get("transform")
-                if isinstance(output_layer, str):
-                    state = {"log1p": "logged", "sqrt": "transformed", "none": "normalized"}.get(
-                        transform, "normalized"
-                    )
-                    layer_states[output_layer] = (state, "OpenBio Normalize To Layer history")
-            elif history_operation == "pearson_residuals_to_layer":
-                output_layer = parameters.get("output_layer")
-                if isinstance(output_layer, str):
-                    layer_states[output_layer] = (
-                        "pearson_residuals",
-                        "OpenBio Pearson Residuals history",
-                    )
-            elif history_operation == "scale_to_layer":
-                output_layer = parameters.get("output_layer")
-                if isinstance(output_layer, str):
-                    layer_states[output_layer] = ("scaled", "OpenBio Scale history")
-            if history_operation == "normalize_total":
-                x_state, x_evidence = "normalized", "OpenBio Normalize Total history"
-            elif history_operation == "log1p":
-                x_state, x_evidence = "logged", "OpenBio Log1p history"
-        if source_kind == "raw":
-            return "counts", "explicit AnnData Raw snapshot selection"
-        if source_kind == "layer":
-            return layer_states.get(layer_name, ("unknown", None))
-        if x_state == "unknown" and isinstance(adata.uns.get("log1p"), Mapping):
-            return "logged", "AnnData uns['log1p'] marker"
-        return x_state, x_evidence
-
-    resolved_state, state_evidence = expression_state()
     warnings = []
-    if resolved_state in {"scaled", "pearson_residuals"}:
+    if integer_like and value_min >= 0.0:
         warnings.append(
-            f"The explicitly selected source is described as {resolved_state!r} ({state_evidence}); mean target "
-            "values remain calculable but describe that transformed scale rather than normalized abundance."
-        )
-    elif resolved_state == "counts":
-        warnings.append(
-            "Explicitly selected count-like expression is being scored. Mean target expression is numerically "
+            "The selected expression contains nonnegative integer-like/count-like values. Mean target expression is numerically "
             "defined, but library size and sequencing depth can dominate the descriptive score; normalized "
             "continuous expression is recommended for cross-cell interpretation."
-        )
-    elif resolved_state == "unknown" and integer_like and value_min >= 0.0:
-        warnings.append(
-            "Expression provenance is unknown and values are nonnegative count-like. Mean target expression is "
-            "numerically defined, but library size and sequencing depth can dominate the descriptive score."
-        )
-    elif resolved_state == "unknown":
-        warnings.append(
-            "Expression provenance is unknown but values are non-count-like; scoring assumes caller-supplied normalized continuous expression."
-        )
-    elif resolved_state not in {"normalized", "logged", "transformed"}:
-        warnings.append(
-            f"Expression state {resolved_state!r} is nonstandard for this score; the explicitly selected finite "
-            "values were averaged unchanged."
         )
 
     feature_set = set(feature_names)
@@ -455,8 +386,6 @@ def _standalone_run_drug_score(
         "highest_scores": [
             {"observation": observation, "score": float(value)} for observation, value in highest
         ],
-        "expression_state": resolved_state,
-        "expression_state_evidence": state_evidence,
         "all_zero_observation_count": zero_observation_count,
         "resource": {
             "metadata": resource_metadata,

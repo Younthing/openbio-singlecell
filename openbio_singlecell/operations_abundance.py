@@ -5,8 +5,6 @@ from typing import Any
 
 from . import PLUGIN_VERSION
 from .analysis_utils import make_summary_result, make_table_result
-from .artifact_codecs import TABLE_CODEC, read_anndata, write_table
-from .artifact_envelope import result_metadata
 from .composition_modeling import (
     run_sccoda_differential_composition,
     run_tasccoda_differential_composition,
@@ -16,11 +14,11 @@ from .composition_modeling import (
 from .composition_summary import run_sample_composition_summary, sample_composition_summary_code
 from .milo_analysis import milo_differential_abundance_code, run_milo_differential_abundance
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
-    require_artifact_input,
+    analysis_outputs,
+    read_anndata_input,
     require_input_names,
     require_parameters,
+    write_table_output,
 )
 from .worker_protocol import JSONValue, OperationContext, register_operation
 
@@ -58,29 +56,8 @@ def _results(
     )
 
 
-def _anndata_input(inputs: dict[str, JSONValue]) -> Any:
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    return read_anndata(root)
-
-
-def _table_output(context: OperationContext, result: Any) -> dict[str, JSONValue]:
-    root = context.create_output_directory("table")
-    write_table(root, result.table, result_metadata(result))
-    return {
-        "type": "artifact",
-        "name": "table",
-        "kind": TABLE_KIND,
-        "codec": TABLE_CODEC,
-        "payload": root.relative_to(context.output_root).as_posix(),
-    }
-
-
 def _records(context: OperationContext, result: Any, report: Any, code: str) -> list[JSONValue]:
-    return [
-        _table_output(context, result),
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(report, code, write_table_output(context, result, kind=TABLE_KIND))
 
 
 def sample_composition_owned(
@@ -190,7 +167,7 @@ def sample_composition_summary(
         {"sample_key", "condition_key", "annotation_key", "annotation_status", "max_output_rows"},
         operation="Sample Composition Summary",
     )
-    return _records(context, *sample_composition_owned(_anndata_input(inputs), **parameters))
+    return _records(context, *sample_composition_owned(read_anndata_input(inputs), **parameters))
 
 
 @register_operation("openbio.node.milodifferentialabundance")
@@ -220,7 +197,7 @@ def milo_differential_abundance(
         },
         operation="Milo Differential Abundance",
     )
-    return _records(context, *milo_owned(_anndata_input(inputs), **parameters))
+    return _records(context, *milo_owned(read_anndata_input(inputs), **parameters))
 
 
 @register_operation("openbio.node.sccodadifferentialcomposition")
@@ -246,7 +223,7 @@ def sccoda_differential_composition(
         },
         operation="scCODA Differential Composition",
     )
-    return _records(context, *sccoda_owned(_anndata_input(inputs), **parameters))
+    return _records(context, *sccoda_owned(read_anndata_input(inputs), **parameters))
 
 
 @register_operation("openbio.node.tasccodadifferentialcomposition")
@@ -273,7 +250,7 @@ def tasccoda_differential_composition(
         },
         operation="tascCODA Differential Composition",
     )
-    return _records(context, *tasccoda_owned(_anndata_input(inputs), **parameters))
+    return _records(context, *tasccoda_owned(read_anndata_input(inputs), **parameters))
 
 
 __all__ = [

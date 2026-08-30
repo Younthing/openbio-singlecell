@@ -223,8 +223,6 @@ def _liana_result_provenance(
         "expression": {
             "source_kind",
             "layer_name",
-            "state",
-            "state_evidence",
             "full_gene_completeness_verified",
             "full_gene_completeness_basis",
             "observation_axis_sha256",

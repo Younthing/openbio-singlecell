@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import json
-import platform
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
-from functools import cache
-from importlib import metadata
 from typing import TYPE_CHECKING, Any, Literal
 
-from . import PLUGIN_VERSION, dependencies
+from . import PLUGIN_VERSION
 from .analysis_utils import make_summary_result
 
 if TYPE_CHECKING:
@@ -34,6 +31,8 @@ class AnalysisReference:
 
 
 def _json_value(value: Any) -> Any:
+    from collections.abc import Mapping, Sequence
+
     if value is None or isinstance(value, (str, bool, int)):
         return value
     if isinstance(value, float):
@@ -57,18 +56,47 @@ def _json_value(value: Any) -> Any:
     return str(value)
 
 
-@cache
+def _plain_json(value: Any) -> Any:
+    import math
+    from collections.abc import Mapping, Sequence
+
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if hasattr(value, "item"):
+        try:
+            return _plain_json(value.item())
+        except (TypeError, ValueError):
+            pass
+    if isinstance(value, Mapping):
+        return {str(key): _plain_json(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_plain_json(item) for item in value]
+    if hasattr(value, "tolist"):
+        return _plain_json(value.tolist())
+    return str(value)
+
+
 def _package_version(package: str) -> str:
+    from importlib import metadata
+
     try:
         return metadata.version(package)
     except metadata.PackageNotFoundError:
         return "not-installed"
 
 
-def collect_software_versions(packages: Sequence[str]) -> dict[str, str]:
+def collect_software_versions(
+    packages: Sequence[str], *, openbio_version: str | None = None
+) -> dict[str, str]:
+    import platform
+
+    if openbio_version is None:
+        openbio_version = globals().get("PLUGIN_VERSION") or _package_version("openbio-singlecell")
     versions = {
         "python": platform.python_version(),
-        "openbio-singlecell": PLUGIN_VERSION,
+        "openbio-singlecell": openbio_version,
     }
     for package in dict.fromkeys(packages):
         if package in versions:
@@ -78,9 +106,10 @@ def collect_software_versions(packages: Sequence[str]) -> dict[str, str]:
 
 
 def summarize_numeric(values: Any) -> dict[str, int | float | None]:
-    science = dependencies.require_scientific_dependencies()
-    array = science.np.asarray(values, dtype=float).ravel()
-    finite = array[science.np.isfinite(array)]
+    import numpy
+
+    array = numpy.asarray(values, dtype=float).ravel()
+    finite = array[numpy.isfinite(array)]
     missing = int(array.size - finite.size)
     if finite.size == 0:
         return {
@@ -93,7 +122,7 @@ def summarize_numeric(values: Any) -> dict[str, int | float | None]:
             "q3": None,
             "max": None,
         }
-    quantiles = science.np.quantile(finite, [0.0, 0.25, 0.5, 0.75, 1.0])
+    quantiles = numpy.quantile(finite, [0.0, 0.25, 0.5, 0.75, 1.0])
     return {
         "n": int(array.size),
         "missing": missing,
@@ -145,7 +174,9 @@ def make_analysis_report(
         "warnings": [str(warning) for warning in warnings],
         "limitations": [str(limitation) for limitation in limitations],
         "references": [_json_value(asdict(reference)) for reference in references],
-        "software_versions": collect_software_versions(software_packages),
+        "software_versions": collect_software_versions(
+            software_packages, openbio_version=PLUGIN_VERSION
+        ),
     }
     # Enforce the public promise at construction time instead of relying on the UI payload adapter.
     json.dumps(summary, allow_nan=False)

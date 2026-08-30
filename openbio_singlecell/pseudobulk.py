@@ -4,6 +4,8 @@ import inspect
 import textwrap
 from typing import TYPE_CHECKING, Any
 
+from .analysis_reporting import _package_version, _plain_json, collect_software_versions
+
 if TYPE_CHECKING:
     from anndata import AnnData
 
@@ -11,47 +13,6 @@ if TYPE_CHECKING:
 PSEUDOBULK_ARTIFACT_TYPE = "OPENBIO_SINGLE_CELL_PSEUDOBULK"
 PSEUDOBULK_SCHEMA_VERSION = 1
 PSEUDOBULK_QC_COLUMNS = ["openbio_n_cells", "openbio_total_counts"]
-
-
-def _standalone_plain_json(value):
-    """Convert nested scientific values to strict JSON-compatible Python values."""
-    import math
-    from collections.abc import Mapping, Sequence
-
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if hasattr(value, "item"):
-        try:
-            return _standalone_plain_json(value.item())
-        except (TypeError, ValueError):
-            pass
-    if isinstance(value, Mapping):
-        return {str(key): _standalone_plain_json(item) for key, item in value.items()}
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [_standalone_plain_json(item) for item in value]
-    if hasattr(value, "tolist"):
-        return _standalone_plain_json(value.tolist())
-    return str(value)
-
-
-def _standalone_software_versions(*, openbio_version, decoupler_version):
-    """Collect the software versions executed by pseudobulk aggregation."""
-    import platform
-    from importlib import metadata as importlib_metadata
-
-    versions = {
-        "python": platform.python_version(),
-        "openbio-singlecell": str(openbio_version),
-        "decoupler": str(decoupler_version),
-    }
-    for package in ("anndata", "numpy", "pandas", "scipy"):
-        try:
-            versions[package] = importlib_metadata.version(package)
-        except importlib_metadata.PackageNotFoundError:
-            versions[package] = "not-installed"
-    return versions
 
 
 def _standalone_artifact_fingerprint(adata, metadata):
@@ -66,13 +27,13 @@ def _standalone_artifact_fingerprint(adata, metadata):
     metadata_without_fingerprint.pop("artifact_fingerprint", None)
     header = {
         "schema": "openbio-singlecell/pseudobulk-artifact/v1",
-        "metadata": _standalone_plain_json(metadata_without_fingerprint),
+        "metadata": _plain_json(metadata_without_fingerprint),
         "obs_columns": [str(value) for value in adata.obs.columns.tolist()],
         "obs_names": [str(value) for value in adata.obs_names.tolist()],
-        "obs_rows": _standalone_plain_json(adata.obs.to_numpy(dtype=object).tolist()),
+        "obs_rows": _plain_json(adata.obs.to_numpy(dtype=object).tolist()),
         "var_columns": [str(value) for value in adata.var.columns.tolist()],
         "var_names": [str(value) for value in adata.var_names.tolist()],
-        "var_rows": _standalone_plain_json(adata.var.to_numpy(dtype=object).tolist()),
+        "var_rows": _plain_json(adata.var.to_numpy(dtype=object).tolist()),
         "shape": [int(adata.n_obs), int(adata.n_vars)],
     }
     encoder = json.JSONEncoder(ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True)
@@ -161,7 +122,6 @@ def _standalone_validate_pseudobulk_artifact(artifact, *, copy_result=True):
         "artifact_type",
         "producer_node_id",
         "artifact_fingerprint",
-        "count_state",
         "aggregation_mode",
         "role_keys",
         "declared_covariates",
@@ -185,14 +145,14 @@ def _standalone_validate_pseudobulk_artifact(artifact, *, copy_result=True):
     unknown = sorted(set(metadata) - required_metadata)
     if missing or unknown:
         raise ValueError(f"{operation} metadata schema mismatch; missing={missing}, unknown={unknown}.")
-    if metadata["schema_version"] != 1:
-        raise ValueError(f"{operation} requires schema_version=1.")
+    if metadata["schema_version"] != 2:
+        raise ValueError(f"{operation} requires schema_version=2.")
     if metadata["artifact_type"] != "OPENBIO_SINGLE_CELL_PSEUDOBULK":
         raise ValueError(f"{operation} metadata has the wrong artifact type.")
     if metadata["producer_node_id"] != "OpenBioSingleCellPseudobulk":
         raise ValueError(f"{operation} metadata has the wrong producer node.")
-    if metadata["count_state"] != "raw_counts" or metadata["aggregation_mode"] != "sum":
-        raise ValueError(f"{operation} requires summed raw counts.")
+    if metadata["aggregation_mode"] != "sum":
+        raise ValueError(f"{operation} requires summed values.")
     fingerprint = metadata["artifact_fingerprint"]
     if not (
         isinstance(fingerprint, str)
@@ -355,11 +315,7 @@ def _standalone_validate_pseudobulk_artifact(artifact, *, copy_result=True):
         "kind",
         "layer_name",
         "label",
-        "state",
-        "state_basis",
         "feature_axis",
-        "history_provenance_required",
-        "raw_equivalence_required",
     }:
         raise ValueError(f"{operation} count_source provenance is malformed.")
     source_kind = count_source["kind"]
@@ -376,13 +332,9 @@ def _standalone_validate_pseudobulk_artifact(artifact, *, copy_result=True):
         expected_source_label = "raw.X" if source_kind == "raw" else "X"
     if (
         count_source["label"] != expected_source_label
-        or count_source["state"] != "raw_counts"
-        or count_source["state_basis"] != "caller_declared_with_numeric_count_validation"
         or count_source["feature_axis"] != ("raw.var_names" if source_kind == "raw" else "adata.var_names")
-        or count_source["history_provenance_required"] is not False
-        or count_source["raw_equivalence_required"] is not False
     ):
-        raise ValueError(f"{operation} count_source state/provenance is inconsistent.")
+        raise ValueError(f"{operation} count_source is inconsistent.")
     profile_filters = metadata["profile_filters"]
     if not isinstance(profile_filters, Mapping) or set(profile_filters) != {"min_cells", "min_counts"}:
         raise ValueError(f"{operation} profile_filters are malformed.")
@@ -595,7 +547,7 @@ def _standalone_validate_pseudobulk_artifact(artifact, *, copy_result=True):
         raise ValueError(
             f"{operation} content fingerprint changed: expected {fingerprint}, observed {observed_fingerprint}."
         )
-    json.dumps(_standalone_plain_json(metadata), ensure_ascii=False, allow_nan=False)
+    json.dumps(_plain_json(metadata), ensure_ascii=False, allow_nan=False)
     return adata, metadata
 
 
@@ -610,11 +562,11 @@ def _standalone_pseudobulk_summary(diagnostics):
         if field not in diagnostics:
             raise ValueError(f"Pseudobulk summary diagnostics are missing {field!r}.")
     key_results = {
-        str(key): _standalone_plain_json(value)
+        str(key): _plain_json(value)
         for key, value in diagnostics.items()
         if key not in {"parameters", "warnings", "software_versions"}
     }
-    parameters = _standalone_plain_json(diagnostics["parameters"])
+    parameters = _plain_json(diagnostics["parameters"])
     warnings = [str(value) for value in diagnostics["warnings"]]
     methods = (
         f"Used the analyst-selected {parameters['count_source']['label']!r} axis and validated finite, "
@@ -693,7 +645,7 @@ def _standalone_pseudobulk_summary(diagnostics):
         "warnings": warnings,
         "limitations": limitations,
         "references": references,
-        "software_versions": _standalone_plain_json(diagnostics["software_versions"]),
+        "software_versions": _plain_json(diagnostics["software_versions"]),
     }
     json.dumps(summary, ensure_ascii=False, allow_nan=False)
     return summary
@@ -1330,11 +1282,7 @@ def _standalone_run_pseudobulk(
             "kind": source_kind,
             "layer_name": layer_name if source_kind == "layer" else None,
             "label": source_label,
-            "state": "raw_counts",
-            "state_basis": "caller_declared_with_numeric_count_validation",
             "feature_axis": feature_axis,
-            "history_provenance_required": False,
-            "raw_equivalence_required": False,
         },
         "declarations": declarations,
         "role_aliases": role_aliases,
@@ -1363,10 +1311,9 @@ def _standalone_run_pseudobulk(
         },
     }
     artifact_metadata = {
-        "schema_version": 1,
+        "schema_version": 2,
         "artifact_type": "OPENBIO_SINGLE_CELL_PSEUDOBULK",
         "producer_node_id": "OpenBioSingleCellPseudobulk",
-        "count_state": "raw_counts",
         "aggregation_mode": "sum",
         "role_keys": {
             "sample": sample_key,
@@ -1457,10 +1404,11 @@ def _standalone_run_pseudobulk(
         warnings.append(
             "No Technical batch key was declared; downstream models cannot adjust an undeclared batch effect."
         )
-    software_versions = _standalone_software_versions(
-        openbio_version=openbio_version,
-        decoupler_version=decoupler_version,
+    software_versions = collect_software_versions(
+        ("decoupler", "anndata", "numpy", "pandas", "scipy"),
+        openbio_version=str(openbio_version),
     )
+    software_versions["decoupler"] = str(decoupler_version)
     diagnostics = {
         "artifact_fingerprint_sha256": artifact_fingerprint,
         "inference_status": parameters["inference_status"],
@@ -1506,7 +1454,7 @@ def _standalone_run_pseudobulk(
         "warnings": warnings,
         "software_versions": software_versions,
     }
-    json.dumps(_standalone_plain_json(diagnostics), ensure_ascii=False, allow_nan=False)
+    json.dumps(_plain_json(diagnostics), ensure_ascii=False, allow_nan=False)
     return artifact, diagnostics
 
 
@@ -1529,8 +1477,9 @@ def pseudobulk_code(**parameters: Any) -> str:
     implementations = "\n\n".join(
         textwrap.dedent(inspect.getsource(function)).strip()
         for function in (
-            _standalone_plain_json,
-            _standalone_software_versions,
+            _plain_json,
+            _package_version,
+            collect_software_versions,
             _standalone_artifact_fingerprint,
             _StandalonePseudobulkArtifact,
             _standalone_validate_pseudobulk_artifact,

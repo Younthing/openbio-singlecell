@@ -2,19 +2,14 @@ from __future__ import annotations
 
 from comfy_api.latest import io
 
-from .expression_source import ExpressionSourceSpec
-from .node_types import AnnDataType, CNVStateType, SummaryResultType, TableResultType
+from .expression_source import _CNV_SPEC
+from .node_types import AnnDataType, CNVStateType, TableResultType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/copy-number"
 
 
 class OpenBioSingleCellInferCNV(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="Full-gene normalized log-expression source for CNV inference",
-        default="layer",
-        include_raw=False,
-        layer_default="log1p_norm",
-    )
+    EXPRESSION_SOURCE = _CNV_SPEC
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -45,11 +40,7 @@ class OpenBioSingleCellInferCNV(io.ComfyNode):
                 io.Float.Input("max_output_gib", default=4.0, min=0.01, advanced=True),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                CNVStateType.Output(display_name="cnv_state"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(CNVStateType.Output(display_name="cnv_state")),
         )
 
 
@@ -69,11 +60,7 @@ class OpenBioSingleCellCNVPCA(io.ComfyNode):
                 io.Float.Input("max_output_gib", default=2.0, min=0.01, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
 
@@ -95,12 +82,9 @@ class OpenBioSingleCellCNVScore(io.ComfyNode):
                 io.String.Input("output_key", default="cnv_score", advanced=True),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
-                AnnDataType.Output(display_name="adata"),
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(
+                AnnDataType.Output(display_name="adata"), TableResultType.Output(display_name="table")
+            ),
         )
 
 

@@ -6,14 +6,14 @@ from typing import Any
 from comfy_api.latest import io
 
 from .collectri_ulm import collectri_resource_cache_fingerprint
-from .expression_source import ExpressionSourceSpec
+from .expression_source import _COLLECTRI_SPEC
 from .files import input_file_fingerprint, resolve_input_path
 from .node_types import (
     AnnDataType,
     SCENICResultArtifactType,
-    SummaryResultType,
     TableResultType,
     TFActivityArtifactType,
+    analysis_outputs,
 )
 from .pyscenic_import import pyscenic_bundle_cache_fingerprint
 
@@ -22,12 +22,7 @@ TF_RANKING_METHODS = ("t-test_overestim_var", "t-test", "wilcoxon")
 
 
 class OpenBioSingleCellCollecTRIULM(io.ComfyNode):
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="CollecTRI normalized expression source",
-        default="layer",
-        include_raw=False,
-        layer_default="log1p_norm",
-    )
+    EXPRESSION_SOURCE = _COLLECTRI_SPEC
 
     @staticmethod
     def _resolve_resource(resource: Mapping[str, object] | None) -> dict[str, object]:
@@ -125,12 +120,10 @@ class OpenBioSingleCellCollecTRIULM(io.ComfyNode):
                 io.Float.Input("max_working_memory_gib", default=4.0, min=0.001, max=1024.0, advanced=True),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
-            outputs=[
+            outputs=analysis_outputs(
                 AnnDataType.Output(display_name="adata"),
                 TFActivityArtifactType.Output(display_name="activities"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            ),
         )
 
     @classmethod
@@ -190,11 +183,7 @@ class OpenBioSingleCellRankTFActivities(io.ComfyNode):
                 io.Float.Input("report_p_adjusted", default=0.05, min=0.0, max=1.0, step=0.01, advanced=True),
                 io.Int.Input("max_output_rows", default=100_000, min=1, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
 
@@ -218,12 +207,10 @@ class OpenBioSingleCellImportPySCENICResults(io.ComfyNode):
                 io.Int.Input("max_regulon_edges", default=2_000_000, min=1, max=2**31 - 1, advanced=True),
                 io.Int.Input("max_dense_bytes", default=1_073_741_824, min=1, max=2**63 - 1, advanced=True),
             ],
-            outputs=[
+            outputs=analysis_outputs(
                 AnnDataType.Output(display_name="adata"),
                 SCENICResultArtifactType.Output(display_name="scenic_result"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            ),
         )
 
     @classmethod
@@ -270,11 +257,7 @@ class OpenBioSingleCellSCENICRegulonSpecificity(io.ComfyNode):
                 ),
                 io.Int.Input("max_output_rows", default=100_000, min=1, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
 
@@ -295,11 +278,7 @@ class OpenBioSingleCellSCENICActivityBinarization(io.ComfyNode):
                 TableResultType.Input("threshold_overrides", optional=True),
                 io.Int.Input("max_dense_bytes", default=1_073_741_824, min=1, max=2**63 - 1, advanced=True),
             ],
-            outputs=[
-                TableResultType.Output(display_name="thresholds"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="thresholds")),
         )
 
     @classmethod
@@ -326,11 +305,7 @@ class OpenBioSingleCellSCENICTFModules(io.ComfyNode):
                 io.String.Input("transcription_factor", default=""),
                 io.Int.Input("max_output_rows", default=100_000, min=1, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
 

@@ -11,8 +11,8 @@ scope.
 
 - `SummaryResult.summary` is the report artifact seam. Every analysis/report node must return the same canonical
   report fields and JSON-compatible value types, regardless of which internal builder it uses.
-- A node's explicit expression-source input is the expression-state seam. All quantities combined in one result or
-  plot must describe that one resolved source.
+- A node's explicit expression-source input is the expression-source seam. All quantities combined in one result or
+  plot must use that selected source.
 - A named graph selected through a node input is the graph seam. Structurally equivalent sparse matrices must receive
   the same base validation before method-specific rules are applied.
 - Generated `code` is the reproducibility seam for the scientific result. It must reproduce the equivalent function
@@ -32,7 +32,7 @@ review when its final behavior changes.
 1. Deepen the report-contract Module and repair Milo, scCODA/tascCODA, and scVI differential-expression summaries.
 2. Make QC plot metrics a coherent family from one explicit source.
 3. Make named-graph base validation consistent, beginning with stored sparse zero-diagonal entries.
-4. Remove the proven expression-state drift and generated-history behavior, then delete proven dead wrappers.
+4. Remove inferred expression state and generated-history behavior, then delete proven dead wrappers.
 5. Align node taxonomy and user-facing descriptions after behavioral seams are stable.
 
 ## Acceptance criteria
@@ -44,8 +44,7 @@ review when its final behavior changes.
 - QC plots never combine metrics resolved from different expression sources.
 - All named-graph consumers agree on base sparse-graph validity; explicit stored zeros do not create a path-specific
   failure.
-- Known expression-state classifications agree across runtime and generated paths; generated standalone code stays
-  equivalent without plugin-history side effects.
+- Runtime, summaries, artifacts, models, and generated standalone code contain no inferred expression-state model.
 - No unused compatibility or pass-through helper remains in the touched paths.
 - Targeted tests are written red-first at the confirmed seams, then the full Python/frontend/workflow/lint checks pass.
 
@@ -55,6 +54,4 @@ A typed `GeneSetResource` Adapter could replace six repeated file/metadata input
 node Interfaces and needs its own research and migration-free design decision. It is not bundled into these correctness
 repairs.
 
-Portable consolidation of all expression-state resolvers is tracked separately because several nodes emit standalone
-source and currently distinguish `logged` from `logged_unverified`. That vocabulary must be decided once before the
-copies are replaced; mechanically sharing the current disagreement would not be a correctness repair.
+Issue 06 resolved the former expression-state consolidation idea by deleting the redundant abstraction instead.

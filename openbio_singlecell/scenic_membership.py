@@ -8,7 +8,7 @@ from textwrap import dedent
 from typing import TYPE_CHECKING, Any
 
 from . import PLUGIN_VERSION
-from .pyscenic_import import _software_versions
+from .analysis_reporting import _package_version, collect_software_versions
 from .scenic_artifact import (
     SCENIC_MEMBERSHIP_COLUMNS,
     SCENIC_RESULT_ARTIFACT_SCHEMA_VERSION,
@@ -154,7 +154,7 @@ def scenic_regulon_membership(
         "parameters": parameters,
         "references": copy.deepcopy(SCENIC_MEMBERSHIP_REFERENCES),
         "software_versions": {
-            **_software_versions(["numpy", "pandas"], openbio_version=openbio_version),
+            **collect_software_versions(["numpy", "pandas"], openbio_version=openbio_version),
             "pyscenic-method": "0.12.1",
         },
         "warnings": warnings,
@@ -185,7 +185,8 @@ def scenic_membership_code(
         _strict_provenance,
         _result_fingerprint,
         validate_scenic_result_artifact,
-        _software_versions,
+        _package_version,
+        collect_software_versions,
         scenic_regulon_membership,
     )
     helper_source = "\n\n".join(dedent(inspect.getsource(helper)).strip() for helper in helpers)
@@ -194,9 +195,7 @@ def scenic_membership_code(
 
 import copy
 import hashlib
-import importlib.metadata
 import json
-import platform
 from collections.abc import Mapping, Sequence
 from typing import Any
 

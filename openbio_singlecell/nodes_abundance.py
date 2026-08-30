@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from comfy_api.latest import io
 
-from .node_types import AnnDataType, SummaryResultType, TableResultType
+from .node_types import AnnDataType, TableResultType, analysis_outputs
 
 ABUNDANCE_CATEGORY = "openbio/single-cell/differential-abundance"
 
@@ -32,11 +32,7 @@ class OpenBioSingleCellSampleCompositionSummary(io.ComfyNode):
                     advanced=True,
                 ),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
 
@@ -95,11 +91,7 @@ class OpenBioSingleCellMiloDifferentialAbundance(io.ComfyNode):
                 ),
                 io.Int.Input("random_seed", default=123, min=0, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
 
@@ -129,11 +121,7 @@ class OpenBioSingleCellSccodaDifferentialComposition(io.ComfyNode):
                 io.Int.Input("num_warmup", default=1000, min=1, max=2**31 - 1, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
 
@@ -164,11 +152,7 @@ class OpenBioSingleCellTasccodaDifferentialComposition(io.ComfyNode):
                 io.Int.Input("num_warmup", default=1000, min=1, max=2**31 - 1, advanced=True),
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
             ],
-            outputs=[
-                TableResultType.Output(display_name="table"),
-                SummaryResultType.Output(display_name="summary"),
-                io.String.Output("code"),
-            ],
+            outputs=analysis_outputs(TableResultType.Output(display_name="table")),
         )
 
 

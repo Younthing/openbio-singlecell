@@ -14,10 +14,7 @@ from typing import TYPE_CHECKING, Any
 from . import dependencies
 from .analysis_reporting import AnalysisReference, make_analysis_report, summarize_numeric
 from .analysis_utils import finish_adata, make_table_result, matrix_totals_and_nonzero, validate_count_expression
-from .artifact_codecs import read_anndata, write_table
-from .artifact_envelope import result_metadata
-from .expression_source import DynamicExpressionSource, ExpressionSource, ExpressionSourceSpec
-from .expression_state import resolve_expression_state
+from .expression_source import _SCVI_SPEC, DynamicExpressionSource, ExpressionSource
 from .graph_analysis import (
     assess_leiden_stability,
     graph_diagnostics,
@@ -28,12 +25,12 @@ from .graph_analysis import (
     validate_random_seed,
 )
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
-    require_artifact_input,
+    analysis_outputs,
+    read_anndata_input,
     require_input_names,
     require_parameters,
     write_anndata_output,
+    write_table_output,
 )
 from .scvi_model import SCVI_GLOBAL_RNG_LOCK
 from .worker_protocol import JSONValue, OperationContext, register_operation
@@ -212,10 +209,9 @@ def _source_label(expression: ExpressionSource) -> str:
 
 def _validate_scvi_counts(
     adata: AnnData, expression: ExpressionSource
-) -> tuple[Any, Any, Any, int, str, str | None, bool, int, list[str]]:
+) -> tuple[Any, Any, Any, int, bool, int, list[str]]:
     science = dependencies.require_scientific_dependencies()
     matrix = _numeric_matrix(expression.matrix(adata), description="scVI count source", shape=tuple(adata.shape))
-    state, evidence = resolve_expression_state(adata, expression)
     try:
         count_warnings = validate_count_expression(
             matrix,
@@ -237,7 +233,7 @@ def _validate_scvi_counts(
     values = science.np.asarray(values)
     integer_like = bool(science.np.allclose(values, science.np.rint(values), rtol=0.0, atol=1e-8))
     nonzero = int(matrix.count_nonzero()) if science.sparse.issparse(matrix) else int(science.np.count_nonzero(matrix))
-    return matrix, cell_totals, gene_totals, nonzero, state, evidence, integer_like, zero_genes, count_warnings
+    return matrix, cell_totals, gene_totals, nonzero, integer_like, zero_genes, count_warnings
 
 
 def _resolve_epochs(epochs: Mapping[str, object] | None) -> tuple[str, int | None]:
@@ -788,55 +784,10 @@ def _scvi_code(parameters: Mapping[str, Any]) -> str:
             import inspect
             import random
             import warnings
-            from collections.abc import Mapping
-
             import numpy as np
             import scvi
             import torch
             from scipy import sparse
-
-            def resolve_source_state():
-                x_state = "unknown"
-                x_evidence = None
-                layer_states = {{}}
-                metadata = adata.uns.get("openbio_singlecell")
-                history = metadata.get("analysis_history") if isinstance(metadata, Mapping) else None
-                entries = history.values() if isinstance(history, Mapping) else ()
-                for entry in entries:
-                    if not isinstance(entry, Mapping):
-                        continue
-                    operation = entry.get("operation")
-                    entry_parameters = entry.get("parameters")
-                    entry_parameters = entry_parameters if isinstance(entry_parameters, Mapping) else {{}}
-                    if operation == "snapshot_expression":
-                        layer_states["counts"] = ("counts", "OpenBio Snapshot Expression history")
-                        if entry_parameters.get("source") == "X":
-                            x_state, x_evidence = "counts", "OpenBio Snapshot Expression history"
-                    elif operation == "normalize_to_layer":
-                        layer_name = entry_parameters.get("output_layer")
-                        transform = entry_parameters.get("transform")
-                        if isinstance(layer_name, str):
-                            state = "logged" if transform == "log1p" else "transformed" if transform == "sqrt" else "normalized"
-                            layer_states[layer_name] = (state, "OpenBio Normalize To Layer history")
-                    elif operation == "pearson_residuals_to_layer":
-                        layer_name = entry_parameters.get("output_layer")
-                        if isinstance(layer_name, str):
-                            layer_states[layer_name] = ("pearson_residuals", "OpenBio Pearson Residuals history")
-                    elif operation == "scale_to_layer":
-                        layer_name = entry_parameters.get("output_layer")
-                        if isinstance(layer_name, str):
-                            layer_states[layer_name] = ("scaled", "OpenBio Scale history")
-
-                    if operation == "normalize_total":
-                        x_state, x_evidence = "normalized", "OpenBio Normalize Total history"
-                    elif operation == "log1p":
-                        x_state, x_evidence = "logged", "OpenBio Log1p history"
-
-                if source_kind == "layer":
-                    return layer_states.get(source_layer, ("unknown", None))
-                if x_state == "unknown" and isinstance(adata.uns.get("log1p"), Mapping):
-                    return "logged", "AnnData uns['log1p'] marker"
-                return x_state, x_evidence
 
             source_kind = {parameters["source"]!r}
             source_layer = {source_layer!r}
@@ -854,22 +805,6 @@ def _scvi_code(parameters: Mapping[str, Any]) -> str:
             matrix = adata.layers[source_layer] if source_kind == "layer" else adata.X
             if tuple(matrix.shape) != tuple(adata.shape):
                 raise ValueError("scVI count source must align to AnnData.")
-            source_state, source_evidence = resolve_source_state()
-            if source_state == "unknown":
-                warnings.warn(
-                    "The selected count-intended source has no recorded raw-count provenance; verify whether it "
-                    "contains unnormalized UMI counts or another explicitly intended non-negative representation.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-            elif source_state != "counts":
-                warnings.warn(
-                    f"The explicitly selected scVI source has recorded expression state {{source_state!r}} "
-                    f"({{source_evidence or 'no evidence text'}}). The backend can train on finite non-negative "
-                    "values, but count-likelihood interpretation may not apply.",
-                    UserWarning,
-                    stacklevel=2,
-                )
             values = matrix.data if sparse.issparse(matrix) else np.asarray(matrix).ravel()
             values = np.asarray(values)
             if values.dtype.kind not in "iuf" or not np.isfinite(values).all() or (values < 0).any():
@@ -1371,12 +1306,7 @@ class OpenBioSingleCellHarmonyIntegration:
 
 
 class OpenBioSingleCellSCVIIntegration:
-    EXPRESSION_SOURCE = ExpressionSourceSpec(
-        description="scVI counts source",
-        default="layer",
-        layer_input_id="counts_layer",
-        layer_default="counts",
-    )
+    EXPRESSION_SOURCE = _SCVI_SPEC
 
     @classmethod
     def execute(
@@ -1409,8 +1339,6 @@ class OpenBioSingleCellSCVIIntegration:
             cell_totals,
             gene_totals,
             nonzero,
-            state,
-            evidence,
             integer_like,
             zero_genes,
             count_warnings,
@@ -1603,8 +1531,6 @@ class OpenBioSingleCellSCVIIntegration:
         diagnostics = _scvi_training_diagnostics(model)
         parameters = {
             **expression.parameters(),
-            "count_source_state": state,
-            "count_source_state_evidence": evidence,
             "technical_batch_key": technical_batch_key,
             "size_factor_key": size_factor_key,
             "categorical_covariates": categorical_keys,
@@ -1639,16 +1565,6 @@ class OpenBioSingleCellSCVIIntegration:
             "The trained scVI model is a session-only native artifact bound to the producing Python Worker.",
             "A fixed seed does not guarantee bitwise equality across devices, hardware, or software versions.",
         ]
-        if state == "unknown":
-            warnings.append(
-                "The selected count-intended source has no recorded raw-count provenance; verify whether it contains "
-                "unnormalized UMI counts or another explicitly intended non-negative representation."
-            )
-        elif state != "counts":
-            warnings.append(
-                f"The explicitly selected scVI source has recorded expression state {state!r} ({evidence or 'no evidence text'}). "
-                "The backend can train on finite non-negative values, but count-likelihood interpretation may not apply."
-            )
         if zero_genes:
             warnings.append(
                 f"The selected scVI source contains {zero_genes} all-zero gene(s); the audited backend can retain them, "
@@ -1720,7 +1636,7 @@ class OpenBioSingleCellSCVIIntegration:
             operation="scvi_integration",
             methods=(
                 f"scVI was trained on explicitly selected count-intended source {_source_label(expression)!r} "
-                f"(resolved state {state!r}) with Technical batch {technical_batch_key!r}; the posterior-mean latent "
+                f"with Technical batch {technical_batch_key!r}; the posterior-mean latent "
                 f"representation was stored at {output_key!r}."
             ),
             results=(
@@ -1731,8 +1647,6 @@ class OpenBioSingleCellSCVIIntegration:
                 "cells": cells,
                 "features": genes,
                 "count_source": _source_label(expression),
-                "count_source_state": state,
-                "count_source_state_evidence": evidence,
                 "count_source_integer_like": integer_like,
                 "zero_total_genes": zero_genes,
                 "count_nonzero": nonzero,
@@ -2040,23 +1954,17 @@ class OpenBioSingleCellLeidenResolutionSweep:
 
 
 TABLE_KIND = "OPENBIO_SINGLE_CELL_TABLE"
-TABLE_CODEC = "table-jsonl-v1"
 SCVI_MODEL_KIND = "OPENBIO_SCVI_MODEL"
 SCVI_MODEL_CODEC = "scvi-native-directory"
 
 
 def _adata_input(inputs: dict[str, JSONValue], *, operation: str) -> Any:
     require_input_names(inputs, {"adata"}, operation=operation)
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    return read_anndata(root)
+    return read_anndata_input(inputs)
 
 
 def _standard_records(context: OperationContext, output: Any, summary: Any, code: str) -> list[JSONValue]:
-    return [
-        write_anndata_output(context, output),
-        {"type": "summary", "name": "summary", "value": result_metadata(summary)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    return analysis_outputs(summary, code, write_anndata_output(context, output))
 
 
 @register_operation("openbio.node.harmonyintegration")
@@ -2120,7 +2028,9 @@ def scvi_integration(
     save(str(model_root), overwrite=False, save_anndata=True)
     if not model_root.is_dir():
         raise RuntimeError("scVI model.save did not create its native model directory.")
-    return [
+    return analysis_outputs(
+        summary,
+        code,
         write_anndata_output(context, output),
         {
             "type": "artifact",
@@ -2129,9 +2039,7 @@ def scvi_integration(
             "codec": SCVI_MODEL_CODEC,
             "payload": model_root.relative_to(context.output_root).as_posix(),
         },
-        {"type": "summary", "name": "summary", "value": result_metadata(summary)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    )
 
 
 @register_operation("openbio.node.leidenresolutionsweep")
@@ -2151,20 +2059,12 @@ def leiden_resolution_sweep(
     output, table, summary, code = OpenBioSingleCellLeidenResolutionSweep.execute(
         _adata_input(inputs, operation="Leiden Resolution Sweep"), **parameters
     )
-    table_root = context.create_output_directory("resolution_metrics")
-    write_table(table_root, table.table, result_metadata(table))
-    return [
+    return analysis_outputs(
+        summary,
+        code,
         write_anndata_output(context, output),
-        {
-            "type": "artifact",
-            "name": "resolution_metrics",
-            "kind": TABLE_KIND,
-            "codec": TABLE_CODEC,
-            "payload": table_root.relative_to(context.output_root).as_posix(),
-        },
-        {"type": "summary", "name": "summary", "value": result_metadata(summary)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+        write_table_output(context, table, name="resolution_metrics", kind=TABLE_KIND),
+    )
 
 
 __all__ = ["harmony_integration", "leiden_resolution_sweep", "scvi_integration"]

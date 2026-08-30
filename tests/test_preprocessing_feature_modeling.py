@@ -397,7 +397,7 @@ def test_hvg_log_flavor_attributes_forced_genes_and_code(science):
         science.np.testing.assert_array_equal(generated.var[column], output.var[column])
 
 
-def test_hvg_accepts_external_scanpy_log_marker_with_disclosed_limitation(science):
+def test_hvg_ignores_external_scanpy_log_marker(science):
     external = _adata(science, sparse=False)
     science.sc.pp.normalize_total(external, target_sum=100.0)
     science.sc.pp.log1p(external)
@@ -410,23 +410,21 @@ def test_hvg_accepts_external_scanpy_log_marker_with_disclosed_limitation(scienc
         n_bins=4,
     ).result
 
-    assert report.summary["key_results"]["source_state"] == "logged_unverified"
-    assert any("cannot prove" in warning for warning in report.summary["warnings"])
-    with pytest.warns(UserWarning, match="cannot prove"):
-        generated = _run_code(code, "select_highly_variable_genes", external)
+    assert "source_state" not in report.summary["key_results"]
+    assert "source_state_evidence" not in report.summary["key_results"]
+    generated = _run_code(code, "select_highly_variable_genes", external)
     science.np.testing.assert_array_equal(generated.var["highly_variable"], output.var["highly_variable"])
 
 
-def test_hvg_warns_for_expert_source_and_raw_choices_but_enforces_structural_contracts(science):
+def test_hvg_honors_explicit_sources_and_enforces_structural_contracts(science):
     counts = _adata(science)
-    counts_output, counts_report, _ = _hvg(
+    counts_output, _, _ = _hvg(
         counts,
         n_top_genes=3,
         flavor="seurat",
         source={"source": "layer", "layer_name": "counts"},
     ).result
     assert "highly_variable" in counts_output.var
-    assert any("expert-selected source" in warning for warning in counts_report.summary["warnings"])
 
     logged = _logged(science, raw=False)
     pearson_output, pearson_report, pearson_code = _hvg(
@@ -436,8 +434,8 @@ def test_hvg_warns_for_expert_source_and_raw_choices_but_enforces_structural_con
         source={"source": "layer", "layer_name": "log1p_norm"},
     ).result
     assert "highly_variable" in pearson_output.var
-    assert any("logged expression" in warning for warning in pearson_report.summary["warnings"])
-    with pytest.warns(UserWarning):
+    assert any("fractional non-negative" in warning for warning in pearson_report.summary["warnings"])
+    with pytest.warns(UserWarning, match="fractional non-negative"):
         generated_pearson = _run_code(pearson_code, "select_highly_variable_genes", logged.copy())
     science.np.testing.assert_array_equal(
         generated_pearson.var["highly_variable"],
@@ -452,9 +450,8 @@ def test_hvg_warns_for_expert_source_and_raw_choices_but_enforces_structural_con
         subset=True,
     ).result
     assert subset_output.raw is None
-    assert any("no verified full-gene Raw snapshot" in warning for warning in subset_report.summary["warnings"])
-    with pytest.warns(UserWarning, match="no verified full-gene Raw snapshot"):
-        generated_subset = _run_code(subset_code, "select_highly_variable_genes", logged)
+    assert not any("Raw snapshot" in warning for warning in subset_report.summary["warnings"])
+    generated_subset = _run_code(subset_code, "select_highly_variable_genes", logged)
     science.np.testing.assert_array_equal(generated_subset.var_names, subset_output.var_names)
 
     invalid_batch = _logged(science)

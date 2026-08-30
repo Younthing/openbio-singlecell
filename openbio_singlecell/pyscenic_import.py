@@ -4,12 +4,10 @@ import ast
 import copy
 import csv
 import hashlib
-import importlib.metadata
 import inspect
 import json
 import math
 import os
-import platform
 import re
 import struct
 import threading
@@ -19,6 +17,7 @@ from textwrap import dedent
 from typing import TYPE_CHECKING, Any
 
 from . import PLUGIN_VERSION
+from .analysis_reporting import _package_version, collect_software_versions
 from .scenic_artifact import (
     SCENIC_MEMBERSHIP_COLUMNS,
     SCENIC_RESULT_ARTIFACT_SCHEMA_VERSION,
@@ -1103,18 +1102,6 @@ def _read_regulon_csv(
     return pandas.DataFrame(output_rows, columns=SCENIC_MEMBERSHIP_COLUMNS)
 
 
-def _software_versions(packages: Sequence[str], *, openbio_version: str) -> dict[str, str]:
-    result = {"python": platform.python_version(), "openbio-singlecell": openbio_version}
-    for package in packages:
-        if package in result:
-            continue
-        try:
-            result[package] = importlib.metadata.version(package)
-        except importlib.metadata.PackageNotFoundError:
-            result[package] = "not-installed"
-    return result
-
-
 def import_pyscenic_bundle(
     adata: AnnData,
     manifest_path: str | os.PathLike[str],
@@ -1376,7 +1363,7 @@ def import_pyscenic_bundle(
         "parameters": parameters,
         "references": copy.deepcopy(PYSCENIC_REFERENCES),
         "software_versions": {
-            **_software_versions(
+            **collect_software_versions(
                 ["anndata", "numpy", "pandas", "scipy"], openbio_version=openbio_version
             ),
             **{
@@ -1446,7 +1433,8 @@ def pyscenic_import_code(
         _parse_targets,
         _optional_float,
         _read_regulon_csv,
-        _software_versions,
+        _package_version,
+        collect_software_versions,
         import_pyscenic_bundle,
     )
     helper_source = "\n\n".join(dedent(inspect.getsource(helper)).strip() for helper in helpers)
@@ -1456,11 +1444,9 @@ import ast
 import copy
 import csv
 import hashlib
-import importlib.metadata
 import json
 import math
 import os
-import platform
 import re
 import struct
 import threading

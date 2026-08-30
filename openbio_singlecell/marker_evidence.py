@@ -347,8 +347,6 @@ def _rank_marker_evidence_impl(
     tie_correct: bool,
     max_output_rows: int,
     max_working_memory_gib: float,
-    expression_state: str,
-    expression_evidence: str | None,
     np: Any,
     pd: Any,
     sparse: Any,
@@ -454,7 +452,7 @@ def _rank_marker_evidence_impl(
             raise ValueError(f"Marker source layer not found: {layer_name!r}")
         matrix = adata.layers[layer_name]
     else:
-        raise ValueError("Marker Genes expression source must be X or layer; Raw snapshots are counts and unsupported.")
+        raise ValueError("Marker Genes expression source must be X or layer; Raw is unsupported.")
     if getattr(matrix, "shape", None) != (int(adata.n_obs), int(adata.n_vars)):
         raise ValueError("Marker Genes expression source is not aligned to AnnData observations and variables.")
     matrix_dtype = getattr(matrix, "dtype", None)
@@ -712,12 +710,6 @@ def _rank_marker_evidence_impl(
     table_content_fingerprint = _marker_table_content_fingerprint(table)
     universe_content_fingerprint = _universe_content_fingerprint(universe)
     warnings_list = []
-    if expression_state != "logged":
-        warnings_list.append(
-            f"The explicitly selected expression state is {expression_state!r} "
-            f"({expression_evidence or 'no available state evidence'}). Scanpy recommends logarithmized data; "
-            "execution honored the expert selection without treating history as an authorization gate."
-        )
     if count_like_values and not contains_negative_values:
         warnings_list.append(
             "The selected expression is integer-like/count-like. Marker statistics remain calculable, but library "
@@ -759,13 +751,6 @@ def _rank_marker_evidence_impl(
         "total_output_rows": expected_output_rows,
         "max_working_memory_gib": max_working_memory_gib,
         "working_memory": memory,
-        "expression_state": expression_state,
-        "expression_evidence": expression_evidence,
-        "expression_interpretation": (
-            "verified logarithmized abundance"
-            if expression_state == "logged"
-            else "explicitly selected nonstandard abundance representation; logarithmized-input recommendation unverified"
-        ),
         "warnings": warnings_list,
     }
     return table, universe, details
@@ -821,13 +806,9 @@ def marker_provenance_parameters(
         "rankby_abs": False,
         "pts": True,
         "corr_method": "benjamini-hochberg",
-        "expression_state": details["expression_state"],
-        "expression_interpretation": details["expression_interpretation"],
     }
     if layer_name is not None:
         parameters["marker_layer_name"] = layer_name
-    if details["expression_evidence"] is not None:
-        parameters["expression_evidence"] = details["expression_evidence"]
     return parameters
 
 
@@ -936,8 +917,6 @@ def validate_marker_artifact_pair(
         "rankby_abs",
         "pts",
         "corr_method",
-        "expression_state",
-        "expression_interpretation",
     )
     mismatched_fields = [
         field for field in shared_fields if table_parameters.get(field) != universe_parameters.get(field)
@@ -1093,8 +1072,6 @@ def rank_marker_evidence(
     tie_correct: bool,
     max_output_rows: int,
     max_working_memory_gib: float,
-    expression_state: str,
-    expression_evidence: str | None,
     np: Any,
     pd: Any,
     sparse: Any,
@@ -1113,8 +1090,6 @@ def rank_marker_evidence(
         tie_correct=tie_correct,
         max_output_rows=max_output_rows,
         max_working_memory_gib=max_working_memory_gib,
-        expression_state=expression_state,
-        expression_evidence=expression_evidence,
         np=np,
         pd=pd,
         sparse=sparse,
@@ -1154,48 +1129,6 @@ def _validate_generated_marker_frames(frame: Any, universe: Any, *, np: Any, pd:
         raise ValueError("Marker table contains genes outside the tested-gene universe.")
 
 
-def _expression_state_code() -> str:
-    return """def _openbio_expression_state(adata, source_kind, layer_name):
-    x_state, x_evidence = "unknown", None
-    layer_states = {}
-    metadata = adata.uns.get("openbio_singlecell")
-    history = metadata.get("analysis_history") if isinstance(metadata, Mapping) else None
-    entries = history.values() if isinstance(history, Mapping) else ()
-    for entry in entries:
-        if not isinstance(entry, Mapping):
-            continue
-        operation = entry.get("operation")
-        parameters = entry.get("parameters")
-        parameters = parameters if isinstance(parameters, Mapping) else {}
-        if operation == "snapshot_expression":
-            layer_states["counts"] = ("counts", "OpenBio Snapshot Expression history")
-            if parameters.get("source") == "X":
-                x_state, x_evidence = "counts", "OpenBio Snapshot Expression history"
-        elif operation == "normalize_to_layer":
-            output_layer = parameters.get("output_layer")
-            transform = parameters.get("transform")
-            if isinstance(output_layer, str):
-                state = "logged" if transform == "log1p" else "transformed" if transform == "sqrt" else "normalized"
-                layer_states[output_layer] = (state, "OpenBio Normalize To Layer history")
-        elif operation == "pearson_residuals_to_layer":
-            output_layer = parameters.get("output_layer")
-            if isinstance(output_layer, str):
-                layer_states[output_layer] = ("pearson_residuals", "OpenBio Pearson Residuals history")
-        elif operation == "scale_to_layer":
-            output_layer = parameters.get("output_layer")
-            if isinstance(output_layer, str):
-                layer_states[output_layer] = ("scaled", "OpenBio Scale history")
-        if operation == "normalize_total":
-            x_state, x_evidence = "normalized", "OpenBio Normalize Total history"
-        elif operation == "log1p":
-            x_state, x_evidence = "logged", "OpenBio Log1p history"
-    if source_kind == "layer":
-        return layer_states.get(layer_name, ("unknown", None))
-    if x_state == "unknown" and isinstance(adata.uns.get("log1p"), Mapping):
-        return "logged", "AnnData uns['log1p'] marker"
-    return x_state, x_evidence"""
-
-
 def marker_genes_code(
     *,
     groupby: str,
@@ -1228,7 +1161,6 @@ def marker_genes_code(
 
 import hashlib
 import json
-import warnings
 from collections.abc import Mapping
 from typing import Any
 
@@ -1247,13 +1179,8 @@ _MARKER_UNIT_INTERVAL_COLUMNS = {_MARKER_UNIT_INTERVAL_COLUMNS!r}
 
 {sources}
 
-{_expression_state_code()}
-
 def rank_marker_genes(adata):
-    expression_state, expression_evidence = _openbio_expression_state(
-        adata, {source_kind!r}, {layer_name!r}
-    )
-    table, universe, details = _rank_marker_evidence_impl(
+    table, universe, _details = _rank_marker_evidence_impl(
         adata,
         groupby={groupby!r},
         method={method!r},
@@ -1263,8 +1190,6 @@ def rank_marker_genes(adata):
         tie_correct={tie_correct!r},
         max_output_rows={max_output_rows!r},
         max_working_memory_gib={max_working_memory_gib!r},
-        expression_state=expression_state,
-        expression_evidence=expression_evidence,
         np=np,
         pd=pd,
         sparse=sparse,
@@ -1272,13 +1197,6 @@ def rank_marker_genes(adata):
         ad=ad,
         multipletests=multipletests,
     )
-    if expression_state != "logged":
-        warnings.warn(
-            "The selected expression is not documented as logarithmized; the explicit expert choice was honored "
-            "and its scale must be considered during interpretation.",
-            UserWarning,
-            stacklevel=2,
-        )
     return table, universe
 """
 

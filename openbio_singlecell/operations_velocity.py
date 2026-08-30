@@ -4,14 +4,14 @@ import time
 from typing import Any
 
 from .analysis_utils import make_plot_result, make_summary_result, make_table_result
-from .artifact_codecs import PLOT_CODEC, TABLE_CODEC, write_plot, write_table
-from .artifact_envelope import result_metadata
 from .operations_input import (
-    ANNDATA_CODEC,
-    ANNDATA_KIND,
+    analysis_outputs,
+    read_anndata_input,
     require_artifact_input,
     require_input_names,
     require_parameters,
+    write_plot_output,
+    write_table_output,
 )
 from .staged_state_codec import (
     VELOCITY_STATE_CODEC,
@@ -35,11 +35,8 @@ VELOCITY_STATE_KIND = "OPENBIO_VELOCITY_STATE"
 
 
 def _anndata_input(inputs: dict[str, JSONValue], *, operation: str) -> Any:
-    from .artifact_codecs import read_anndata
-
     require_input_names(inputs, {"adata"}, operation=operation)
-    root = require_artifact_input(inputs, "adata", kind=ANNDATA_KIND, codec=ANNDATA_CODEC)
-    return read_anndata(root)
+    return read_anndata_input(inputs)
 
 
 def _state_input(inputs: dict[str, JSONValue], *, operation: str) -> Any:
@@ -84,7 +81,9 @@ def _state_records(
 ) -> list[dict[str, JSONValue]]:
     root = context.create_output_directory("velocity_state")
     write_velocity_state(root, state)
-    return [
+    return analysis_outputs(
+        report,
+        code,
         {
             "type": "artifact",
             "name": "velocity_state",
@@ -92,9 +91,7 @@ def _state_records(
             "codec": VELOCITY_STATE_CODEC,
             "payload": root.relative_to(context.output_root).as_posix(),
         },
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": code},
-    ]
+    )
 
 
 @register_operation("openbio.node.velocityfilterandnormalize")
@@ -296,19 +293,11 @@ def velocity_gene_ranking(
         cells=cells,
         genes=genes,
     )
-    root = context.create_output_directory("table")
-    write_table(root, table, result_metadata(table_result))
-    return [
-        {
-            "type": "artifact",
-            "name": "table",
-            "kind": "OPENBIO_SINGLE_CELL_TABLE",
-            "codec": TABLE_CODEC,
-            "payload": root.relative_to(context.output_root).as_posix(),
-        },
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": velocity_code("ranking", **parameters)},
-    ]
+    return analysis_outputs(
+        report,
+        velocity_code("ranking", **parameters),
+        write_table_output(context, table_result, kind="OPENBIO_SINGLE_CELL_TABLE"),
+    )
 
 
 @register_operation("openbio.node.velocitystreamplot")
@@ -349,19 +338,11 @@ def velocity_stream_plot(
         cells=cells,
         genes=genes,
     )
-    root = context.create_output_directory("plot")
-    write_plot(root, png, result_metadata(plot_result))
-    return [
-        {
-            "type": "artifact",
-            "name": "plot",
-            "kind": "OPENBIO_SINGLE_CELL_PLOT",
-            "codec": PLOT_CODEC,
-            "payload": root.relative_to(context.output_root).as_posix(),
-        },
-        {"type": "summary", "name": "summary", "value": result_metadata(report)},
-        {"type": "string", "name": "code", "value": velocity_code("stream", **parameters)},
-    ]
+    return analysis_outputs(
+        report,
+        velocity_code("stream", **parameters),
+        write_plot_output(context, plot_result, kind="OPENBIO_SINGLE_CELL_PLOT"),
+    )
 
 
 __all__ = [

@@ -335,8 +335,6 @@ def _marker_artifacts(science, *, filtered):
         "rankby_abs": False,
         "pts": True,
         "corr_method": "benjamini-hochberg",
-        "expression_state": "logged",
-        "expression_interpretation": "verified logarithmized abundance",
     }
     if filtered:
         operation = "filter_marker_genes"

@@ -552,63 +552,6 @@ def umap_embedding_provenance(adata, embedding_key: str) -> tuple[dict[str, Any]
     return provenance, warnings
 
 
-def marker_plot_expression_state(
-    adata,
-    *,
-    source_kind: str,
-    genes: list[str],
-    current_x_state: str,
-    current_x_evidence: str | None,
-    np,
-    sparse,
-) -> tuple[str, str | None]:
-    """Resolve Raw state only from bound OpenBio history or equality to a proven current X panel."""
-    if source_kind != "raw":
-        return current_x_state, current_x_evidence
-    if adata.raw is None:
-        return "unknown", None
-
-    metadata = adata.uns.get("openbio_singlecell")
-    history = metadata.get("analysis_history") if isinstance(metadata, Mapping) else None
-    if isinstance(history, Mapping):
-        for entry in reversed(list(history.values())):
-            if not isinstance(entry, Mapping) or entry.get("operation") != "snapshot_expression":
-                continue
-            if (
-                "counts" in adata.layers
-                and bool(adata.var_names.is_unique)
-                and all(gene in adata.var_names for gene in genes)
-            ):
-                raw_indices = [adata.raw.var_names.get_loc(gene) for gene in genes]
-                current_indices = [adata.var_names.get_loc(gene) for gene in genes]
-                raw_panel = adata.raw.X[:, raw_indices]
-                counts_panel = adata.layers["counts"][:, current_indices]
-                raw_panel = raw_panel.toarray() if sparse.issparse(raw_panel) else np.asarray(raw_panel)
-                counts_panel = counts_panel.toarray() if sparse.issparse(counts_panel) else np.asarray(counts_panel)
-                if raw_panel.shape != counts_panel.shape or not bool(np.array_equal(raw_panel, counts_panel)):
-                    return (
-                        "unknown",
-                        "OpenBio Snapshot Expression history conflicts with current Raw/counts values",
-                    )
-            return "counts", "OpenBio Snapshot Expression history with Raw destination"
-
-    if (
-        current_x_state != "unknown"
-        and bool(adata.var_names.is_unique)
-        and all(gene in adata.var_names for gene in genes)
-    ):
-        raw_indices = [adata.raw.var_names.get_loc(gene) for gene in genes]
-        current_indices = [adata.var_names.get_loc(gene) for gene in genes]
-        raw_panel = adata.raw.X[:, raw_indices]
-        current_panel = adata.X[:, current_indices]
-        raw_panel = raw_panel.toarray() if sparse.issparse(raw_panel) else np.asarray(raw_panel)
-        current_panel = current_panel.toarray() if sparse.issparse(current_panel) else np.asarray(current_panel)
-        if raw_panel.shape == current_panel.shape and bool(np.array_equal(raw_panel, current_panel)):
-            evidence = current_x_evidence or "current X expression provenance"
-            return current_x_state, f"Selected Raw values equal proven current X ({evidence})"
-    return "unknown", None
-
-
 def _marker_expression_plot_impl(
     adata,
     *,
@@ -1277,7 +1220,6 @@ __all__ = [
     "UMAP_LEGEND_LIMIT",
     "_marker_expression_plot_impl",
     "_plot_umap_impl",
-    "marker_plot_expression_state",
     "marker_expression_plot_code",
     "umap_embedding_provenance",
     "umap_plot_code",

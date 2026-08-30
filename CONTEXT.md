@@ -17,8 +17,14 @@ The biological cohort, disease state, or treatment whose differences are the sub
 _Avoid_: Batch
 
 **Raw snapshot**:
-The post-QC, full-gene count state retained before highly variable gene selection so the accepted counts can be recovered.
-_Avoid_: Unfiltered input, log-normalized data
+A user-selected expression snapshot retained for later access, potentially with an independent feature axis. Its
+presence does not imply a count, normalization, or transform state.
+_Avoid_: Count-state proof, preprocessing-state marker
+
+**Expression source**:
+The representation explicitly selected by the user for a scientific operation. Its meaning comes from the workflow
+and the user's choice, not from an inferred preprocessing state.
+_Avoid_: Inferred expression state
 
 **File artifact**:
 An immutable analysis result whose authoritative representation is one complete file or directory.

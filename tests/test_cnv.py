@@ -391,6 +391,8 @@ def test_cnv_fake_backend_chain_is_typed_reportable_and_immutable(science, monke
     assert state.to_adata().obsm["X_cnv"].shape == (48, 6)
     assert infer_summary["key_results"]["reference"]["reference_samples"] == 2
     assert infer_summary["key_results"]["cnv_matrix"]["window_metadata"] == {"chr1": 0, "chr2": 3}
+    assert "expression_state" not in infer_summary["parameters"]
+    assert {"state", "state_evidence"}.isdisjoint(infer_summary["key_results"]["source"])
     assert infer_summary["references"] and "infercnvpy" in infer_summary["software_versions"]
     json.dumps(infer_summary, allow_nan=False)
     science.np.testing.assert_allclose(adata.layers["log1p_norm"].toarray() if sparse else adata.layers["log1p_norm"], before.layers["log1p_norm"].toarray() if sparse else before.layers["log1p_norm"])
