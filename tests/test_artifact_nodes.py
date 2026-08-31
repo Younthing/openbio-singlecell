@@ -12,7 +12,8 @@ import openbio_singlecell.extension as extension_module
 from openbio_singlecell.extension import NODE_CLASSES
 from openbio_singlecell.node_adapter import adapt_scientific_node
 from openbio_singlecell.node_types import WorkerType
-from openbio_singlecell.nodes_worker import OpenBioSingleCellPythonWorker, WorkerProfile
+from openbio_singlecell.nodes_worker import OpenBioSingleCellPythonWorker
+from openbio_singlecell.worker_client import WorkerIdentity
 
 MAIN_PROCESS_NODE_IDS = {
     "OpenBioSingleCellCoreStudyParameters",
@@ -62,18 +63,18 @@ def test_persist_artifact_is_registered_as_a_terminal_for_file_tickets():
 def test_python_worker_probes_the_exact_executable():
     output = asyncio.run(OpenBioSingleCellPythonWorker.execute(sys.executable))
 
-    profile = output[0]
-    assert isinstance(profile, WorkerProfile)
-    assert profile.executable == OpenBioSingleCellPythonWorker.fingerprint_inputs(sys.executable)[0]
-    assert profile.identity.python_version[:2] >= (3, 12)
+    identity = output[0]
+    assert isinstance(identity, WorkerIdentity)
+    assert identity.executable == OpenBioSingleCellPythonWorker.fingerprint_inputs(sys.executable)[0]
+    assert identity.python_version[:2] >= (3, 12)
 
 
 def test_scientific_cache_fingerprint_changes_with_selected_python_path():
-    profile = asyncio.run(OpenBioSingleCellPythonWorker.execute(sys.executable))[0]
-    other = WorkerProfile(replace(profile.identity, executable=profile.executable + ".other"))
+    identity = asyncio.run(OpenBioSingleCellPythonWorker.execute(sys.executable))[0]
+    other = replace(identity, executable=identity.executable + ".other")
     log1p = next(node for node in NODE_CLASSES if node.GET_SCHEMA().node_id == "OpenBioSingleCellLog1p")
 
-    assert log1p.fingerprint_inputs(worker=profile) != log1p.fingerprint_inputs(worker=other)
+    assert log1p.fingerprint_inputs(worker=identity) != log1p.fingerprint_inputs(worker=other)
 
 
 def test_every_scientific_node_is_async_and_has_optional_worker_socket():

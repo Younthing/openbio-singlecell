@@ -7,7 +7,8 @@ from typing import Any
 from comfy_api.latest import io
 
 from .node_types import WorkerType
-from .nodes_worker import WorkerProfile, worker_executable_fingerprint
+from .nodes_worker import worker_executable_fingerprint
+from .worker_client import WorkerIdentity
 
 _SCHEMA_CACHE_FIELDS = (
     "SCHEMA",
@@ -29,12 +30,12 @@ _SCHEMA_CACHE_FIELDS = (
 )
 
 
-def _worker_fingerprint(worker: WorkerProfile | None) -> tuple[object, ...]:
+def _worker_fingerprint(worker: WorkerIdentity | None) -> tuple[object, ...]:
     if worker is None:
         return worker_executable_fingerprint(sys.executable)
-    if not isinstance(worker, WorkerProfile):
+    if not isinstance(worker, WorkerIdentity):
         raise TypeError("worker must be an OPENBIO_WORKER value.")
-    return worker.identity.fingerprint
+    return worker.fingerprint
 
 
 def _override(node: type[io.ComfyNode], name: str):
@@ -69,7 +70,7 @@ def adapt_scientific_node(node: type[io.ComfyNode]) -> type[io.ComfyNode]:
     @classmethod
     def validate_inputs(cls, **kwargs: Any) -> bool | str:
         worker = kwargs.pop("worker", None)
-        if worker is not None and not isinstance(worker, WorkerProfile):
+        if worker is not None and not isinstance(worker, WorkerIdentity):
             return "worker must be connected to a Python Worker node."
         return original_validation(cls, **kwargs) if original_validation is not None else True
 

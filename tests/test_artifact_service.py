@@ -24,7 +24,6 @@ from openbio_singlecell.node_adapter import adapt_scientific_node
 from openbio_singlecell.node_types import AnnDataType, CNMFRunType, SCVIModelType, TableResultType
 from openbio_singlecell.nodes_input import OpenBioSingleCellLoadH5AD
 from openbio_singlecell.nodes_preprocess import OpenBioSingleCellLog1p
-from openbio_singlecell.nodes_worker import WorkerProfile
 from openbio_singlecell.worker_client import WorkerIdentity, _invoke_worker
 from openbio_singlecell.worker_protocol import WorkerRequest
 
@@ -312,7 +311,7 @@ def test_native_artifact_uses_its_producer_worker_and_rejects_a_different_worker
     monkeypatch.setattr(artifact_service_module, "run_worker", fake_run_worker)
     _run(initialize_artifact_service(temp_dir, sys.executable))
 
-    ticket = _run(execute_artifact_node(producer_node, WorkerProfile(producer_identity), {}))[0]
+    ticket = _run(execute_artifact_node(producer_node, producer_identity, {}))[0]
     consumed = _run(execute_artifact_node(_NativeConsumerProbeNode, None, {"native": ticket}))
 
     assert consumed[0] == "ok"
@@ -321,7 +320,7 @@ def test_native_artifact_uses_its_producer_worker_and_rejects_a_different_worker
         _run(
             execute_artifact_node(
                 _NativeConsumerProbeNode,
-                WorkerProfile(wrong_identity),
+                wrong_identity,
                 {"native": ticket},
             )
         )

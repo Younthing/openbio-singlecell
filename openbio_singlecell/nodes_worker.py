@@ -1,24 +1,14 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
 from typing import Any
 
 from comfy_api.latest import io
 
 from .node_types import WorkerType
-from .worker_client import WorkerIdentity, WorkerRuntimeError, canonical_python_executable, probe_python
+from .worker_client import WorkerRuntimeError, canonical_python_executable, probe_python
 
 CATEGORY = "openbio/single-cell/runtime"
-
-
-@dataclass(frozen=True, slots=True)
-class WorkerProfile:
-    identity: WorkerIdentity
-
-    @property
-    def executable(self) -> str:
-        return self.identity.executable
 
 
 def worker_executable_fingerprint(python: str) -> tuple[str, int, int]:
@@ -52,7 +42,7 @@ class OpenBioSingleCellPythonWorker(io.ComfyNode):
 
     @classmethod
     async def execute(cls, python: str) -> io.NodeOutput:
-        return io.NodeOutput(WorkerProfile(await probe_python(python)))
+        return io.NodeOutput(await probe_python(python))
 
 
 WORKER_NODE_CLASSES = [OpenBioSingleCellPythonWorker]
@@ -61,6 +51,5 @@ WORKER_NODE_CLASSES = [OpenBioSingleCellPythonWorker]
 __all__ = [
     "OpenBioSingleCellPythonWorker",
     "WORKER_NODE_CLASSES",
-    "WorkerProfile",
     "worker_executable_fingerprint",
 ]

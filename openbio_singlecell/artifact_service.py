@@ -15,14 +15,13 @@ from .files import (
     tenx_mtx_provenance,
     tenx_study_provenance,
 )
-from .nodes_worker import WorkerProfile
 from .worker_client import WorkerIdentity, probe_python, run_worker
 
 ANNDATA_CODEC = "anndata-h5ad-v1"
 _COMFY_INTERRUPT_POLL_SECONDS = 0.25
 
 _runtime: ArtifactRuntime | None = None
-_default_worker: WorkerProfile | None = None
+_default_worker: WorkerIdentity | None = None
 
 _FILE_INPUT_RULES = {
     ("OpenBioSingleCellLoadH5AD", "path"): (".h5ad",),
@@ -61,7 +60,7 @@ async def initialize_artifact_service(temp_root: str | Path, python: str) -> Non
     if previous is not None and not previous.close():
         raise RuntimeError("Cannot replace the Artifact Runtime while workflow tickets are still live.")
     _runtime = ArtifactRuntime(temp_root)
-    _default_worker = WorkerProfile(identity)
+    _default_worker = identity
 
 
 def current_artifact_runtime() -> ArtifactRuntime:
@@ -70,7 +69,7 @@ def current_artifact_runtime() -> ArtifactRuntime:
     return _runtime
 
 
-def _current_default_worker() -> WorkerProfile:
+def _current_default_worker() -> WorkerIdentity:
     if _default_worker is None:
         raise RuntimeError("Default Python Worker is not initialized; OpenBio extension on_load did not complete.")
     return _default_worker
@@ -131,11 +130,11 @@ def _identity_from_affinity(value: object) -> WorkerIdentity:
 
 
 def _select_worker(
-    worker: WorkerProfile | None,
+    worker: WorkerIdentity | None,
     ticket_inputs: dict[str, ArtifactTicket],
     runtime: ArtifactRuntime,
-) -> WorkerProfile:
-    if worker is not None and not isinstance(worker, WorkerProfile):
+) -> WorkerIdentity:
+    if worker is not None and not isinstance(worker, WorkerIdentity):
         raise TypeError("worker must be an OPENBIO_WORKER value.")
     affinities = {
         str(record["worker_affinity"])
@@ -149,10 +148,10 @@ def _select_worker(
 
     affinity = affinities.pop()
     if worker is not None:
-        if _identity_affinity(worker.identity) != affinity:
+        if _identity_affinity(worker) != affinity:
             raise ValueError("Selected Python Worker does not match the native artifact producer.")
         return worker
-    return WorkerProfile(_identity_from_affinity(affinity))
+    return _identity_from_affinity(affinity)
 
 
 def _file_descriptor(node_id: str, name: str, value: object) -> dict[str, object] | None:
@@ -316,7 +315,7 @@ async def _run_worker_with_comfy_interrupt(
 
 async def execute_artifact_node(
     node: type[io.ComfyNode],
-    worker: WorkerProfile | None,
+    worker: WorkerIdentity | None,
     kwargs: dict[str, Any],
 ) -> io.NodeOutput:
     if not isinstance(node, type) or not issubclass(node, io.ComfyNode):
@@ -334,7 +333,7 @@ async def execute_artifact_node(
     published = False
     try:
         response = await _run_worker_with_comfy_interrupt(
-            selected_worker.identity,
+            selected_worker,
             lease.staging_path / "request.json",
             operation_id_for_node(node_id),
             inputs=inputs,
@@ -351,7 +350,7 @@ async def execute_artifact_node(
                 "payload": record["payload"],
             }
             if spec["codec"] in NATIVE_AFFINITY_CODECS:
-                spec["worker_affinity"] = _identity_affinity(selected_worker.identity)
+                spec["worker_affinity"] = _identity_affinity(selected_worker)
             artifact_specs[str(record["name"])] = spec
         tickets = lease.publish(artifact_specs) if artifact_specs else {}
         published = bool(artifact_specs)
