@@ -7,8 +7,14 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from openbio_singlecell.analysis_utils import make_plot_result, make_summary_result, make_table_result
+from openbio_singlecell.artifact_envelope import result_metadata
 from openbio_singlecell.contracts import PlotResult, SummaryResult, TableResult
-from openbio_singlecell.payload import MAX_COLUMNS, MAX_ROWS, result_to_payload
+from openbio_singlecell.payload import (
+    MAX_COLUMNS,
+    MAX_ROWS,
+    artifact_metadata_to_payload,
+    result_to_payload,
+)
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -67,6 +73,8 @@ def test_table_payload_is_bounded_and_normalizes_nonfinite_values(science):
     assert len(payload["columns"]) == MAX_COLUMNS
     assert len(payload["rows"]) == MAX_ROWS
     assert payload["total_rows"] == 105
+    assert payload["index_name"] == "__openbio_row_id__"
+    assert payload["index_values"] == list(range(MAX_ROWS))
     assert payload["rows"][0][:2] == [None, None]
     assert any("Export CSV" in warning for warning in payload["warnings"])
 
@@ -82,6 +90,40 @@ def test_summary_collections_and_strings_are_bounded():
     assert len(payload["summary"]["values"]) == 65
     assert len(payload["summary"]["long"]) <= 2000
     assert payload["summary"]["…"] == "truncated"
+
+
+def test_table_and_plot_summaries_include_bounded_result_metadata(science):
+    fields = result_fields()
+    fields.update(
+        description="x" * 5000,
+        parameters={f"parameter_{index}": index for index in range(100)},
+        input_cells=123,
+        input_genes=456,
+        random_seed=789,
+        source={"values": list(range(100))},
+    )
+    table = TableResult(table=science.pd.DataFrame({"value": [1]}), **fields)
+    plot = PlotResult(png=PNG_SIGNATURE + b"plot", **fields)
+    payloads = [result_to_payload(result) for result in (table, plot)]
+    payloads.extend(artifact_metadata_to_payload(result_metadata(result)) for result in (table, plot))
+
+    for payload in payloads:
+        summary = payload["summary"]
+
+        assert set(summary) == {
+            "description",
+            "parameters",
+            "input_cells",
+            "input_genes",
+            "random_seed",
+            "source",
+        }
+        assert len(summary["description"]) <= 2000
+        assert summary["parameters"]["…"] == "truncated"
+        assert summary["input_cells"] == 123
+        assert summary["input_genes"] == 456
+        assert summary["random_seed"] == 789
+        assert summary["source"]["values"][-1] == "…"
 
 
 def test_specific_factories_construct_the_concrete_result_types(science):

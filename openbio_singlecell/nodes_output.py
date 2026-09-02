@@ -147,11 +147,13 @@ def preview_result(
         raise TypeError("Expected an OpenBio summary or table/plot ArtifactTicket.")
     if result.kind == "OPENBIO_SINGLE_CELL_TABLE":
         root = _ticket_root(result, kind=result.kind, codec=TABLE_CODEC)
-        _, columns, rows = _table_rows(root)
+        index_name, columns, rows = _table_rows(root)
         preview_rows = []
+        index_values = []
         total_rows = 0
         for row in rows:
             if total_rows < MAX_ROWS:
+                index_values.append(row[0])
                 preview_rows.append(row[1 : MAX_COLUMNS + 1])
             total_rows += 1
         payload = artifact_metadata_to_payload(
@@ -159,6 +161,8 @@ def preview_result(
             columns=columns,
             rows=preview_rows,
             total_rows=total_rows,
+            index_name=index_name,
+            index_values=index_values,
         )
         return {"openbio_singlecell": [payload]}
     if result.kind == "OPENBIO_SINGLE_CELL_PLOT":
@@ -207,6 +211,7 @@ class OpenBioSingleCellPreviewResult(io.ComfyNode):
             node_id="OpenBioSingleCellPreviewResult",
             display_name="Preview Result",
             category=CATEGORY,
+            description="Preview a summary, table, or plot result without creating a durable output.",
             inputs=[io.MultiType.Input("result", [SummaryResultType, TableResultType, PlotResultType])],
             outputs=[],
             hidden=[io.Hidden.unique_id, io.Hidden.extra_pnginfo],
@@ -225,6 +230,7 @@ class OpenBioSingleCellSaveH5AD(io.ComfyNode):
             node_id="OpenBioSingleCellSaveH5AD",
             display_name="Save H5AD",
             category=CATEGORY,
+            description="Save an AnnData artifact as an H5AD file in ComfyUI output storage.",
             inputs=[
                 AnnDataType.Input("adata"),
                 io.String.Input("filename_prefix", default="adata"),
@@ -253,6 +259,7 @@ class OpenBioSingleCellExportCSV(io.ComfyNode):
             node_id="OpenBioSingleCellExportCSV",
             display_name="Export CSV",
             category=CATEGORY,
+            description="Export a complete table artifact, including row identity, as CSV in ComfyUI output storage.",
             inputs=[
                 TableResultType.Input("table"),
                 io.String.Input("filename_prefix", default="table"),
@@ -281,6 +288,7 @@ class OpenBioSingleCellSavePNG(io.ComfyNode):
             node_id="OpenBioSingleCellSavePNG",
             display_name="Save PNG",
             category=CATEGORY,
+            description="Save a plot artifact as a PNG file in ComfyUI output storage.",
             inputs=[
                 PlotResultType.Input("plot"),
                 io.String.Input("filename_prefix", default="plot"),

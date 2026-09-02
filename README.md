@@ -333,8 +333,10 @@ and a working local database connection.
 - AnnData transforms use `adata` as their primary output; analysis artifacts use their concrete table, plot, or
   summary type as the primary output; preview and save nodes are terminal and have no data output.
 - Preview accepts all three artifact types, while CSV and PNG outputs accept only tables and plots respectively,
-  so incompatible links are rejected before execution. CSV export always retains the row index under an explicit,
-  collision-checked header; H5AD export streams the canonical uncompressed artifact without loading or recompressing it.
+  so incompatible links are rejected before execution. Summary previews lead with Results and Key Results while
+  keeping supporting report sections available; table previews retain row identity, show the first 100 rows, and can
+  copy those visible rows as TSV. CSV export always retains the row index under an explicit, collision-checked header;
+  H5AD export streams the canonical uncompressed artifact without loading or recompressing it.
 - Frequently tuned analysis choices, expression sources, and result-defining thresholds stay visible. Core Study
   Parameters is an optional source for reusing sample, condition, annotation, and primary-contrast strings; analysis
   nodes keep their ordinary explicit inputs and do not consume a combined design object. Random seeds, internal
@@ -384,11 +386,12 @@ and a working local database connection.
 - CSV, PNG, and H5AD files are only made permanent by explicit output nodes and are written below
   `output/openbio-singlecell`. They are staged and validated in the destination directory before an atomic commit;
   a failed write leaves an existing destination unchanged. PNG previews use the same validation/commit discipline
-  below the temporary directory.
+  below the temporary directory. Successful save nodes show the last saved file with download and copy-path actions.
 - Persist Artifact copies a portable File artifact to `output/openbio-singlecell/artifacts` as a Persisted artifact
-  using staged validation, a hash manifest, and atomic publication. It neither moves the temporary source nor
-  returns a workflow value. There is no generic Restore node; an existing H5AD can re-enter only through the normal
-  H5AD input path after it is placed under ComfyUI's input directory.
+  using staged validation, a hash manifest, and atomic publication. Its result card exposes the persisted directory
+  for copying but does not invent a browser download. It neither moves the temporary source nor returns a workflow
+  value. There is no generic Restore node; an existing H5AD can re-enter only through the normal H5AD input path
+  after it is placed under ComfyUI's input directory.
 - Node UI payloads are bounded; complete tables are exported as CSV.
 - Tables use JSONL plus an explicit schema, plots use PNG, and specialized typed results use validated file codecs.
   Arbitrary Python objects are never carried by `ArtifactTicket` values. The registry exposes only the

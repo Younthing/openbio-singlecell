@@ -36,6 +36,8 @@ class SummaryResultPayload(_ResultPayloadFields):
 
 class TableResultPayload(_ResultPayloadFields):
     kind: Literal["table"]
+    index_name: str
+    index_values: list[JsonScalar]
 
 
 class PlotResultPayload(_ResultPayloadFields):
@@ -107,6 +109,8 @@ def result_to_payload(result: SingleCellResult) -> SingleCellResultPayload:
     columns: list[str] = []
     rows: list[list[JsonScalar]] = []
     total_rows = 0
+    index_name = ""
+    index_values: list[JsonScalar] = []
     warnings = [_bounded_string(warning) for warning in result.warnings[:MAX_WARNINGS]]
 
     if isinstance(result, TableResult):
@@ -114,28 +118,44 @@ def result_to_payload(result: SingleCellResult) -> SingleCellResultPayload:
         total_rows = int(len(table))
         columns = [_bounded_string(column) for column in list(table.columns)[:MAX_COLUMNS]]
         preview = table.iloc[:MAX_ROWS, :MAX_COLUMNS]
+        index_name = table.index.name if isinstance(table.index.name, str) and table.index.name.strip() else "__openbio_row_id__"
+        index_values = [_json_scalar(value) for value in preview.index]
         rows = [[_json_scalar(value) for value in row] for row in preview.itertuples(index=False, name=None)]
         if len(table.columns) > MAX_COLUMNS or total_rows > MAX_ROWS:
             warnings.append(
                 f"Preview limited to {MAX_ROWS} rows and {MAX_COLUMNS} columns; Export CSV for the complete table."
             )
 
-    summary = result.summary if isinstance(result, SummaryResult) else {"description": result.description}
+    summary = (
+        result.summary
+        if isinstance(result, SummaryResult)
+        else {
+            "description": result.description,
+            "parameters": result.parameters,
+            "input_cells": result.input_cells,
+            "input_genes": result.input_genes,
+            "random_seed": result.random_seed,
+            "source": result.source,
+        }
+    )
 
     elapsed = float(result.elapsed_seconds)
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": result.kind,
+        "title": _bounded_string(result.title),
+        "columns": columns,
+        "rows": rows,
+        "total_rows": total_rows,
+        "summary": _bounded_value(summary),
+        "warnings": warnings[:MAX_WARNINGS],
+        "elapsed_seconds": elapsed if math.isfinite(elapsed) else None,
+    }
+    if isinstance(result, TableResult):
+        payload.update({"index_name": index_name, "index_values": index_values})
     return cast(
         SingleCellResultPayload,
-        {
-            "schema_version": SCHEMA_VERSION,
-            "kind": result.kind,
-            "title": _bounded_string(result.title),
-            "columns": columns,
-            "rows": rows,
-            "total_rows": total_rows,
-            "summary": _bounded_value(summary),
-            "warnings": warnings[:MAX_WARNINGS],
-            "elapsed_seconds": elapsed if math.isfinite(elapsed) else None,
-        },
+        payload,
     )
 
 
@@ -145,6 +165,8 @@ def artifact_metadata_to_payload(
     columns: Sequence[Any] = (),
     rows: Sequence[Sequence[Any]] = (),
     total_rows: int = 0,
+    index_name: Any = "__openbio_row_id__",
+    index_values: Sequence[Any] = (),
 ) -> TableResultPayload | PlotResultPayload:
     kind = metadata.get("kind")
     if kind not in {"table", "plot"}:
@@ -166,17 +188,34 @@ def artifact_metadata_to_payload(
         )
     elapsed_value = metadata.get("elapsed_seconds")
     elapsed = float(elapsed_value) if isinstance(elapsed_value, (int, float)) else None
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": kind,
+        "title": _bounded_string(metadata["title"]),
+        "columns": bounded_columns,
+        "rows": bounded_rows,
+        "total_rows": int(total_rows),
+        "summary": _bounded_value(
+            {
+                "description": metadata["description"],
+                "parameters": metadata["parameters"],
+                "input_cells": metadata["input_cells"],
+                "input_genes": metadata["input_genes"],
+                "random_seed": metadata["random_seed"],
+                "source": metadata["source"],
+            }
+        ),
+        "warnings": warnings[:MAX_WARNINGS],
+        "elapsed_seconds": elapsed if elapsed is not None and math.isfinite(elapsed) else None,
+    }
+    if kind == "table":
+        payload.update(
+            {
+                "index_name": _bounded_string(index_name),
+                "index_values": [_json_scalar(value) for value in list(index_values)[:MAX_ROWS]],
+            }
+        )
     return cast(
         TableResultPayload | PlotResultPayload,
-        {
-            "schema_version": SCHEMA_VERSION,
-            "kind": kind,
-            "title": _bounded_string(metadata["title"]),
-            "columns": bounded_columns,
-            "rows": bounded_rows,
-            "total_rows": int(total_rows),
-            "summary": _bounded_value({"description": metadata["description"]}),
-            "warnings": warnings[:MAX_WARNINGS],
-            "elapsed_seconds": elapsed if elapsed is not None and math.isfinite(elapsed) else None,
-        },
+        payload,
     )

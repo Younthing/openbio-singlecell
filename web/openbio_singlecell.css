@@ -1,9 +1,8 @@
-.openbio-sc-preview {
+.openbio-sc-preview,
+.openbio-sc-output {
     box-sizing: border-box;
     width: 100%;
-    max-height: 420px;
-    overflow: auto;
-    padding: 8px;
+    padding: 10px;
     border: 1px solid var(--border-color, #454545);
     border-radius: 6px;
     background: var(--comfy-input-bg, #222);
@@ -11,20 +10,55 @@
     font-size: 11px;
 }
 
+.openbio-sc-preview {
+    max-height: 520px;
+    overflow: auto;
+}
+
 .openbio-sc-preview__empty,
+.openbio-sc-preview__empty-table,
 .openbio-sc-preview__meta,
-.openbio-sc-preview__hint {
+.openbio-sc-preview__hint,
+.openbio-sc-preview__description,
+.openbio-sc-preview__input-size,
+.openbio-sc-preview__seed,
+.openbio-sc-output__empty,
+.openbio-sc-output__meta {
     margin: 0;
 }
 
 .openbio-sc-preview__title {
-    font-size: 12px;
+    display: block;
+    font-size: 13px;
+    line-height: 1.35;
 }
 
 .openbio-sc-preview__meta,
-.openbio-sc-preview__hint {
+.openbio-sc-preview__hint,
+.openbio-sc-preview__input-size,
+.openbio-sc-preview__seed,
+.openbio-sc-output__meta {
     margin-top: 4px;
     opacity: 0.72;
+}
+
+.openbio-sc-preview__description,
+.openbio-sc-preview__results,
+.openbio-sc-preview__key-results,
+.openbio-sc-preview__details,
+.openbio-sc-preview__empty-table {
+    margin-top: 9px;
+}
+
+.openbio-sc-preview__results {
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.openbio-sc-preview__key-results {
+    padding: 8px;
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--comfy-input-bg, #222) 72%, var(--p-primary-color, #5d9cec));
 }
 
 .openbio-sc-preview__summary {
@@ -32,6 +66,38 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     font: inherit;
+}
+
+.openbio-sc-preview__details {
+    border-top: 1px solid color-mix(in srgb, var(--border-color, #555) 65%, transparent);
+    padding-top: 6px;
+}
+
+.openbio-sc-preview__details-title {
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.openbio-sc-preview__details-body,
+.openbio-sc-preview__key-results dl {
+    margin: 7px 0 0;
+}
+
+.openbio-sc-preview__term {
+    margin-top: 5px;
+    font-weight: 600;
+}
+
+.openbio-sc-preview__definition {
+    margin: 2px 0 0 12px;
+    overflow-wrap: anywhere;
+}
+
+.openbio-sc-preview__link,
+.openbio-sc-preview__reference-url {
+    display: block;
+    margin-top: 3px;
+    overflow-wrap: anywhere;
 }
 
 .openbio-sc-preview__table-wrap {
@@ -47,7 +113,8 @@
     font-size: inherit;
 }
 
-.openbio-sc-preview__header-cell {
+.openbio-sc-preview__header-cell,
+.openbio-sc-preview__index-header {
     position: sticky;
     top: 0;
     padding: 4px 6px;
@@ -56,10 +123,30 @@
     text-align: left;
 }
 
-.openbio-sc-preview__body-cell {
+.openbio-sc-preview__body-cell,
+.openbio-sc-preview__index-cell {
     padding: 3px 6px;
     border-bottom: 1px solid #3f3f3f;
     white-space: nowrap;
+}
+
+.openbio-sc-preview__index-header,
+.openbio-sc-preview__index-cell {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    border-right: 1px solid var(--border-color, #555);
+    background: var(--comfy-input-bg, #222);
+    text-align: left;
+}
+
+.openbio-sc-preview__index-header {
+    z-index: 2;
+}
+
+.openbio-sc-preview__body-cell--missing {
+    opacity: 0.58;
+    font-style: italic;
 }
 
 .openbio-sc-preview__warnings {
@@ -73,6 +160,53 @@
 .openbio-sc-preview__warning-list {
     margin: 4px 0 0 18px;
     padding: 0;
+}
+
+.openbio-sc-preview__copy,
+.openbio-sc-output__action {
+    box-sizing: border-box;
+    display: inline-flex;
+    min-height: 26px;
+    align-items: center;
+    justify-content: center;
+    margin-top: 8px;
+    padding: 4px 8px;
+    border: 1px solid var(--border-color, #555);
+    border-radius: 4px;
+    background: var(--comfy-input-bg, #292929);
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    text-decoration: none;
+}
+
+.openbio-sc-preview__copy:hover,
+.openbio-sc-output__action:hover {
+    border-color: var(--p-primary-color, #5d9cec);
+}
+
+.openbio-sc-preview__copy:focus-visible,
+.openbio-sc-output__action:focus-visible {
+    outline: 2px solid var(--p-primary-color, #5d9cec);
+    outline-offset: 1px;
+}
+
+.openbio-sc-output__status {
+    display: block;
+    font-size: 12px;
+}
+
+.openbio-sc-output__path {
+    display: block;
+    margin-top: 7px;
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+
+.openbio-sc-output__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
 }
 
 .openbio-study-parameters {

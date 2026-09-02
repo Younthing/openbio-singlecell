@@ -3,17 +3,24 @@ import { registerHooks } from "node:module";
 import test from "node:test";
 
 let registeredExtension;
+const apiPaths = [];
 
-globalThis.__openbioTestApp = {
+const testApp = {
     registerExtension(extension) {
         registeredExtension = extension;
     },
 };
-globalThis.__openbioTestApi = {
+const testApi = {
+    apiURL(path) {
+        apiPaths.push(path);
+        return `api:${path}`;
+    },
     fetchApi() {
         throw new Error("Unexpected upload request in preview lifecycle test.");
     },
 };
+globalThis.__openbioTestApp = testApp;
+globalThis.__openbioTestApi = testApi;
 
 registerHooks({
     resolve(specifier, context, nextResolve) {
@@ -34,6 +41,7 @@ registerHooks({
 });
 
 function element(tag) {
+    const listeners = new Map();
     return {
         tag,
         id: "",
@@ -49,7 +57,20 @@ function element(tag) {
         replaceChildren(...children) {
             this.children = children;
         },
+        setAttribute(name, value) {
+            this[name] = String(value);
+        },
+        addEventListener(name, listener) {
+            listeners.set(name, listener);
+        },
+        click() {
+            return listeners.get("click")?.({ preventDefault() {} });
+        },
     };
+}
+
+function descendants(root) {
+    return [root, ...root.children.flatMap(descendants)];
 }
 
 test("live execution replaces the preview placeholder with a summary", async () => {
@@ -121,10 +142,125 @@ test("live execution replaces the preview placeholder with a summary", async () 
             ),
             false,
         );
+
+        testApp.graph = { getNodeById: () => node };
+        registeredExtension.onNodeOutputsUpdated({
+            7: {
+                openbio_singlecell: [{ ...output.openbio_singlecell[0], title: "Restored summary" }],
+            },
+        });
+        assert.equal(root.children[0].textContent, "Restored summary");
     } finally {
+        delete testApp.graph;
         if (originalDocument === undefined) delete globalThis.document;
         else globalThis.document = originalDocument;
         delete globalThis.__openbioTestApp;
         delete globalThis.__openbioTestApi;
+    }
+});
+
+test("output receipts update for live execution and restored history", () => {
+    const originalDocument = globalThis.document;
+    const head = element("head");
+    globalThis.document = {
+        head,
+        createElement: element,
+        getElementById(id) {
+            return head.children.find((child) => child.id === id) ?? null;
+        },
+    };
+
+    const scenarios = [
+        {
+            type: "OpenBioSingleCellSaveH5AD",
+            live: { files: [{ filename: "live.h5ad", subfolder: "run one", type: "output" }] },
+            restored: {
+                files: [{ filename: "restored.h5ad", subfolder: "run two", type: "output" }],
+            },
+            expected: "restored.h5ad",
+        },
+        {
+            type: "OpenBioSingleCellExportCSV",
+            live: { files: [{ filename: "live.csv", subfolder: "run one", type: "output" }] },
+            restored: {
+                files: [{ filename: "restored.csv", subfolder: "run two", type: "output" }],
+            },
+            expected: "restored.csv",
+        },
+        {
+            type: "OpenBioSingleCellSavePNG",
+            live: { images: [{ filename: "live.png", subfolder: "run one", type: "output" }] },
+            restored: {
+                images: [{ filename: "restored.png", subfolder: "run two", type: "output" }],
+            },
+            expected: "restored.png",
+        },
+        {
+            type: "OpenBioSingleCellPersistArtifact",
+            live: { text: ["D:/output/live"] },
+            restored: { text: ["D:/output/restored"] },
+            expected: "D:/output/restored",
+        },
+    ];
+    const nodes = new Map();
+
+    try {
+        for (const [index, scenario] of scenarios.entries()) {
+            const widgets = [];
+            const previousMessages = [];
+            const node = {
+                widgets,
+                constructor: { comfyClass: scenario.type },
+                type: scenario.type,
+                size: [300, 220],
+                addDOMWidget(...args) {
+                    widgets.push(args);
+                },
+                onExecuted(message) {
+                    previousMessages.push(message);
+                },
+                setSize(size) {
+                    this.size = size;
+                },
+                setDirtyCanvas() {},
+            };
+
+            registeredExtension.nodeCreated(node);
+            registeredExtension.nodeCreated(node);
+            node.onExecuted(scenario.live);
+
+            assert.deepEqual(previousMessages, [scenario.live]);
+            assert.equal(widgets.length, 1);
+            assert.match(
+                descendants(widgets[0][2])
+                    .map((item) => item.textContent)
+                    .join("\n"),
+                /Last saved|Last persisted/,
+            );
+            nodes.set(String(index + 1), node);
+        }
+
+        testApp.graph = { getNodeById: (id) => nodes.get(String(id)) };
+        registeredExtension.onNodeOutputsUpdated(
+            Object.fromEntries(
+                scenarios.map((scenario, index) => [String(index + 1), scenario.restored]),
+            ),
+        );
+
+        for (const [index, scenario] of scenarios.entries()) {
+            const root = nodes.get(String(index + 1)).widgets[0][2];
+            assert.equal(
+                descendants(root)
+                    .map((item) => item.textContent)
+                    .join("\n")
+                    .includes(scenario.expected),
+                true,
+            );
+        }
+        assert.equal(apiPaths.some((path) => path.startsWith("/view?")), true);
+    } finally {
+        delete testApp.graph;
+        if (originalDocument === undefined) delete globalThis.document;
+        else globalThis.document = originalDocument;
     }
 });

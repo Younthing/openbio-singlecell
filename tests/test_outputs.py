@@ -127,6 +127,7 @@ def test_output_schemas_accept_tickets_and_drop_h5ad_recompression():
     )
     assert csv_schema.inputs[0].io_type == TableResultType.io_type
     assert png.inputs[0].io_type == PlotResultType.io_type
+    assert all(schema.description for schema in (preview, h5ad, csv_schema, png))
 
 
 def test_summary_preview_stays_in_memory_and_creates_no_file(comfy_directories):
@@ -148,6 +149,8 @@ def test_table_preview_streams_only_bounded_rows(comfy_directories, science):
     assert payload["total_rows"] == 105
     assert len(payload["rows"]) == 100
     assert payload["columns"] == ["gene", "effect"]
+    assert payload["index_name"] == "cell_id"
+    assert payload["index_values"] == [f"cell-{index}" for index in range(100)]
     assert any("Preview limited" in warning for warning in payload["warnings"])
     assert not list(output_dir.rglob("*"))
     assert not list(temp_dir.rglob("*"))

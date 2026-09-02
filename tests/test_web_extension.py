@@ -27,6 +27,10 @@ def test_preview_renderer_and_styles_are_plugin_owned_assets():
     assert "openbio_singlecell.css" in entrypoint
     assert "normalizeSingleCellPayload" in renderer
     assert ".openbio-sc-preview" in stylesheet
+    assert ".openbio-sc-preview__details" in stylesheet
+    assert ".openbio-sc-preview__index-cell" in stylesheet
+    assert ".openbio-sc-output" in stylesheet
+    assert ".openbio-sc-output__action:focus-visible" in stylesheet
 
 
 def test_core_study_widget_is_a_small_plugin_owned_module():
