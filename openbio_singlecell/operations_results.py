@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import time
+from collections.abc import Mapping
 from typing import Any
 
 from . import dependencies
@@ -9,7 +10,12 @@ from .analysis_reporting import AnalysisReference, make_analysis_report, summari
 from .analysis_utils import make_plot_result, make_table_result
 from .artifact_envelope import table_from_metadata
 from .contracts import TableResult
-from .expression_source import _MARKER_PLOT_SPEC, _MARKER_SPEC, DynamicExpressionSource
+from .expression_source import (
+    _EMBEDDING_PLOT_SPEC,
+    _MARKER_PLOT_SPEC,
+    _MARKER_SPEC,
+    DynamicExpressionSource,
+)
 from .marker_evidence import (
     MARKER_COLUMNS,
     filter_marker_genes_code,
@@ -31,10 +37,10 @@ from .operations_input import (
 from .result_plotting import (
     MARKER_PLOT_RNG_LOCK,
     _marker_expression_plot_impl,
-    _plot_umap_impl,
+    _plot_embedding_impl,
+    embedding_plot_code,
+    embedding_provenance,
     marker_expression_plot_code,
-    umap_embedding_provenance,
-    umap_plot_code,
 )
 from .worker_protocol import JSONValue, OperationContext, register_operation
 
@@ -42,6 +48,7 @@ TABLE_KIND = "OPENBIO_SINGLE_CELL_TABLE"
 PLOT_KIND = "OPENBIO_SINGLE_CELL_PLOT"
 MARKER_EXPRESSION_SOURCE = _MARKER_SPEC
 MARKER_PLOT_EXPRESSION_SOURCE = _MARKER_PLOT_SPEC
+EMBEDDING_PLOT_EXPRESSION_SOURCE = _EMBEDDING_PLOT_SPEC
 PCA_METADATA_COLUMNS = [
     "component",
     "metadata",
@@ -592,11 +599,12 @@ def filter_marker_genes_owned(
     return filtered, universe, report, code
 
 
-def umap_plot_owned(
+def embedding_plot_owned(
     adata: Any,
     embedding_key: str = "X_umap",
-    color: str = "leiden",
-    color_mode: str = "auto",
+    x_dimension: int = 1,
+    y_dimension: int = 2,
+    color: Mapping[str, object] | None = None,
     point_size: float = 10.0,
     continuous_color_map: str = "viridis",
     categorical_palette: str = "tab20",
@@ -605,10 +613,71 @@ def umap_plot_owned(
     legend_policy: str = "automatic",
 ) -> tuple[Any, Any, str]:
     started_at = time.perf_counter()
-    png, details = _plot_umap_impl(
+    if color is None:
+        color = {"color": "obs", "obs_key": "leiden", "color_mode": "auto"}
+    if not isinstance(color, Mapping):
+        raise TypeError("Embedding color must be a DynamicCombo value.")
+    target_kind = color.get("color")
+    expected_fields = (
+        {
+            "none": {"color"},
+            "obs": {"color", "obs_key", "color_mode"},
+            "gene": {"color", "gene", "source"},
+        }.get(target_kind)
+        if isinstance(target_kind, str)
+        else None
+    )
+    if expected_fields is None or set(color) != expected_fields:
+        raise ValueError("Embedding color contains inactive or unknown fields.")
+    if target_kind == "obs":
+        color_value = color["obs_key"]
+        if not isinstance(color_value, str):
+            raise TypeError("Embedding obs_key must be a string.")
+        color_value = color_value.strip()
+        if not color_value:
+            raise ValueError("Embedding obs_key cannot be empty.")
+        color_mode = color["color_mode"]
+        color_source = "obs"
+        color_parameter = {
+            "color": "obs",
+            "obs_key": color_value,
+            "color_mode": color_mode,
+        }
+        source_kind = "X"
+        layer_name = None
+    elif target_kind == "gene":
+        color_value = color["gene"]
+        if not isinstance(color_value, str):
+            raise TypeError("Embedding gene must be a string.")
+        color_value = color_value.strip()
+        if not color_value:
+            raise ValueError("Embedding gene cannot be empty.")
+        expression = EMBEDDING_PLOT_EXPRESSION_SOURCE.resolve(adata, color["source"])
+        color_mode = "continuous"
+        color_source = "gene"
+        source_kind = expression.kind
+        layer_name = expression.layer_name
+        color_parameter = {
+            "color": "gene",
+            "gene": color_value,
+            "source": expression.parameters(),
+        }
+    else:
+        color_value = ""
+        color_mode = "auto"
+        color_source = "none"
+        color_parameter = {"color": "none"}
+        source_kind = "X"
+        layer_name = None
+    png, details = _plot_embedding_impl(
         adata,
         embedding_key=embedding_key,
-        color=color,
+        x_dimension=x_dimension,
+        y_dimension=y_dimension,
+        color=color_value,
+        color_source=color_source,
+        source_kind=source_kind,
+        layer_name=layer_name,
         color_mode=color_mode,
         point_size=point_size,
         continuous_color_map=continuous_color_map,
@@ -618,12 +687,15 @@ def umap_plot_owned(
         legend_policy=legend_policy,
     )
     embedding_key = details["embedding_key"]
-    provenance, provenance_warnings = umap_embedding_provenance(adata, embedding_key)
+    if color_source == "obs":
+        color_parameter["color_mode"] = details["color"]["requested_mode"]
+    provenance, provenance_warnings = embedding_provenance(adata, embedding_key)
     warnings = [*details["warnings"], *provenance_warnings]
     parameters = {
         "embedding_key": embedding_key,
-        "color": details["color"]["column"] or "",
-        "color_mode": color_mode.strip() if isinstance(color_mode, str) else color_mode,
+        "x_dimension": details["used_coordinate_dimensions"][0],
+        "y_dimension": details["used_coordinate_dimensions"][1],
+        "color": color_parameter,
         "point_size": details["rendering"]["point_size_points_squared"],
         "continuous_color_map": continuous_color_map.strip()
         if isinstance(continuous_color_map, str)
@@ -635,15 +707,17 @@ def umap_plot_owned(
         "missing_color": missing_color,
         "legend_policy": legend_policy.strip() if isinstance(legend_policy, str) else legend_policy,
     }
-    code = umap_plot_code(parameters=parameters, details=details)
-    title = f"UMAP colored by {parameters['color']}" if parameters["color"] else "UMAP"
+    code = embedding_plot_code(parameters=parameters, details=details)
+    embedding_title = "UMAP" if embedding_key == "X_umap" else embedding_key
+    target = details["color"]["target"]
+    title = f"{embedding_title} colored by {target}" if target else embedding_title
     result = make_plot_result(
         title=title,
-        operation="umap_plot",
+        operation="embedding_plot",
         parameters=parameters,
         description=(
             f"Read-only rendering of {details['plotted_observations']:,} cells from {embedding_key!r} "
-            f"with {details['color']['effective_mode']} observation coloring."
+            f"with {details['color']['effective_mode']} {details['color']['target_kind']} coloring."
         ),
         warnings=warnings,
         input_cells=int(adata.n_obs),
@@ -652,17 +726,32 @@ def umap_plot_owned(
         png=png,
     )
     uses_scanpy_metadata = bool(provenance["scanpy_metadata_verified"] or provenance["openbio_history_verified"])
+    is_umap = embedding_key == "X_umap" or provenance.get("openbio_operation") == "umap"
     software_packages = ["matplotlib", "numpy", "pandas", "scipy", "anndata"]
     if uses_scanpy_metadata:
-        software_packages.extend(["scanpy", "umap-learn"])
+        software_packages.append("scanpy")
+    if is_umap:
+        software_packages.append("umap-learn")
+    references = [
+        SCANPY_EMBEDDING_DOCUMENTATION_REFERENCE,
+        MATPLOTLIB_REFERENCE,
+        ANNDATA_REFERENCE,
+        NUMPY_REFERENCE,
+        PANDAS_REFERENCE,
+        SCIPY_REFERENCE,
+    ]
+    if is_umap:
+        references.insert(0, UMAP_REFERENCE)
     report, code = make_analysis_report(
         node_id="OpenBioSingleCellUMAPPlot",
         title=title,
-        operation="umap_plot",
+        operation="embedding_plot",
         methods=(
-            f"Validated the stored {embedding_key!r} array as an observation-aligned, finite, real-valued "
-            f"embedding with {details['available_coordinate_dimensions']:,} available dimensions, then "
-            "rendered its first two dimensions for every observation with Matplotlib Agg. "
+            f"Validated the stored {embedding_key!r} array as an observation-aligned, real-valued embedding "
+            f"with {details['available_coordinate_dimensions']:,} available dimensions, verified the selected "
+            "dimensions were finite, then "
+            f"rendered dimensions {parameters['x_dimension']} and {parameters['y_dimension']} for every "
+            "observation with Matplotlib Agg. "
             f"Color mode resolved to {details['color']['effective_mode']!r}; point area was fixed at "
             f"{parameters['point_size']:.6g} points squared, alpha at 0.8, and marker linewidth at zero."
         ),
@@ -673,20 +762,12 @@ def umap_plot_owned(
         ),
         key_results={**details, "embedding_provenance": provenance},
         parameters=parameters,
-        references=[
-            UMAP_REFERENCE,
-            SCANPY_EMBEDDING_DOCUMENTATION_REFERENCE,
-            MATPLOTLIB_REFERENCE,
-            ANNDATA_REFERENCE,
-            NUMPY_REFERENCE,
-            PANDAS_REFERENCE,
-            SCIPY_REFERENCE,
-        ],
+        references=references,
         software_packages=software_packages,
         warnings=warnings,
         limitations=[
-            "UMAP is a nonlinear exploratory embedding; axis orientation, sign, origin, and absolute scale "
-            "have no independent biological meaning.",
+            "Embedding axes, orientation, sign, origin, scale, and distances must be interpreted according "
+            "to the upstream method that produced the stored coordinates.",
             "Apparent separation or mixing does not by itself establish a Curated annotation, Technical-batch "
             "correction, preservation of biology, or a Condition effect.",
             "Cell-level coloring is descriptive and does not create a replicate-aware Condition contrast; "
@@ -1459,18 +1540,19 @@ def filter_marker_genes(
 
 
 @register_operation("openbio.node.umapplot")
-def umap_plot(
+def embedding_plot(
     context: OperationContext,
     inputs: dict[str, JSONValue],
     parameters: dict[str, JSONValue],
 ) -> list[JSONValue]:
-    require_input_names(inputs, {"adata"}, operation="UMAP Plot")
+    require_input_names(inputs, {"adata"}, operation="Embedding Plot")
     require_parameters(
         parameters,
         {
             "embedding_key",
+            "x_dimension",
+            "y_dimension",
             "color",
-            "color_mode",
             "point_size",
             "continuous_color_map",
             "categorical_palette",
@@ -1478,9 +1560,9 @@ def umap_plot(
             "missing_color",
             "legend_policy",
         },
-        operation="UMAP Plot",
+        operation="Embedding Plot",
     )
-    plotted, report, code = umap_plot_owned(read_anndata_input(inputs), **parameters)
+    plotted, report, code = embedding_plot_owned(read_anndata_input(inputs), **parameters)
     return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
 
 
@@ -1517,9 +1599,12 @@ def pca_metadata_associations(
 
 
 __all__ = [
+    "EMBEDDING_PLOT_EXPRESSION_SOURCE",
     "MARKER_EXPRESSION_SOURCE",
     "MARKER_PLOT_EXPRESSION_SOURCE",
     "PCA_METADATA_COLUMNS",
+    "embedding_plot",
+    "embedding_plot_owned",
     "filter_marker_genes",
     "filter_marker_genes_owned",
     "marker_genes",
@@ -1528,6 +1613,4 @@ __all__ = [
     "marker_expression_plot_owned",
     "pca_metadata_associations",
     "pca_metadata_associations_owned",
-    "umap_plot",
-    "umap_plot_owned",
 ]

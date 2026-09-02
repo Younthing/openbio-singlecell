@@ -4,25 +4,42 @@ import time
 from typing import Any
 
 from . import PLUGIN_VERSION
-from .analysis_utils import make_summary_result, make_table_result
+from .analysis_reporting import AnalysisReference, make_analysis_report
+from .analysis_utils import make_plot_result, make_summary_result, make_table_result
+from .artifact_envelope import table_from_metadata
 from .composition_modeling import (
     run_sccoda_differential_composition,
     run_tasccoda_differential_composition,
     sccoda_differential_composition_code,
     tasccoda_differential_composition_code,
 )
+from .composition_plot import run_sample_composition_plot, sample_composition_plot_code
 from .composition_summary import run_sample_composition_summary, sample_composition_summary_code
 from .milo_analysis import milo_differential_abundance_code, run_milo_differential_abundance
 from .operations_input import (
     analysis_outputs,
     read_anndata_input,
+    read_table_input,
     require_input_names,
     require_parameters,
+    write_plot_output,
     write_table_output,
 )
 from .worker_protocol import JSONValue, OperationContext, register_operation
 
 TABLE_KIND = "OPENBIO_SINGLE_CELL_TABLE"
+PLOT_KIND = "OPENBIO_SINGLE_CELL_PLOT"
+MATPLOTLIB_REFERENCE = AnalysisReference(
+    citation="Hunter JD. Matplotlib: A 2D Graphics Environment. Computing in Science & Engineering. 2007;9:90-95.",
+    doi="10.1109/MCSE.2007.55",
+    url="https://doi.org/10.1109/MCSE.2007.55",
+    kind="software",
+)
+PANDAS_REFERENCE = AnalysisReference(
+    citation="The pandas development team. pandas software documentation.",
+    url="https://pandas.pydata.org/docs/",
+    kind="software_documentation",
+)
 
 
 def _results(
@@ -100,6 +117,60 @@ def sample_composition_owned(
     return result, report, code
 
 
+def sample_composition_plot_owned(
+    table: Any, *, value: str = "proportion", input_genes: int = 0
+) -> tuple[Any, Any, str]:
+    if isinstance(input_genes, bool) or not isinstance(input_genes, int) or input_genes < 0:
+        raise TypeError("Sample Composition Plot input_genes provenance must be a nonnegative integer.")
+    started_at = time.perf_counter()
+    png, details = run_sample_composition_plot(table, value=value)
+    parameters = {"value": details["value"]}
+    code = sample_composition_plot_code(value=details["value"])
+    warnings = list(details["annotation_readability_warnings"])
+    common = {
+        "parameters": parameters,
+        "description": (
+            f"Rendered {details['plotted_samples']:,} Sample bars grouped by Condition with "
+            f"{details['plotted_annotations']:,} stacked annotation categories."
+        ),
+        "warnings": warnings,
+        "input_cells": details["input_cells"],
+        "input_genes": input_genes,
+        "started_at": started_at,
+    }
+    plotted = make_plot_result(
+        png=png,
+        title="Sample composition proportions" if details["value"] == "proportion" else "Sample composition counts",
+        operation="sample_composition_plot",
+        **common,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellSampleCompositionPlot",
+        title="Sample composition plot summary",
+        operation="sample_composition_plot",
+        methods=(
+            "Validated and rendered the canonical complete Sample-by-annotation table as one stacked bar per "
+            "Sample. Samples were ordered into Condition groups in first-observed order; no Condition aggregation "
+            "or inferential calculation was performed."
+        ),
+        results=common["description"],
+        key_results=details,
+        parameters=parameters,
+        references=[PANDAS_REFERENCE, MATPLOTLIB_REFERENCE],
+        software_packages=["pandas", "numpy", "matplotlib"],
+        warnings=warnings,
+        limitations=[
+            "Displayed proportions describe captured-cell composition and do not estimate absolute tissue abundance.",
+            "The plot is descriptive; Samples remain the independent biological units and no Condition contrast is tested.",
+        ],
+        input_cells=details["input_cells"],
+        input_genes=input_genes,
+        started_at=started_at,
+        code=code,
+    )
+    return plotted, report, code
+
+
 def milo_owned(adata: Any, **parameters: Any) -> tuple[Any, Any, str]:
     started_at = time.perf_counter()
     cells, genes = int(adata.n_obs), int(adata.n_vars)
@@ -168,6 +239,25 @@ def sample_composition_summary(
         operation="Sample Composition Summary",
     )
     return _records(context, *sample_composition_owned(read_anndata_input(inputs), **parameters))
+
+
+@register_operation("openbio.node.samplecompositionplot")
+def sample_composition_plot(
+    context: OperationContext, inputs: dict[str, JSONValue], parameters: dict[str, JSONValue]
+) -> list[JSONValue]:
+    require_input_names(inputs, {"table"}, operation="Sample Composition Plot")
+    require_parameters(parameters, {"value"}, operation="Sample Composition Plot")
+    table, metadata = read_table_input(inputs, "table", kind=TABLE_KIND)
+    table_result = table_from_metadata(metadata, table)
+    if (
+        not isinstance(table_result.source, dict)
+        or table_result.source.get("operation") != "sample_composition_summary"
+    ):
+        raise ValueError("Sample Composition Plot requires a Sample Composition Summary table artifact.")
+    plotted, report, code = sample_composition_plot_owned(
+        table_result.table, input_genes=table_result.input_genes, **parameters
+    )
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
 
 
 @register_operation("openbio.node.milodifferentialabundance")
@@ -257,6 +347,8 @@ __all__ = [
     "milo_differential_abundance",
     "milo_owned",
     "sample_composition_owned",
+    "sample_composition_plot",
+    "sample_composition_plot_owned",
     "sample_composition_summary",
     "sccoda_differential_composition",
     "sccoda_owned",

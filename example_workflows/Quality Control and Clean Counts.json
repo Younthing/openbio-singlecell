@@ -174,7 +174,7 @@
       ],
       "size": [
         320,
-        80
+        100
       ],
       "flags": {},
       "order": 2,
@@ -210,9 +210,11 @@
         "Node name for S&R": "OpenBioSingleCellQCPlots"
       },
       "widgets_values": [
+        "overview",
         "X"
       ],
       "widgets_values_named": {
+        "view": "overview",
         "source": "X"
       }
     },
@@ -419,7 +421,7 @@
       ],
       "size": [
         320,
-        80
+        100
       ],
       "flags": {},
       "order": 7,
@@ -455,9 +457,11 @@
         "Node name for S&R": "OpenBioSingleCellQCPlots"
       },
       "widgets_values": [
+        "overview",
         "X"
       ],
       "widgets_values_named": {
+        "view": "overview",
         "source": "X"
       }
     },

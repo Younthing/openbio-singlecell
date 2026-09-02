@@ -451,6 +451,162 @@ def test_qc_plot_ignores_stale_obs_metrics_and_uses_one_explicit_expression_sour
     science.np.testing.assert_allclose(mito_offsets, [[10.0, 100.0], [20.0, 0.0]])
 
 
+def test_qc_grouped_plot_uses_categorical_groups_and_one_explicit_expression_source(science):
+    value = science.ad.AnnData(
+        science.np.full((4, 2), 999.0),
+        obs=science.pd.DataFrame(
+            {
+                "sample": science.pd.Categorical(
+                    ["S2", "S1", "S2", "S1"],
+                    categories=["unused_before", "S1", "S2", "unused_after"],
+                    ordered=True,
+                ),
+                "total_counts": [9_999.0] * 4,
+                "pct_counts_mt": [99.0] * 4,
+            },
+            index=["cell_0", "cell_1", "cell_2", "cell_3"],
+        ),
+        var=science.pd.DataFrame({"mt": [True, False]}, index=["MT-G", "G"]),
+    )
+    value.layers["counts"] = science.sparse.csr_matrix(
+        [[10.0, 0.0], [0.0, 20.0], [2.0, 3.0], [4.0, 1.0]]
+    )
+    snapshot = value.copy()
+
+    plot, report, code = qc_plots_owned(
+        value,
+        view={"view": "grouped", "groupby": "sample"},
+        source={"source": "layer", "source_layer": "counts"},
+    )
+
+    assert plot.png.startswith(b"\x89PNG\r\n\x1a\n")
+    key_results = report.summary["key_results"]
+    assert key_results["view"] == "grouped"
+    assert key_results["groupby"] == "sample"
+    assert key_results["group_order"] == ["S1", "S2"]
+    assert key_results["group_cell_counts"] == {"S1": 2, "S2": 2}
+    assert key_results["group_distributions"]["S1"]["total_expression"]["median"] == 12.5
+    assert key_results["group_distributions"]["S2"]["total_expression"]["median"] == 7.5
+    assert key_results["panels"] == [
+        "total_expression_by_group",
+        "detected_genes_by_group",
+        "mitochondrial_percent_by_group",
+    ]
+    assert set(key_results["metric_sources"].values()) == {"AnnData layer 'counts'"}
+    assert report.summary["parameters"]["view"] == {"view": "grouped", "groupby": "sample"}
+    json.dumps(report.summary, allow_nan=False)
+    assert_adata_equal(value, snapshot, science)
+
+    namespace = {}
+    exec(code, namespace)
+    figure = namespace["qc_plots"](value)
+    assert [axis.get_title() for axis in figure.axes] == [
+        "Total expression by sample",
+        "Genes detected by sample",
+        "Mitochondrial expression (%) by sample",
+    ]
+    assert [tick.get_text() for tick in figure.axes[0].get_xticklabels()] == ["S1", "S2"]
+    assert max(path.vertices[:, 1].max() for body in figure.axes[0].collections for path in body.get_paths()) <= 20.0
+
+
+@pytest.mark.parametrize("dtype", [object, "string"])
+def test_qc_grouped_plot_orders_string_groups_by_first_appearance(dtype, science):
+    value = science.ad.AnnData(
+        science.np.eye(4),
+        obs=science.pd.DataFrame(
+            {"sample": science.pd.Series(["S2", "S1", "S2", "S3"], dtype=dtype).array},
+            index=[f"cell_{index}" for index in range(4)],
+        ),
+        var=science.pd.DataFrame(index=[f"gene_{index}" for index in range(4)]),
+    )
+
+    _, report, code = qc_plots_owned(value, view={"view": "grouped", "groupby": "sample"})
+
+    assert report.summary["key_results"]["group_order"] == ["S2", "S1", "S3"]
+    namespace = {}
+    exec(code, namespace)
+    figure = namespace["qc_plots"](value)
+    assert [tick.get_text() for tick in figure.axes[0].get_xticklabels()] == ["S2", "S1", "S3"]
+
+
+def test_qc_grouped_plot_accepts_boolean_groups(science):
+    value = science.ad.AnnData(
+        science.np.eye(3),
+        obs=science.pd.DataFrame({"selected": [True, False, True]}, index=[f"cell_{index}" for index in range(3)]),
+        var=science.pd.DataFrame(index=[f"gene_{index}" for index in range(3)]),
+    )
+
+    _, report, code = qc_plots_owned(value, view={"view": "grouped", "groupby": "selected"})
+
+    assert report.summary["key_results"]["group_order"] == ["True", "False"]
+    namespace = {}
+    exec(code, namespace)
+    figure = namespace["qc_plots"](value)
+    assert [tick.get_text() for tick in figure.axes[0].get_xticklabels()] == ["True", "False"]
+
+
+@pytest.mark.parametrize(
+    ("case", "error", "message"),
+    [
+        ("missing column", ValueError, "groupby column not found"),
+        ("continuous numeric", TypeError, "must be categorical, boolean, or string-like"),
+        ("missing categorical label", ValueError, "contains missing group labels"),
+        ("missing object label", ValueError, "contains missing group labels"),
+        ("blank label", ValueError, "contains blank group labels"),
+        ("display collision", ValueError, "collide after string conversion"),
+        ("non-finite object label", ValueError, "contains non-finite group labels"),
+    ],
+)
+def test_qc_grouped_plot_validates_discrete_group_labels_in_runtime_and_code(case, error, message, science):
+    if case == "missing column":
+        obs = {"other": ["S1", "S2"]}
+    elif case == "continuous numeric":
+        obs = {"sample": [1.0, 2.0]}
+    elif case == "missing categorical label":
+        obs = {"sample": science.pd.Categorical(["S1", None], categories=["S1", "S2"])}
+    elif case == "missing object label":
+        obs = {"sample": science.pd.Series(["S1", None], dtype=object).array}
+    elif case == "blank label":
+        obs = {"sample": ["S1", " "]}
+    elif case == "display collision":
+        obs = {"sample": science.pd.Series([1, "1"], dtype=object).array}
+    else:
+        obs = {"sample": science.pd.Series([1, science.np.inf], dtype=object).array}
+    value = science.ad.AnnData(
+        science.np.eye(2),
+        obs=science.pd.DataFrame(obs, index=["cell_0", "cell_1"]),
+        var=science.pd.DataFrame(index=["gene_0", "gene_1"]),
+    )
+    valid = value.copy()
+    valid.obs = science.pd.DataFrame({"sample": ["S1", "S2"]}, index=valid.obs_names)
+    _, _, code = qc_plots_owned(valid, view={"view": "grouped", "groupby": "sample"})
+
+    with pytest.raises(error, match=message):
+        qc_plots_owned(value, view={"view": "grouped", "groupby": "sample"})
+    namespace = {}
+    exec(code, namespace)
+    with pytest.raises(error, match=message):
+        namespace["qc_plots"](value)
+
+
+def test_qc_grouped_plot_caps_visible_groups_in_runtime_and_code(science):
+    groups = [f"S{index:02}" for index in range(41)]
+    value = science.ad.AnnData(
+        science.np.eye(len(groups)),
+        obs=science.pd.DataFrame({"sample": groups}, index=[f"cell_{index}" for index in range(len(groups))]),
+        var=science.pd.DataFrame(index=[f"gene_{index}" for index in range(len(groups))]),
+    )
+    valid = value[:2].copy()
+    _, _, code = qc_plots_owned(valid, view={"view": "grouped", "groupby": "sample"})
+
+    with pytest.raises(ValueError, match="supports at most 40 visible groups"):
+        qc_plots_owned(value, view={"view": "grouped", "groupby": "sample"})
+    namespace = {}
+    exec(code, namespace)
+    with pytest.raises(ValueError, match="supports at most 40 visible groups"):
+        namespace["qc_plots"](value)
+
+
 def test_qc_plot_ignores_nonfinite_obs_mitochondrial_cache(adata, science):
     qc = calculate_qc_owned(adata)[0]
     qc.obs["pct_counts_mt"] = science.np.nan

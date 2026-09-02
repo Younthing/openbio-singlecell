@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from comfy_api.latest import io
 
-from .node_types import AnnDataType, TableResultType, analysis_outputs
+from .node_types import AnnDataType, PlotResultType, TableResultType, analysis_outputs
 
 ABUNDANCE_CATEGORY = "openbio/single-cell/differential-abundance"
+PLOT_CATEGORY = "openbio/single-cell/visualization"
 
 
 class OpenBioSingleCellSampleCompositionSummary(io.ComfyNode):
@@ -33,6 +34,21 @@ class OpenBioSingleCellSampleCompositionSummary(io.ComfyNode):
                 ),
             ],
             outputs=analysis_outputs(TableResultType.Output(display_name="table")),
+        )
+
+
+class OpenBioSingleCellSampleCompositionPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellSampleCompositionPlot",
+            display_name="Sample Composition Plot",
+            category=PLOT_CATEGORY,
+            inputs=[
+                TableResultType.Input("table"),
+                io.Combo.Input("value", options=["proportion", "cell_count"], default="proportion"),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
         )
 
 
@@ -158,6 +174,7 @@ class OpenBioSingleCellTasccodaDifferentialComposition(io.ComfyNode):
 
 ABUNDANCE_NODE_CLASSES = [
     OpenBioSingleCellSampleCompositionSummary,
+    OpenBioSingleCellSampleCompositionPlot,
     OpenBioSingleCellMiloDifferentialAbundance,
     OpenBioSingleCellSccodaDifferentialComposition,
     OpenBioSingleCellTasccodaDifferentialComposition,
@@ -167,6 +184,7 @@ ABUNDANCE_NODE_CLASSES = [
 __all__ = [
     "ABUNDANCE_NODE_CLASSES",
     "OpenBioSingleCellMiloDifferentialAbundance",
+    "OpenBioSingleCellSampleCompositionPlot",
     "OpenBioSingleCellSampleCompositionSummary",
     "OpenBioSingleCellSccodaDifferentialComposition",
     "OpenBioSingleCellTasccodaDifferentialComposition",

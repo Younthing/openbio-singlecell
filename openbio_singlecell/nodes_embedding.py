@@ -3,7 +3,7 @@ from __future__ import annotations
 from comfy_api.latest import io
 
 from .expression_source import _PCA_SPEC
-from .node_types import AnnDataType, analysis_outputs
+from .node_types import AnnDataType, PlotResultType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/dimension-reduction"
 CLUSTERING_CATEGORY = "openbio/single-cell/clustering"
@@ -30,6 +30,21 @@ class OpenBioSingleCellPCA(io.ComfyNode):
                 io.Int.Input("random_seed", default=0, min=0, max=MAX_RANDOM_SEED, advanced=True),
             ],
             outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
+        )
+
+
+class OpenBioSingleCellPCAVariancePlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellPCAVariancePlot",
+            display_name="PCA Variance Plot",
+            category=CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.Int.Input("n_pcs", default=0, min=0),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
         )
 
 
@@ -150,6 +165,7 @@ class OpenBioSingleCellLeiden(io.ComfyNode):
 
 EMBEDDING_NODE_CLASSES = [
     OpenBioSingleCellPCA,
+    OpenBioSingleCellPCAVariancePlot,
     OpenBioSingleCellNeighbors,
     OpenBioSingleCellUMAP,
     OpenBioSingleCellTSNE,
@@ -163,6 +179,7 @@ __all__ = [
     "OpenBioSingleCellLeiden",
     "OpenBioSingleCellNeighbors",
     "OpenBioSingleCellPCA",
+    "OpenBioSingleCellPCAVariancePlot",
     "OpenBioSingleCellTSNE",
     "OpenBioSingleCellUMAP",
 ]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from comfy_api.latest import io
 
-from .expression_source import _MARKER_PLOT_SPEC, _MARKER_SPEC
+from .expression_source import _EMBEDDING_PLOT_SPEC, _MARKER_PLOT_SPEC, _MARKER_SPEC
 from .marker_evidence import MARKER_COLUMNS, MARKER_METHODS
 from .node_types import AnnDataType, PlotResultType, TableResultType, analysis_outputs
 
@@ -53,21 +53,40 @@ class OpenBioSingleCellMarkerGenes(io.ComfyNode):
 
 
 class OpenBioSingleCellUMAPPlot(io.ComfyNode):
+    EXPRESSION_SOURCE = _EMBEDDING_PLOT_SPEC
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="OpenBioSingleCellUMAPPlot",
-            display_name="UMAP Plot",
+            display_name="Embedding Plot",
             category=PLOT_CATEGORY,
             inputs=[
                 AnnDataType.Input("adata"),
                 io.String.Input("embedding_key", default="X_umap"),
-                io.String.Input("color", default="leiden"),
-                io.Combo.Input(
-                    "color_mode",
-                    options=["auto", "categorical", "continuous"],
-                    default="auto",
-                    advanced=True,
+                io.Int.Input("x_dimension", default=1, min=1, max=4096),
+                io.Int.Input("y_dimension", default=2, min=1, max=4096),
+                io.DynamicCombo.Input(
+                    "color",
+                    options=[
+                        io.DynamicCombo.Option(
+                            "obs",
+                            [
+                                io.String.Input("obs_key", default="leiden"),
+                                io.Combo.Input(
+                                    "color_mode",
+                                    options=["auto", "categorical", "continuous"],
+                                    default="auto",
+                                    advanced=True,
+                                ),
+                            ],
+                        ),
+                        io.DynamicCombo.Option(
+                            "gene",
+                            [io.String.Input("gene", default=""), cls.EXPRESSION_SOURCE.input()],
+                        ),
+                        io.DynamicCombo.Option("none", []),
+                    ],
                 ),
                 io.Float.Input("point_size", default=10.0, min=0.1, max=1000.0, step=1.0),
                 io.String.Input("continuous_color_map", default="viridis", advanced=True),
@@ -117,7 +136,7 @@ class OpenBioSingleCellMarkerExpressionPlot(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="OpenBioSingleCellMarkerExpressionPlot",
-            display_name="Marker Expression Plot",
+            display_name="Grouped Gene Expression Plot",
             category=PLOT_CATEGORY,
             inputs=[
                 AnnDataType.Input("adata"),

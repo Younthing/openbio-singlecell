@@ -104,7 +104,17 @@ class OpenBioSingleCellQCPlots(io.ComfyNode):
             display_name="QC Plots",
             category=CATEGORY,
             description="Visualize a coherent family of cell-level QC metrics derived from one explicit source.",
-            inputs=[AnnDataType.Input("adata"), cls.EXPRESSION_SOURCE.input()],
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.DynamicCombo.Input(
+                    "view",
+                    options=[
+                        io.DynamicCombo.Option("overview", []),
+                        io.DynamicCombo.Option("grouped", [io.String.Input("groupby", default="sample")]),
+                    ],
+                ),
+                cls.EXPRESSION_SOURCE.input(),
+            ],
             outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
         )
 

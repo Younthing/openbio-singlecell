@@ -803,7 +803,7 @@
       ],
       "size": [
         320,
-        124
+        196
       ],
       "flags": {},
       "order": 12,
@@ -840,6 +840,9 @@
       },
       "widgets_values": [
         "X_umap",
+        1,
+        2,
+        "obs",
         "batch",
         "auto",
         10.0,
@@ -851,8 +854,11 @@
       ],
       "widgets_values_named": {
         "embedding_key": "X_umap",
-        "color": "batch",
-        "color_mode": "auto",
+        "x_dimension": 1,
+        "y_dimension": 2,
+        "color": "obs",
+        "color.obs_key": "batch",
+        "color.color_mode": "auto",
         "point_size": 10.0,
         "continuous_color_map": "viridis",
         "categorical_palette": "tab20",
@@ -932,7 +938,7 @@
       ],
       "size": [
         320,
-        124
+        196
       ],
       "flags": {},
       "order": 15,
@@ -969,6 +975,9 @@
       },
       "widgets_values": [
         "X_umap",
+        1,
+        2,
+        "obs",
         "cell_type",
         "auto",
         10.0,
@@ -980,8 +989,11 @@
       ],
       "widgets_values_named": {
         "embedding_key": "X_umap",
-        "color": "cell_type",
-        "color_mode": "auto",
+        "x_dimension": 1,
+        "y_dimension": 2,
+        "color": "obs",
+        "color.obs_key": "cell_type",
+        "color.color_mode": "auto",
         "point_size": 10.0,
         "continuous_color_map": "viridis",
         "categorical_palette": "tab20",

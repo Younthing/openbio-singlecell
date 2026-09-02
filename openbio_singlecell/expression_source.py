@@ -239,6 +239,11 @@ _MARKER_PLOT_SPEC = ExpressionSourceSpec(
     include_raw=True,
     layer_default="log1p_norm",
 )
+_EMBEDDING_PLOT_SPEC = ExpressionSourceSpec(
+    description="Embedding gene-color expression source",
+    include_raw=True,
+    layer_default="log1p_norm",
+)
 _CELL_CYCLE_SPEC = ExpressionSourceSpec(
     description="Cell-cycle expression source; full-gene log-normalized values are recommended",
     default="layer",

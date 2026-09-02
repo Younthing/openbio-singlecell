@@ -8,7 +8,7 @@ from typing import Any
 
 from . import dependencies
 from .analysis_reporting import AnalysisReference, make_analysis_report, summarize_numeric
-from .analysis_utils import finish_adata, matrix_totals_and_nonzero
+from .analysis_utils import finish_adata, make_plot_result, matrix_totals_and_nonzero
 from .expression_source import (
     _HVG_SPEC,
     _NORMALIZE_LAYER_SPEC,
@@ -18,16 +18,19 @@ from .expression_source import (
     ExpressionSource,
     ExpressionSourceSpec,
 )
+from .hvg_plotting import hvg_selection_plot_code, render_hvg_selection_plot
 from .operations_input import (
     analysis_outputs,
     read_anndata_input,
     require_input_names,
     require_parameters,
     write_anndata_output,
+    write_plot_output,
 )
 from .worker_protocol import JSONValue, OperationContext, ProtocolError, register_operation
 
 PREPROCESS_SOFTWARE_PACKAGES = ("scanpy", "anndata", "numpy", "pandas", "scipy")
+PLOT_KIND = "OPENBIO_SINGLE_CELL_PLOT"
 NORMALIZE_TOTAL_SOURCE = _NORMALIZE_TOTAL_SPEC
 NORMALIZE_LAYER_SOURCE = _NORMALIZE_LAYER_SPEC
 PEARSON_SOURCE = _PEARSON_RESIDUAL_SPEC
@@ -93,6 +96,13 @@ LAUSE_REFERENCE = AnalysisReference(
     url="https://doi.org/10.1186/s13059-021-02451-7",
     kind="method",
 )
+HVG_REFERENCE_BY_FLAVOR = {
+    "seurat": SATIJA_REFERENCE,
+    "cell_ranger": ZHENG_REFERENCE,
+    "seurat_v3": STUART_REFERENCE,
+    "seurat_v3_paper": STUART_REFERENCE,
+    "pearson_residuals": LAUSE_REFERENCE,
+}
 
 LOG_HVG_FLAVORS = frozenset({"seurat", "cell_ranger"})
 COUNT_HVG_FLAVORS = frozenset({"seurat_v3", "seurat_v3_paper", "pearson_residuals"})
@@ -1800,13 +1810,7 @@ def highly_variable_genes(
         started_at,
         warnings=report_warnings,
     )
-    reference = {
-        "seurat": SATIJA_REFERENCE,
-        "cell_ranger": ZHENG_REFERENCE,
-        "seurat_v3": STUART_REFERENCE,
-        "seurat_v3_paper": STUART_REFERENCE,
-        "pearson_residuals": LAUSE_REFERENCE,
-    }[flavor]
+    reference = HVG_REFERENCE_BY_FLAVOR[flavor]
     report, code = make_analysis_report(
         node_id="OpenBioSingleCellHighlyVariableGenes",
         title="Highly variable gene selection summary",
@@ -1878,6 +1882,72 @@ def highly_variable_genes(
         ),
     )
     return _records(context, adata, report, code)
+
+
+def hvg_selection_plot_owned(adata: Any) -> tuple[Any, Any, str]:
+    started_at = time.perf_counter()
+    png, details = render_hvg_selection_plot(adata)
+    code = hvg_selection_plot_code()
+    flavor = details["flavor"]
+    counts = details["selection_counts"]
+    warnings = list(details["warnings"])
+    title = f"HVG Selection ({flavor})"
+    plotted = make_plot_result(
+        title=title,
+        operation="hvg_selection_plot",
+        parameters={},
+        description=(
+            f"Read-only rendering of stored {flavor!r} feature-selection evidence for "
+            f"{details['input_features']:,} input features."
+        ),
+        warnings=warnings,
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+        png=png,
+    )
+    reference = HVG_REFERENCE_BY_FLAVOR[flavor]
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellHVGSelectionPlot",
+        title=title,
+        operation="hvg_selection_plot",
+        methods=(
+            f"Read flavor {flavor!r} from adata.uns['hvg'] and plotted stored feature means against "
+            f"{details['variability_columns']!r} without recomputing feature-selection statistics."
+        ),
+        results=(
+            f"Classified {counts['algorithm_selected']:,} algorithm-selected, {counts['forced']:,} forced, "
+            f"and {counts['unselected']:,} unselected features."
+        ),
+        key_results=details,
+        parameters={},
+        references=(reference, SCANPY_REFERENCE),
+        software_packages=(*PREPROCESS_SOFTWARE_PACKAGES, "matplotlib"),
+        warnings=warnings,
+        limitations=(
+            "This diagnostic displays stored feature-selection statistics and does not rerun or validate the "
+            "biological suitability of the selected flavor.",
+            "Forced features are user overrides, not algorithm-selected highly variable genes.",
+        ),
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+        code=code,
+    )
+    return plotted, report, code
+
+
+@register_operation("openbio.node.hvgselectionplot")
+def hvg_selection_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    operation = "HVG Selection Plot"
+    require_input_names(inputs, {"adata"}, operation=operation)
+    require_parameters(parameters, set(), operation=operation)
+    plotted, report, code = hvg_selection_plot_owned(read_anndata_input(inputs))
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
 
 
 def _scale_code(
@@ -2099,6 +2169,8 @@ def scale(
 
 
 __all__ = [
+    "hvg_selection_plot",
+    "hvg_selection_plot_owned",
     "highly_variable_genes",
     "log1p",
     "normalize_to_layer",

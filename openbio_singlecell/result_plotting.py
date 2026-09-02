@@ -6,18 +6,22 @@ from collections.abc import Mapping
 from typing import Any
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-UMAP_LEGEND_LIMIT = 20
 MAX_MARKER_PLOT_GENES = 50
 MAX_MARKER_PLOT_STAT_ROWS = 10_000
 MAX_MARKER_PLOT_BYTES = 1024**3
 MARKER_PLOT_RNG_LOCK = threading.RLock()
 
 
-def _plot_umap_impl(
+def _plot_embedding_impl(
     adata,
     *,
     embedding_key="X_umap",
+    x_dimension=1,
+    y_dimension=2,
     color="leiden",
+    color_source="obs",
+    source_kind="X",
+    layer_name=None,
     color_mode="auto",
     point_size=10.0,
     continuous_color_map="viridis",
@@ -28,7 +32,7 @@ def _plot_umap_impl(
     resolved_category_colors=None,
     resolved_normalization=None,
 ):
-    """Validate and render one stored two-dimensional embedding without mutating AnnData."""
+    """Validate and render two dimensions of one stored embedding without mutating AnnData."""
     import io
     import math
     from numbers import Real
@@ -98,7 +102,7 @@ def _plot_umap_impl(
             codes = np.full(len(series), -1, dtype=int)
             identity_to_code = {}
             for row, value in enumerate(series.tolist()):
-                if scalar_missing(value, "UMAP categorical color"):
+                if scalar_missing(value, "Embedding categorical color"):
                     missing_mask[row] = True
                     rendered[row] = None
                     continue
@@ -119,100 +123,170 @@ def _plot_umap_impl(
         collisions = sorted(label for label, identities in identities_by_label.items() if len(identities) > 1)
         if collisions:
             raise ValueError(
-                "UMAP categorical color contains distinct values that collapse after string conversion: "
+                "Embedding categorical color contains distinct values that collapse after string conversion: "
                 f"{collisions!r}."
             )
         if len(set(labels)) != len(labels):
-            raise ValueError("UMAP categorical color labels must be unique after rendering.")
+            raise ValueError("Embedding categorical color labels must be unique after rendering.")
         if bool(missing_mask.any()) and "(missing)" in labels:
-            raise ValueError("UMAP categorical color label '(missing)' collides with the missing-value label.")
+            raise ValueError("Embedding categorical color label '(missing)' collides with the missing-value label.")
         counts = {label: int(np.count_nonzero(rendered == label)) for label in labels}
         return rendered, missing_mask, labels, counts, ordered
 
     if not hasattr(adata, "n_obs") or not hasattr(adata, "obs") or not hasattr(adata, "obsm"):
-        raise TypeError("UMAP Plot requires an in-memory AnnData object.")
+        raise TypeError("Embedding Plot requires an in-memory AnnData object.")
     if bool(getattr(adata, "isbacked", False)):
-        raise ValueError("UMAP Plot does not support backed AnnData; load it into memory first.")
+        raise ValueError("Embedding Plot does not support backed AnnData; load it into memory first.")
     n_obs = int(adata.n_obs)
     if n_obs < 1:
-        raise ValueError("UMAP Plot requires at least one observation.")
+        raise ValueError("Embedding Plot requires at least one observation.")
     if not bool(adata.obs_names.is_unique):
-        raise ValueError("UMAP Plot requires unique observation identifiers.")
+        raise ValueError("Embedding Plot requires unique observation identifiers.")
 
-    embedding_key = strict_string(embedding_key, "UMAP embedding_key")
-    color = strict_string(color, "UMAP color", allow_empty=True)
-    color_mode = strict_string(color_mode, "UMAP color_mode")
+    embedding_key = strict_string(embedding_key, "Embedding embedding_key")
+    color = strict_string(color, "Embedding color", allow_empty=True)
+    color_mode = strict_string(color_mode, "Embedding color_mode")
     if color_mode not in {"auto", "categorical", "continuous"}:
-        raise ValueError(f"Unsupported UMAP color_mode: {color_mode!r}.")
-    continuous_color_map = strict_string(continuous_color_map, "UMAP continuous_color_map")
-    categorical_palette = strict_string(categorical_palette, "UMAP categorical_palette")
-    legend_policy = strict_string(legend_policy, "UMAP legend_policy")
+        raise ValueError(f"Unsupported Embedding color_mode: {color_mode!r}.")
+    continuous_color_map = strict_string(continuous_color_map, "Embedding continuous_color_map")
+    categorical_palette = strict_string(categorical_palette, "Embedding categorical_palette")
+    legend_policy = strict_string(legend_policy, "Embedding legend_policy")
     if legend_policy not in {"automatic", "show", "hide"}:
-        raise ValueError(f"Unsupported UMAP legend_policy: {legend_policy!r}.")
+        raise ValueError(f"Unsupported Embedding legend_policy: {legend_policy!r}.")
     if not isinstance(sort_order, (bool, np.bool_)):
-        raise TypeError("UMAP sort_order must be a boolean.")
+        raise TypeError("Embedding sort_order must be a boolean.")
     sort_order = bool(sort_order)
     if isinstance(point_size, (bool, np.bool_)) or not isinstance(point_size, Real):
-        raise TypeError("UMAP point_size must be a finite positive number.")
+        raise TypeError("Embedding point_size must be a finite positive number.")
     point_size = float(point_size)
     if not math.isfinite(point_size) or point_size <= 0:
-        raise ValueError("UMAP point_size must be a finite positive number.")
+        raise ValueError("Embedding point_size must be a finite positive number.")
     try:
         missing_rgba = to_rgba(missing_color)
     except (TypeError, ValueError) as error:
-        raise ValueError(f"Invalid UMAP missing_color: {missing_color!r}.") from error
+        raise ValueError(f"Invalid Embedding missing_color: {missing_color!r}.") from error
     missing_hex = to_hex(missing_rgba, keep_alpha=True)
 
     if embedding_key not in adata.obsm:
-        raise ValueError(f"UMAP coordinates not found in obsm[{embedding_key!r}].")
+        raise ValueError(f"Embedding coordinates not found in obsm[{embedding_key!r}].")
     stored = adata.obsm[embedding_key]
     if isinstance(stored, pd.DataFrame):
         if not stored.index.equals(adata.obs_names):
-            raise ValueError("UMAP coordinate DataFrame index is not exactly aligned to adata.obs_names.")
+            raise ValueError("Embedding coordinate DataFrame index is not exactly aligned to adata.obs_names.")
         coordinate_source = "dataframe_index_verified"
         stored = stored.to_numpy(copy=False)
     else:
         coordinate_source = "anndata_obsm_row_contract"
-        if sparse.issparse(stored):
-            stored = stored.toarray()
-        else:
+        if not sparse.issparse(stored):
             stored = np.asarray(stored)
-    stored_coordinates = np.asarray(stored)
+    stored_coordinates = stored
     if stored_coordinates.ndim != 2 or stored_coordinates.shape[0] != n_obs or stored_coordinates.shape[1] < 2:
         raise ValueError(
-            f"UMAP coordinates must have shape exactly ({n_obs}, n_dimensions) with n_dimensions >= 2; "
+            f"Embedding coordinates must have shape exactly ({n_obs}, n_dimensions) with n_dimensions >= 2; "
             f"received {stored_coordinates.shape!r}."
         )
     if not np.issubdtype(stored_coordinates.dtype, np.number) or np.issubdtype(
         stored_coordinates.dtype, np.bool_
     ):
-        raise TypeError("UMAP coordinates must contain real numeric values.")
-    if np.iscomplexobj(stored_coordinates):
-        raise TypeError("UMAP coordinates must contain real numeric values, not complex values.")
+        raise TypeError("Embedding coordinates must contain real numeric values.")
+    if np.issubdtype(stored_coordinates.dtype, np.complexfloating):
+        raise TypeError("Embedding coordinates must contain real numeric values, not complex values.")
     available_dimensions = int(stored_coordinates.shape[1])
-    coordinates = np.asarray(stored_coordinates[:, :2], dtype=float)
+    for value, label in ((x_dimension, "x_dimension"), (y_dimension, "y_dimension")):
+        if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+            raise TypeError(f"Embedding {label} must be an integer.")
+        if value < 1 or value > available_dimensions:
+            raise ValueError(
+                f"Embedding {label} must be between 1 and {available_dimensions}; received {value!r}."
+            )
+    x_dimension, y_dimension = int(x_dimension), int(y_dimension)
+    if x_dimension == y_dimension:
+        raise ValueError("Embedding x_dimension and y_dimension must be different.")
+    coordinates = stored_coordinates[:, [x_dimension - 1, y_dimension - 1]]
+    if sparse.issparse(coordinates):
+        coordinates = coordinates.toarray()
+    coordinates = np.asarray(coordinates, dtype=float)
     if not bool(np.isfinite(coordinates).all()):
-        raise ValueError("The first two displayed UMAP coordinate dimensions contain non-finite values.")
+        raise ValueError("The selected Embedding coordinate dimensions contain non-finite values.")
+
+    if color_source not in {"none", "obs", "gene"}:
+        raise ValueError(f"Unsupported Embedding color source: {color_source!r}.")
+    if color_source == "gene":
+        color = strict_string(color, "Embedding gene")
+    elif color_source == "none":
+        color = ""
 
     warnings = []
     actual_mode = "none"
     color_details = {
+        "target_kind": color_source,
+        "target": color or None,
         "requested_mode": color_mode,
         "effective_mode": "none",
-        "column": color or None,
+        "column": color if color_source == "obs" and color else None,
+        "gene": color if color_source == "gene" and color else None,
         "missing_count": 0,
         "fixed_color": "#246bfe" if not color else None,
     }
     category_payload = None
     continuous_payload = None
     if color:
-        if color not in adata.obs:
-            raise ValueError(f"UMAP color column not found in obs: {color!r}.")
-        values = adata.obs[color]
-        if len(values) != n_obs or not values.index.equals(adata.obs_names):
-            raise ValueError("UMAP color column is not exactly aligned to adata.obs_names.")
+        if color_source == "obs":
+            if color not in adata.obs:
+                raise ValueError(f"Embedding color column not found in obs: {color!r}.")
+            values = adata.obs[color]
+            if len(values) != n_obs or not values.index.equals(adata.obs_names):
+                raise ValueError("Embedding color column is not exactly aligned to adata.obs_names.")
+        else:
+            if source_kind == "raw":
+                if adata.raw is None:
+                    raise ValueError("Embedding gene-color source 'raw' was selected, but adata.raw is unavailable.")
+                matrix = adata.raw.X
+                var_names = adata.raw.var_names
+                layer_name = None
+            elif source_kind == "layer":
+                layer_name = strict_string(layer_name, "Embedding gene-color layer")
+                if layer_name not in adata.layers:
+                    raise ValueError(f"Embedding gene-color layer not found: {layer_name!r}.")
+                matrix = adata.layers[layer_name]
+                var_names = adata.var_names
+            elif source_kind == "X":
+                if layer_name is not None:
+                    raise ValueError("Embedding gene-color X source cannot carry a layer name.")
+                matrix = adata.X
+                var_names = adata.var_names
+            else:
+                raise ValueError(f"Unsupported Embedding gene-color source: {source_kind!r}.")
+            if not bool(var_names.is_unique):
+                raise ValueError("Embedding gene-color source requires unique feature identifiers.")
+            expected_shape = (n_obs, len(var_names))
+            if tuple(matrix.shape) != expected_shape:
+                raise ValueError(
+                    f"Embedding gene-color source must have shape {expected_shape!r}; "
+                    f"received {tuple(matrix.shape)!r}."
+                )
+            if color not in var_names:
+                raise ValueError(f"Embedding gene not found in the selected expression source: {color!r}.")
+            index = var_names.get_loc(color)
+            if not isinstance(index, (int, np.integer)):
+                raise ValueError("Embedding gene lookup was ambiguous.")
+            selected = matrix[:, index]
+            numeric = selected.toarray().ravel() if sparse.issparse(selected) else np.asarray(selected).ravel()
+            if not np.issubdtype(numeric.dtype, np.number) or np.issubdtype(numeric.dtype, np.bool_):
+                raise TypeError("Embedding gene-color source must contain real numeric values.")
+            if np.iscomplexobj(numeric):
+                raise TypeError("Embedding gene-color source must contain real numeric values, not complex values.")
+            if not bool(np.isfinite(numeric).all()):
+                raise ValueError("Embedding selected gene contains non-finite expression values.")
+            values = pd.Series(numeric, index=adata.obs_names, name=color)
+            color_details["expression_source"] = {
+                "source": source_kind,
+                **({"layer_name": layer_name} if source_kind == "layer" else {}),
+            }
         dtype = values.dtype
-        if color_mode == "auto":
+        if color_source == "gene":
+            actual_mode = "continuous"
+        elif color_mode == "auto":
             if (
                 isinstance(dtype, pd.CategoricalDtype)
                 or pd.api.types.is_bool_dtype(dtype)
@@ -224,7 +298,7 @@ def _plot_umap_impl(
                 actual_mode = "continuous"
             else:
                 raise TypeError(
-                    f"UMAP color column {color!r} has unsupported dtype {dtype!r}; choose an explicit valid mode."
+                    f"Embedding color column {color!r} has unsupported dtype {dtype!r}; choose an explicit valid mode."
                 )
         else:
             actual_mode = color_mode
@@ -249,9 +323,9 @@ def _plot_umap_impl(
                 category_colors = dict(zip(categories, colors, strict=True))
             else:
                 if not isinstance(resolved_category_colors, dict):
-                    raise TypeError("Resolved UMAP category colors must be a mapping.")
+                    raise TypeError("Resolved Embedding category colors must be a mapping.")
                 if set(resolved_category_colors) != set(categories) or len(resolved_category_colors) != len(categories):
-                    raise ValueError("Resolved UMAP category colors do not exactly match the observed categories.")
+                    raise ValueError("Resolved Embedding category colors do not exactly match the observed categories.")
                 category_colors = {}
                 for category in categories:
                     try:
@@ -259,11 +333,11 @@ def _plot_umap_impl(
                             to_rgba(resolved_category_colors[category]), keep_alpha=True
                         )
                     except (TypeError, ValueError) as error:
-                        raise ValueError(f"Invalid resolved color for UMAP category {category!r}.") from error
+                        raise ValueError(f"Invalid resolved color for Embedding category {category!r}.") from error
             if len(set(category_colors.values())) != len(category_colors):
-                raise ValueError("UMAP categorical palette assigns duplicate rendered colors.")
+                raise ValueError("Embedding categorical palette assigns duplicate rendered colors.")
             if bool(missing_mask.any()) and missing_hex in set(category_colors.values()):
-                raise ValueError("UMAP missing_color duplicates a categorical palette color.")
+                raise ValueError("Embedding missing_color duplicates a categorical palette color.")
             if categorical_palette not in qualitative_palettes:
                 warnings.append(
                     f"Palette {categorical_palette!r} is not a recognized qualitative Matplotlib palette; "
@@ -303,20 +377,20 @@ def _plot_umap_impl(
             )
         else:
             if not pd.api.types.is_numeric_dtype(dtype) or pd.api.types.is_bool_dtype(dtype):
-                raise TypeError(f"UMAP continuous color column {color!r} must have a non-boolean numeric dtype.")
+                raise TypeError(f"Embedding continuous color target {color!r} must have a non-boolean numeric dtype.")
             if pd.api.types.is_complex_dtype(dtype):
-                raise TypeError(f"UMAP continuous color column {color!r} must contain real values.")
+                raise TypeError(f"Embedding continuous color target {color!r} must contain real values.")
             try:
                 numeric = values.to_numpy(dtype=float, na_value=np.nan, copy=True)
             except (TypeError, ValueError) as error:
-                raise TypeError(f"UMAP continuous color column {color!r} must contain real numeric values.") from error
+                raise TypeError(f"Embedding continuous color target {color!r} must contain real numeric values.") from error
             finite_mask = np.isfinite(numeric)
             missing_mask = pd.isna(numeric)
             infinity_mask = ~finite_mask & ~missing_mask
             if bool(infinity_mask.any()):
-                raise ValueError(f"UMAP continuous color column {color!r} contains infinite values.")
+                raise ValueError(f"Embedding continuous color target {color!r} contains infinite values.")
             if not bool(finite_mask.any()):
-                raise ValueError(f"UMAP continuous color column {color!r} contains no finite values.")
+                raise ValueError(f"Embedding continuous color target {color!r} contains no finite values.")
             if bool(missing_mask.any()):
                 warnings.append(
                     f"Rendered {int(missing_mask.sum()):,} observations with missing continuous color values "
@@ -339,10 +413,10 @@ def _plot_umap_impl(
                     vmin, vmax = observed_min, observed_max
             else:
                 if not isinstance(resolved_normalization, (tuple, list)) or len(resolved_normalization) != 2:
-                    raise TypeError("Resolved UMAP normalization must contain exactly vmin and vmax.")
+                    raise TypeError("Resolved Embedding normalization must contain exactly vmin and vmax.")
                 vmin, vmax = (float(value) for value in resolved_normalization)
                 if not math.isfinite(vmin) or not math.isfinite(vmax) or vmin >= vmax:
-                    raise ValueError("Resolved UMAP normalization must be finite with vmin < vmax.")
+                    raise ValueError("Resolved Embedding normalization must be finite with vmin < vmax.")
             finite_indices = np.flatnonzero(finite_mask)
             if sort_order:
                 finite_indices = finite_indices[np.argsort(numeric[finite_indices], kind="stable")]
@@ -436,16 +510,19 @@ def _plot_umap_impl(
                 linewidths=0,
             )
             figure.colorbar(points, ax=axis, label=color)
-        axis.set_xlabel("UMAP 1")
-        axis.set_ylabel("UMAP 2")
-        axis.set_title(f"UMAP colored by {color}" if color else "UMAP")
+        embedding_title = "UMAP" if embedding_key == "X_umap" else embedding_key
+        x_label = f"{embedding_title} {x_dimension}"
+        y_label = f"{embedding_title} {y_dimension}"
+        axis.set_xlabel(x_label)
+        axis.set_ylabel(y_label)
+        axis.set_title(f"{embedding_title} colored by {color}" if color else embedding_title)
         buffer = io.BytesIO()
         figure.savefig(buffer, format="png", dpi=120, bbox_inches="tight")
         png = buffer.getvalue()
     finally:
         figure.clear()
     if not png.startswith(png_signature):
-        raise RuntimeError("UMAP renderer did not produce a valid PNG payload.")
+        raise RuntimeError("Embedding renderer did not produce a valid PNG payload.")
 
     details = {
         "embedding_key": embedding_key,
@@ -453,10 +530,10 @@ def _plot_umap_impl(
         "plotted_observations": n_obs,
         "coordinate_alignment": coordinate_source,
         "available_coordinate_dimensions": available_dimensions,
-        "used_coordinate_dimensions": [1, 2],
+        "used_coordinate_dimensions": [x_dimension, y_dimension],
         "coordinate_ranges": {
-            "UMAP 1": [float(coordinates[:, 0].min()), float(coordinates[:, 0].max())],
-            "UMAP 2": [float(coordinates[:, 1].min()), float(coordinates[:, 1].max())],
+            x_label: [float(coordinates[:, 0].min()), float(coordinates[:, 0].max())],
+            y_label: [float(coordinates[:, 1].min()), float(coordinates[:, 1].max())],
         },
         "color": color_details,
         "rendering": {
@@ -473,19 +550,24 @@ def _plot_umap_impl(
     return png, details
 
 
-def umap_plot_code(*, parameters: Mapping[str, Any], details: Mapping[str, Any]) -> str:
+def embedding_plot_code(*, parameters: Mapping[str, Any], details: Mapping[str, Any]) -> str:
     color_details = details["color"]
     category_colors = color_details.get("category_colors")
     normalization = color_details.get("normalization")
     resolved_normalization = None
     if isinstance(normalization, Mapping):
         resolved_normalization = (normalization["vmin"], normalization["vmax"])
-    implementation = inspect.getsource(_plot_umap_impl)
+    implementation = inspect.getsource(_plot_embedding_impl)
     arguments = ",\n        ".join(
         [
             f"embedding_key={parameters['embedding_key']!r}",
-            f"color={parameters['color']!r}",
-            f"color_mode={parameters['color_mode']!r}",
+            f"x_dimension={parameters['x_dimension']!r}",
+            f"y_dimension={parameters['y_dimension']!r}",
+            f"color={color_details['target'] or ''!r}",
+            f"color_source={color_details['target_kind']!r}",
+            f"source_kind={color_details.get('expression_source', {}).get('source', 'X')!r}",
+            f"layer_name={color_details.get('expression_source', {}).get('layer_name')!r}",
+            f"color_mode={color_details['requested_mode']!r}",
             f"point_size={parameters['point_size']!r}",
             f"continuous_color_map={parameters['continuous_color_map']!r}",
             f"categorical_palette={parameters['categorical_palette']!r}",
@@ -498,8 +580,8 @@ def umap_plot_code(*, parameters: Mapping[str, Any], details: Mapping[str, Any])
     )
     return (
         f"{implementation}\n\n"
-        "def plot_umap(adata):\n"
-        "    png, _details = _plot_umap_impl(\n"
+        "def plot_embedding(adata):\n"
+        "    png, _details = _plot_embedding_impl(\n"
         "        adata,\n"
         f"        {arguments},\n"
         "    )\n"
@@ -507,8 +589,14 @@ def umap_plot_code(*, parameters: Mapping[str, Any], details: Mapping[str, Any])
     )
 
 
-def umap_embedding_provenance(adata, embedding_key: str) -> tuple[dict[str, Any], list[str]]:
-    metadata_key = "umap" if embedding_key == "X_umap" else embedding_key
+def embedding_provenance(adata, embedding_key: str) -> tuple[dict[str, Any], list[str]]:
+    draw_graph_prefix = "X_draw_graph_"
+    draw_graph_suffix = embedding_key.removeprefix(draw_graph_prefix) if embedding_key.startswith(draw_graph_prefix) else None
+    metadata_key = (
+        "draw_graph"
+        if draw_graph_suffix
+        else {"X_umap": "umap", "X_pca": "pca"}.get(embedding_key, embedding_key)
+    )
     provenance: dict[str, Any] = {
         "embedding_key": embedding_key,
         "metadata_key": metadata_key,
@@ -517,25 +605,34 @@ def umap_embedding_provenance(adata, embedding_key: str) -> tuple[dict[str, Any]
     }
     warnings: list[str] = []
     metadata = adata.uns.get(metadata_key)
-    if isinstance(metadata, Mapping) and isinstance(metadata.get("params"), Mapping):
-        params = metadata["params"]
-        provenance["scanpy_metadata_verified"] = True
-        provenance["scanpy_parameters"] = {
-            str(key): value
-            for key, value in params.items()
-            if value is None or isinstance(value, (str, bool, int, float))
-        }
+    metadata_params = metadata.get("params") if isinstance(metadata, Mapping) else None
+    if not isinstance(metadata_params, Mapping):
+        metadata_params = None
 
     openbio = adata.uns.get("openbio_singlecell")
     history = openbio.get("analysis_history") if isinstance(openbio, Mapping) else None
+    latest_draw_graph_parameters = None
     if isinstance(history, Mapping):
         for entry in reversed(list(history.values())):
-            if not isinstance(entry, Mapping) or entry.get("operation") != "umap":
+            if not isinstance(entry, Mapping):
                 continue
             parameters = entry.get("parameters")
-            if not isinstance(parameters, Mapping) or parameters.get("key_added") != embedding_key:
+            if not isinstance(parameters, Mapping):
+                continue
+            operation = entry.get("operation")
+            if operation == "force_directed_graph" and latest_draw_graph_parameters is None:
+                latest_draw_graph_parameters = parameters
+            matches = operation == "umap" and parameters.get("key_added") == embedding_key
+            if operation == "force_directed_graph" and draw_graph_suffix:
+                layout = parameters.get("layout")
+                matches = (
+                    parameters.get("key_suffix") == draw_graph_suffix
+                    and isinstance(layout, str)
+                )
+            if not matches:
                 continue
             provenance["openbio_history_verified"] = True
+            provenance["openbio_operation"] = operation
             provenance["openbio_parameters"] = {
                 str(key): value
                 for key, value in parameters.items()
@@ -544,10 +641,30 @@ def umap_embedding_provenance(adata, embedding_key: str) -> tuple[dict[str, Any]
             if isinstance(entry.get("random_seed"), int):
                 provenance["embedding_random_seed"] = int(entry["random_seed"])
             break
+    if metadata_params is not None:
+        if draw_graph_suffix is None:
+            metadata_matches = True
+        elif latest_draw_graph_parameters is None:
+            draw_graph_keys = {key for key in adata.obsm if key.startswith(draw_graph_prefix)}
+            metadata_matches = draw_graph_keys == {embedding_key} and isinstance(metadata_params.get("layout"), str)
+        else:
+            metadata_matches = (
+                provenance.get("openbio_operation") == "force_directed_graph"
+                and latest_draw_graph_parameters.get("key_suffix") == draw_graph_suffix
+                and metadata_params.get("layout") == provenance["openbio_parameters"].get("layout")
+                and metadata_params.get("layout") == latest_draw_graph_parameters.get("layout")
+            )
+        if metadata_matches:
+            provenance["scanpy_metadata_verified"] = True
+            provenance["scanpy_parameters"] = {
+                str(key): value
+                for key, value in metadata_params.items()
+                if value is None or isinstance(value, (str, bool, int, float))
+            }
     if not provenance["scanpy_metadata_verified"] and not provenance["openbio_history_verified"]:
         warnings.append(
-            f"No matching Scanpy parameters or OpenBio UMAP history were found for {embedding_key!r}; "
-            "the stored coordinates were validated but their computation provenance is unverified."
+            f"No matching stored parameters or OpenBio history were found for {embedding_key!r}; "
+            "the coordinates were validated but their embedding computation provenance is unverified."
         )
     return provenance, warnings
 
@@ -1217,10 +1334,9 @@ __all__ = [
     "MAX_MARKER_PLOT_GENES",
     "MAX_MARKER_PLOT_STAT_ROWS",
     "PNG_SIGNATURE",
-    "UMAP_LEGEND_LIMIT",
     "_marker_expression_plot_impl",
-    "_plot_umap_impl",
+    "_plot_embedding_impl",
     "marker_expression_plot_code",
-    "umap_embedding_provenance",
-    "umap_plot_code",
+    "embedding_plot_code",
+    "embedding_provenance",
 ]

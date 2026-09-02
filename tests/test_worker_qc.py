@@ -9,7 +9,7 @@ import pytest
 
 from openbio_singlecell import operations_qc  # noqa: F401 - importing registers the QC operation allowlist.
 from openbio_singlecell.artifact_codecs import ANNDATA_PAYLOAD, read_anndata, read_plot, write_anndata
-from openbio_singlecell.nodes_qc import QC_NODE_CLASSES
+from openbio_singlecell.nodes_qc import QC_NODE_CLASSES, OpenBioSingleCellQCPlots
 from openbio_singlecell.worker_protocol import (
     OperationContext,
     ProtocolError,
@@ -52,6 +52,17 @@ def _execute(
         request_id=context.request_id,
     )
     return execute_request(request, context).outputs
+
+
+def test_qc_plots_schema_exposes_overview_and_grouped_views():
+    schema = OpenBioSingleCellQCPlots.define_schema()
+
+    assert [item.id for item in schema.inputs] == ["adata", "view", "source"]
+    view = schema.inputs[1]
+    assert [option.key for option in view.options] == ["overview", "grouped"]
+    assert [item.id for item in view.options[0].inputs] == []
+    assert [item.id for item in view.options[1].inputs] == ["groupby"]
+    assert view.options[1].inputs[0].default == "sample"
 
 
 def test_calculate_qc_publishes_new_anndata_without_mutating_input(tmp_path: Path, science):
@@ -208,7 +219,10 @@ def test_qc_plots_publishes_png_artifact_from_selected_source(tmp_path: Path, sc
         _context(tmp_path / "plots.partial"),
         "openbio.node.qcplots",
         {"adata": _artifact_descriptor(input_root)},
-        {"source": {"source": "layer", "source_layer": "counts"}},
+        {
+            "view": {"view": "overview"},
+            "source": {"source": "layer", "source_layer": "counts"},
+        },
     )
 
     assert records[0] == {
@@ -224,6 +238,7 @@ def test_qc_plots_publishes_png_artifact_from_selected_source(tmp_path: Path, sc
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
     assert plot_metadata["kind"] == "plot"
     summary = records[1]["value"]["summary"]
+    assert summary["parameters"]["view"] == {"view": "overview"}
     assert summary["key_results"]["distributions"]["total_expression"]["median"] == 15.0
     assert set(summary["key_results"]["metric_sources"].values()) == {"AnnData layer 'counts'"}
     compile(records[2]["value"], "<qc-plots-code>", "exec")
@@ -242,7 +257,7 @@ def test_qc_worker_boundary_is_strict_and_node_classes_are_schema_only(tmp_path:
             context,
             "openbio.node.qcplots",
             {"adata": descriptor},
-            {"source": {"source": "X"}},
+            {"view": {"view": "overview"}, "source": {"source": "X"}},
         )
 
     source = (Path(__file__).parents[1] / "openbio_singlecell" / "operations_qc.py").read_text(encoding="utf-8")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import math
 import time
+from collections.abc import Mapping
 from textwrap import dedent
 from typing import TYPE_CHECKING, Any
 
@@ -42,6 +43,8 @@ CALCULATE_QC_EXPRESSION_SOURCE = _CALCULATE_QC_SPEC
 FILTER_CELLS_EXPRESSION_SOURCE = _FILTER_CELLS_SPEC
 FILTER_GENES_EXPRESSION_SOURCE = _FILTER_GENES_SPEC
 QC_PLOTS_EXPRESSION_SOURCE = _QC_PLOTS_SPEC
+# ponytail: static PNGs are readable up to 40 groups; add pagination or an interactive renderer for larger sets.
+_QC_PLOT_MAX_GROUPS = 40
 QC_SOFTWARE_PACKAGES = ("scanpy", "anndata", "numpy", "pandas", "scipy", "matplotlib")
 SCANPY_REFERENCE = AnalysisReference(
     citation=(
@@ -1129,11 +1132,173 @@ def _derive_qc_plot_metrics(
     return total_expression, detected_genes, mitochondrial_percent, metric_sources, warnings
 
 
-def _qc_plots_code(expression: ExpressionSource) -> str:
+def _resolve_qc_plot_view(value: Mapping[str, object] | None) -> dict[str, str]:
+    if value is None:
+        return {"view": "overview"}
+    if not isinstance(value, Mapping):
+        raise TypeError("QC plot view must be a DynamicCombo value.")
+    mode = value.get("view")
+    if not isinstance(mode, str):
+        raise TypeError("QC plot view selection must be a string.")
+    mode = mode.strip()
+    if mode not in {"overview", "grouped"}:
+        raise ValueError(f"Unsupported QC plot view: {mode!r}.")
+    allowed = {"view", "groupby"} if mode == "grouped" else {"view"}
+    unknown = sorted(str(key) for key in value if key not in allowed)
+    if unknown:
+        raise ValueError(f"QC plot {mode} view received inactive or unknown parameters: {unknown!r}.")
+    if mode == "overview":
+        return {"view": mode}
+    groupby = value.get("groupby", "sample")
+    if not isinstance(groupby, str):
+        raise TypeError("QC plot groupby must be a string.")
+    groupby = groupby.strip()
+    if not groupby:
+        raise ValueError("QC plot groupby cannot be empty.")
+    return {"view": mode, "groupby": groupby}
+
+
+def _qc_plot_group_details(obs, groupby, pandas, numpy):
+    if groupby not in obs:
+        raise ValueError(f"QC plot groupby column not found in obs: {groupby!r}.")
+    groups = obs[groupby]
+    if isinstance(groups.dtype, pandas.CategoricalDtype):
+        codes = groups.cat.codes.to_numpy(copy=True)
+        categories = list(groups.cat.categories)
+    elif (
+        pandas.api.types.is_object_dtype(groups.dtype)
+        or isinstance(groups.dtype, pandas.StringDtype)
+        or pandas.api.types.is_bool_dtype(groups.dtype)
+    ):
+        categories = []
+        code_by_identity = {}
+        codes = numpy.empty(len(groups), dtype=int)
+        for row, value in enumerate(groups.tolist()):
+            missing = pandas.isna(value)
+            if not isinstance(missing, (bool, numpy.bool_)) or bool(missing):
+                raise ValueError(f"QC plot obs[{groupby!r}] contains missing group labels.")
+            identity = (type(value).__module__, type(value).__qualname__, repr(value))
+            if identity not in code_by_identity:
+                code_by_identity[identity] = len(categories)
+                categories.append(value)
+            codes[row] = code_by_identity[identity]
+    else:
+        raise TypeError(f"QC plot obs[{groupby!r}] must be categorical, boolean, or string-like.")
+    if bool((codes < 0).any()):
+        raise ValueError(f"QC plot obs[{groupby!r}] contains missing group labels.")
+    if isinstance(groups.dtype, pandas.CategoricalDtype):
+        declared_counts = numpy.bincount(codes, minlength=len(categories))
+        represented = numpy.flatnonzero(declared_counts)
+        remapped = numpy.full(len(categories), -1, dtype=int)
+        remapped[represented] = numpy.arange(represented.size)
+        codes = remapped[codes]
+        categories = [categories[index] for index in represented]
+        counts = declared_counts[represented]
+    else:
+        counts = numpy.bincount(codes, minlength=len(categories))
+    labels = []
+    for original in categories:
+        value = original.item() if isinstance(original, numpy.generic) else original
+        if isinstance(value, float) and not numpy.isfinite(value):
+            raise ValueError(f"QC plot obs[{groupby!r}] contains non-finite group labels.")
+        if not isinstance(value, (str, bool, int, float)):
+            raise TypeError(f"QC plot obs[{groupby!r}] group labels must be scalar strings or finite numbers.")
+        labels.append(str(value).strip())
+    if any(not label for label in labels):
+        raise ValueError(f"QC plot obs[{groupby!r}] contains blank group labels.")
+    if len(set(labels)) != len(labels):
+        raise ValueError(f"QC plot obs[{groupby!r}] contains labels that collide after string conversion.")
+    if len(labels) > _QC_PLOT_MAX_GROUPS:
+        raise ValueError(
+            f"QC grouped plot supports at most {_QC_PLOT_MAX_GROUPS} visible groups; "
+            f"obs[{groupby!r}] contains {len(labels)}."
+        )
+    ordered_rows = numpy.argsort(codes, kind="stable")
+    positions = numpy.split(ordered_rows, numpy.cumsum(counts)[:-1])
+    return labels, positions, {label: int(count) for label, count in zip(labels, counts, strict=True)}
+
+
+def _qc_plot_figure(
+    total_expression,
+    detected_genes,
+    mitochondrial_percent,
+    view,
+    groupby,
+    group_labels,
+    group_positions,
+    Figure,
+    numpy,
+):
+    if not numpy.isfinite(total_expression).any() or not numpy.isfinite(detected_genes).any():
+        raise ValueError("QC plots require at least one finite total-expression and detected-gene value.")
+    if view == "overview":
+        figure = Figure(figsize=(10, 7), constrained_layout=True)
+        axes = figure.subplots(2, 2)
+        axes[0, 0].hist(total_expression[numpy.isfinite(total_expression)], bins=40, color="#246bfe")
+        axes[0, 0].set_title("Total expression per cell")
+        axes[0, 1].hist(detected_genes[numpy.isfinite(detected_genes)], bins=40, color="#17a673")
+        axes[0, 1].set_title("Genes detected per cell")
+        finite = numpy.isfinite(total_expression) & numpy.isfinite(detected_genes)
+        axes[1, 0].scatter(total_expression[finite], detected_genes[finite], s=8, alpha=0.6, color="#6f4bf2")
+        axes[1, 0].set_xlabel("Total expression")
+        axes[1, 0].set_ylabel("Genes detected")
+        if mitochondrial_percent is None:
+            axes[1, 1].text(0.5, 0.5, "Mitochondrial metric unavailable", ha="center", va="center")
+            axes[1, 1].set_axis_off()
+        else:
+            finite = numpy.isfinite(total_expression) & numpy.isfinite(mitochondrial_percent)
+            axes[1, 1].scatter(
+                total_expression[finite],
+                mitochondrial_percent[finite],
+                s=8,
+                alpha=0.6,
+                color="#e45d3a",
+            )
+            axes[1, 1].set_xlabel("Total expression")
+            axes[1, 1].set_ylabel("Mitochondrial expression (%)")
+        return figure
+
+    metrics = [
+        ("Total expression", total_expression, "#246bfe"),
+        ("Genes detected", detected_genes, "#17a673"),
+    ]
+    if mitochondrial_percent is not None:
+        metrics.append(("Mitochondrial expression (%)", mitochondrial_percent, "#e45d3a"))
+    figure = Figure(figsize=(max(8, 4 * len(metrics)), 4.5), constrained_layout=True)
+    axes = figure.subplots(1, len(metrics), squeeze=False)[0]
+    tick_positions = numpy.arange(1, len(group_labels) + 1)
+    for axis, (label, values, color) in zip(axes, metrics, strict=True):
+        datasets = []
+        positions = []
+        for position, selected in zip(tick_positions, group_positions, strict=True):
+            finite = values[selected]
+            finite = finite[numpy.isfinite(finite)]
+            if finite.size:
+                datasets.append(finite)
+                positions.append(position)
+        if datasets:
+            parts = axis.violinplot(datasets, positions=positions, showmedians=True)
+            for body in parts["bodies"]:
+                body.set_facecolor(color)
+                body.set_edgecolor(color)
+                body.set_alpha(0.75)
+        axis.set_title(f"{label} by {groupby}")
+        axis.set_xlabel(groupby)
+        axis.set_ylabel(label)
+        axis.set_xticks(tick_positions, group_labels, rotation=30, ha="right")
+    return figure
+
+
+def _qc_plots_code(expression: ExpressionSource, view: Mapping[str, str]) -> str:
     matrix_code = _expression_matrix_code(expression)
     layer_argument = repr(expression.layer_name) if expression.kind == "layer" else "None"
     use_raw = expression.kind == "raw"
-    helper_source = dedent(inspect.getsource(_qc_plot_metric_values)).strip()
+    mode = view["view"]
+    groupby = view.get("groupby")
+    helper_source = "\n\n".join(
+        dedent(inspect.getsource(helper)).strip()
+        for helper in (_qc_plot_metric_values, _qc_plot_group_details, _qc_plot_figure)
+    )
     implementation = dedent(
         f"""
         def qc_plots(adata):
@@ -1152,48 +1317,36 @@ def _qc_plots_code(expression: ExpressionSource) -> str:
                 np,
                 sparse,
             )
-            mitochondrial_total_expression = total_expression if mitochondrial_percent is not None else None
             if mitochondrial_percent is not None and not np.isfinite(mitochondrial_percent).any():
                 mitochondrial_percent = None
-                mitochondrial_total_expression = None
-
-            if not np.isfinite(total_expression).any() or not np.isfinite(detected_genes).any():
-                raise ValueError("QC plots require at least one finite total-expression and detected-gene value.")
-
-            figure = Figure(figsize=(10, 7), constrained_layout=True)
-            axes = figure.subplots(2, 2)
-            axes[0, 0].hist(total_expression[np.isfinite(total_expression)], bins=40, color="#246bfe")
-            axes[0, 0].set_title("Total expression per cell")
-            axes[0, 1].hist(detected_genes[np.isfinite(detected_genes)], bins=40, color="#17a673")
-            axes[0, 1].set_title("Genes detected per cell")
-            finite = np.isfinite(total_expression) & np.isfinite(detected_genes)
-            axes[1, 0].scatter(total_expression[finite], detected_genes[finite], s=8, alpha=0.6, color="#6f4bf2")
-            axes[1, 0].set_xlabel("Total expression")
-            axes[1, 0].set_ylabel("Genes detected")
-            if mitochondrial_percent is None:
-                axes[1, 1].text(0.5, 0.5, "Mitochondrial metric unavailable", ha="center", va="center")
-                axes[1, 1].set_axis_off()
-            else:
-                finite = np.isfinite(mitochondrial_total_expression) & np.isfinite(mitochondrial_percent)
-                axes[1, 1].scatter(
-                    mitochondrial_total_expression[finite],
-                    mitochondrial_percent[finite],
-                    s=8,
-                    alpha=0.6,
-                    color="#e45d3a",
-                )
-                axes[1, 1].set_xlabel("Total expression")
-                axes[1, 1].set_ylabel("Mitochondrial expression (%)")
-            return figure
+            group_labels = None
+            group_positions = None
+            if {mode!r} == "grouped":
+                group_labels, group_positions, _ = _qc_plot_group_details(adata.obs, {groupby!r}, pd, np)
+            return _qc_plot_figure(
+                total_expression,
+                detected_genes,
+                mitochondrial_percent,
+                {mode!r},
+                {groupby!r},
+                group_labels,
+                group_positions,
+                Figure,
+                np,
+            )
         """
     ).strip()
-    imports = "import numpy as np\nfrom matplotlib.figure import Figure\nfrom scipy import sparse"
+    imports = (
+        "import numpy as np\nimport pandas as pd\nfrom matplotlib.figure import Figure\nfrom scipy import sparse\n"
+        f"_QC_PLOT_MAX_GROUPS = {_QC_PLOT_MAX_GROUPS!r}"
+    )
     return "\n\n".join((imports, helper_source, implementation))
 
 
 def qc_plots_owned(
     adata: Any,
     *,
+    view: Mapping[str, object] | None = None,
     source: DynamicExpressionSource | None = None,
 ) -> tuple[Any, Any, str]:
     parameters: dict[str, JSONValue] = {"source": source}
@@ -1202,6 +1355,9 @@ def qc_plots_owned(
     if cells == 0 or genes == 0:
         raise ValueError("QC plots require at least one cell and one gene.")
 
+    resolved_view = _resolve_qc_plot_view(view)
+    view_mode = resolved_view["view"]
+    groupby = resolved_view.get("groupby")
     expression = QC_PLOTS_EXPRESSION_SOURCE.resolve(adata, _source_parameter(parameters))
     source_label = _expression_source_label(expression)
     matrix = expression.matrix(adata)
@@ -1211,15 +1367,23 @@ def qc_plots_owned(
         source_var,
         source_label,
     )
-    mito_total_counts = total_counts if pct_mt is not None else None
     science = dependencies.require_scientific_dependencies()
+    group_labels = None
+    group_positions = None
+    group_cell_counts = None
+    if groupby is not None:
+        group_labels, group_positions, group_cell_counts = _qc_plot_group_details(
+            adata.obs,
+            groupby,
+            science.pd,
+            science.np,
+        )
 
     if pct_mt is not None:
         finite_pct_mt = science.np.isfinite(pct_mt)
         finite_pct_count = int(finite_pct_mt.sum())
         if finite_pct_count == 0:
             pct_mt = None
-            mito_total_counts = None
             metric_sources.pop("mitochondrial_percent", None)
             metric_sources.pop("mitochondrial_panel_total_expression", None)
             warnings.append(
@@ -1231,42 +1395,34 @@ def qc_plots_owned(
                 "from the mitochondrial panel and its distribution summary."
             )
 
-    figure = science.Figure(figsize=(10, 7), constrained_layout=True)
-    axes = figure.subplots(2, 2)
     finite_total = total_counts[science.np.isfinite(total_counts)]
     finite_detected = detected[science.np.isfinite(detected)]
     if finite_total.size == 0 or finite_detected.size == 0:
         raise ValueError("QC plots require at least one finite total-expression and detected-gene value.")
     if finite_total.size != cells or finite_detected.size != cells:
         warnings.append("Non-finite QC observations were omitted from the affected plot panels.")
-    axes[0, 0].hist(finite_total, bins=40, color="#246bfe")
-    axes[0, 0].set_title("Total expression per cell")
-    axes[0, 1].hist(finite_detected, bins=40, color="#17a673")
-    axes[0, 1].set_title("Genes detected per cell")
-    finite_pair = science.np.isfinite(total_counts) & science.np.isfinite(detected)
-    axes[1, 0].scatter(total_counts[finite_pair], detected[finite_pair], s=8, alpha=0.6, color="#6f4bf2")
-    axes[1, 0].set_xlabel("Total expression")
-    axes[1, 0].set_ylabel("Genes detected")
-    if pct_mt is None:
-        axes[1, 1].text(0.5, 0.5, "Mitochondrial metric unavailable", ha="center", va="center")
-        axes[1, 1].set_axis_off()
-    else:
-        finite_mito = science.np.isfinite(mito_total_counts) & science.np.isfinite(pct_mt)
-        axes[1, 1].scatter(
-            mito_total_counts[finite_mito],
-            pct_mt[finite_mito],
-            s=8,
-            alpha=0.6,
-            color="#e45d3a",
-        )
-        axes[1, 1].set_xlabel("Total expression")
-        axes[1, 1].set_ylabel("Mitochondrial expression (%)")
+    figure = _qc_plot_figure(
+        total_counts,
+        detected,
+        pct_mt,
+        view_mode,
+        groupby,
+        group_labels,
+        group_positions,
+        science.Figure,
+        science.np,
+    )
     png = figure_to_png(figure)
+    plot_parameters = {"view": resolved_view, **expression.parameters()}
     result = make_plot_result(
         title="Quality control plots",
         operation="qc_plots",
-        parameters=expression.parameters(),
-        description="Cell count, feature, and mitochondrial quality metrics.",
+        parameters=plot_parameters,
+        description=(
+            "Cell count, feature, and mitochondrial quality metrics."
+            if view_mode == "overview"
+            else f"Cell-level quality metric distributions grouped by obs[{groupby!r}]."
+        ),
         warnings=warnings,
         input_cells=cells,
         input_genes=genes,
@@ -1287,15 +1443,51 @@ def qc_plots_owned(
         if mito_median is not None
         else " Mitochondrial evidence was unavailable and its panel was omitted."
     )
+    if view_mode == "overview":
+        panels = [
+            "total_expression_histogram",
+            "detected_genes_histogram",
+            "total_expression_vs_detected_genes",
+            *(("total_expression_vs_mitochondrial_percent",) if pct_mt is not None else ()),
+        ]
+        grouped_results = {}
+        methods = (
+            "Cell-level total expression, detected-gene counts, and mitochondrial percentage were visualized as "
+            f"distributions and pairwise QC scatter plots. Every metric was derived atomically from {source_label}; "
+            "pre-existing observation-level QC columns were not used as an unverified cache."
+        )
+    else:
+        panels = [
+            "total_expression_by_group",
+            "detected_genes_by_group",
+            *(("mitochondrial_percent_by_group",) if pct_mt is not None else ()),
+        ]
+        group_distributions = {}
+        for label, selected in zip(group_labels, group_positions, strict=True):
+            group_distributions[label] = {
+                "total_expression": summarize_numeric(total_counts[selected]),
+                "detected_genes": summarize_numeric(detected[selected]),
+            }
+            if pct_mt is not None:
+                group_distributions[label]["mitochondrial_percent"] = summarize_numeric(pct_mt[selected])
+        grouped_results = {
+            "view": view_mode,
+            "groupby": groupby,
+            "group_order": group_labels,
+            "group_cell_counts": group_cell_counts,
+            "group_distributions": group_distributions,
+        }
+        methods = (
+            "Cell-level total expression, detected-gene counts, and available mitochondrial percentages were "
+            f"visualized as grouped violin distributions over categorical obs[{groupby!r}]. Every metric was "
+            f"derived atomically from {source_label}; pre-existing observation-level QC columns were not used as "
+            "an unverified cache."
+        )
     report, code = make_analysis_report(
         node_id="OpenBioSingleCellQCPlots",
         title="QC plot summary",
         operation="qc_plots_report",
-        methods=(
-            "Cell-level total expression, detected-gene counts, and mitochondrial percentage were visualized as "
-            f"distributions and pairwise QC scatter plots. Every metric was derived atomically from {source_label}; "
-            "pre-existing observation-level QC columns were not used as an unverified cache."
-        ),
+        methods=methods,
         results=(
             f"The plot summarizes {cells:,} cells and {genes:,} genes. Median total expression was "
             f"{_display_number(total_median)} and the median number of detected genes was "
@@ -1307,14 +1499,10 @@ def qc_plots_owned(
             "source_features": int(matrix.shape[1]),
             "metric_sources": metric_sources,
             "distributions": distributions,
-            "panels": [
-                "total_expression_histogram",
-                "detected_genes_histogram",
-                "total_expression_vs_detected_genes",
-                *(("total_expression_vs_mitochondrial_percent",) if pct_mt is not None else ()),
-            ],
+            "panels": panels,
+            **grouped_results,
         },
-        parameters=expression.parameters(),
+        parameters=plot_parameters,
         references=(SCANPY_REFERENCE, SCATER_REFERENCE, MITO_QC_REFERENCE),
         software_packages=QC_SOFTWARE_PACKAGES,
         warnings=warnings,
@@ -1322,7 +1510,7 @@ def qc_plots_owned(
         input_cells=cells,
         input_genes=genes,
         started_at=started_at,
-        code=_qc_plots_code(expression),
+        code=_qc_plots_code(expression, resolved_view),
     )
     return result, report, code
 
@@ -1335,7 +1523,7 @@ def qc_plots(
 ) -> list[JSONValue]:
     operation = "QC Plots"
     require_input_names(inputs, {"adata"}, operation=operation)
-    require_parameters(parameters, {"source"}, operation=operation)
+    require_parameters(parameters, {"source", "view"}, operation=operation)
     result, report, code = qc_plots_owned(read_anndata_input(inputs), **parameters)
     return analysis_outputs(report, code, write_plot_output(context, result, kind=PLOT_KIND))
 

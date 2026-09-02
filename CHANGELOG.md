@@ -2,9 +2,13 @@
 
 ## Unreleased
 
+- Complete the core AnnData plotting path with Sample-level composition bars, flavor-aware HVG diagnostics, PCA
+  explained and cumulative variance, grouped QC distributions, and a general stored-embedding renderer that colors
+  cells by observation metadata or one explicitly selected expression-source gene. Grouped gene-expression plots
+  retain their existing dot, matrix, track, and violin modes under a clearer display name.
 - Make the public surface current-only: remove eight retired or compatibility-only nodes, all hidden direct-call
   parameter aliases, the `ora` installation-extra alias, old analysis-history readers, incomplete scVI artifact
-  provenance defaults, and automatic browser-side workflow migration. The registry now contains exactly 94
+  provenance defaults, and automatic browser-side workflow migration. The registry now contains exactly 99
   non-deprecated nodes; saved graphs and process-local artifacts must match their current schemas.
 - Make result previews and H5AD/CSV/PNG output adapters failure-atomic. PNGs are fully decoded before publication,
   H5AD files are reopened to verify shape and axis identity, CSV files preserve explicit row-index identity, and

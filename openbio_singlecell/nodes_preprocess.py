@@ -9,7 +9,7 @@ from .expression_source import (
     _PEARSON_RESIDUAL_SPEC,
     _SCALE_SPEC,
 )
-from .node_types import AnnDataType, analysis_outputs
+from .node_types import AnnDataType, PlotResultType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/preprocessing"
 
@@ -132,6 +132,18 @@ class OpenBioSingleCellHighlyVariableGenes(io.ComfyNode):
         )
 
 
+class OpenBioSingleCellHVGSelectionPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellHVGSelectionPlot",
+            display_name="HVG Selection Plot",
+            category=CATEGORY,
+            inputs=[AnnDataType.Input("adata")],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
 class OpenBioSingleCellScale(io.ComfyNode):
     EXPRESSION_SOURCE = _SCALE_SPEC
 
@@ -162,5 +174,6 @@ PREPROCESS_NODE_CLASSES = [
     OpenBioSingleCellNormalizeToLayer,
     OpenBioSingleCellPearsonResidualsToLayer,
     OpenBioSingleCellHighlyVariableGenes,
+    OpenBioSingleCellHVGSelectionPlot,
     OpenBioSingleCellScale,
 ]

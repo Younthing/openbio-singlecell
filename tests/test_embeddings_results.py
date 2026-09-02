@@ -8,7 +8,7 @@ from openbio_singlecell.contracts import ensure_metadata
 from openbio_singlecell.marker_evidence import MARKER_COLUMNS
 from openbio_singlecell.operations_embedding import leiden, neighbors, pca, umap
 from openbio_singlecell.operations_preprocess import highly_variable_genes, normalize_to_layer
-from openbio_singlecell.operations_results import marker_genes_owned, umap_plot_owned
+from openbio_singlecell.operations_results import embedding_plot_owned, marker_genes_owned
 from tests.artifact_operation_harness import run_anndata_operation
 
 
@@ -244,7 +244,7 @@ def test_marker_preconditions_are_clear(adata):
         )
 
 
-def test_umap_plot_is_read_only_for_categorical_and_numeric_colors(adata, science):
+def test_embedding_plot_is_read_only_for_categorical_and_numeric_colors(adata, science):
     adata.obsm["X_umap"] = science.np.arange(adata.n_obs * 2, dtype=float).reshape(adata.n_obs, 2)
     adata.obs["score"] = science.np.linspace(0.0, 1.0, adata.n_obs)
     snapshot_x = dense(adata.X, science).copy()
@@ -252,9 +252,23 @@ def test_umap_plot_is_read_only_for_categorical_and_numeric_colors(adata, scienc
     snapshot_uns = copy.deepcopy(adata.uns)
 
     categorical = output_value(
-        umap_plot_owned(adata, "X_umap", "group", "auto", 8.0, "viridis")
+        embedding_plot_owned(
+            adata,
+            embedding_key="X_umap",
+            color={"color": "obs", "obs_key": "group", "color_mode": "auto"},
+            point_size=8.0,
+            continuous_color_map="viridis",
+        )
     )
-    numeric = output_value(umap_plot_owned(adata, "X_umap", "score", "auto", 8.0, "viridis"))
+    numeric = output_value(
+        embedding_plot_owned(
+            adata,
+            embedding_key="X_umap",
+            color={"color": "obs", "obs_key": "score", "color_mode": "auto"},
+            point_size=8.0,
+            continuous_color_map="viridis",
+        )
+    )
 
     assert categorical.kind == "plot" and categorical.png
     assert numeric.kind == "plot" and numeric.png
@@ -263,14 +277,32 @@ def test_umap_plot_is_read_only_for_categorical_and_numeric_colors(adata, scienc
     assert adata.uns == snapshot_uns
 
 
-def test_umap_plot_preconditions_are_clear(adata, science):
+def test_embedding_plot_preconditions_are_clear(adata, science):
     with pytest.raises(ValueError, match="coordinates not found"):
-        umap_plot_owned(adata, "X_umap", "group", "auto", 8.0, "viridis")
+        embedding_plot_owned(
+            adata,
+            embedding_key="X_umap",
+            color={"color": "obs", "obs_key": "group", "color_mode": "auto"},
+            point_size=8.0,
+            continuous_color_map="viridis",
+        )
 
     adata.obsm["X_umap"] = science.np.ones((adata.n_obs, 1))
     with pytest.raises(ValueError, match="shape exactly"):
-        umap_plot_owned(adata, "X_umap", "group", "auto", 8.0, "viridis")
+        embedding_plot_owned(
+            adata,
+            embedding_key="X_umap",
+            color={"color": "obs", "obs_key": "group", "color_mode": "auto"},
+            point_size=8.0,
+            continuous_color_map="viridis",
+        )
 
     adata.obsm["X_umap"] = science.np.ones((adata.n_obs, 2))
     with pytest.raises(ValueError, match="color column not found"):
-        umap_plot_owned(adata, "X_umap", "missing", "auto", 8.0, "viridis")
+        embedding_plot_owned(
+            adata,
+            embedding_key="X_umap",
+            color={"color": "obs", "obs_key": "missing", "color_mode": "auto"},
+            point_size=8.0,
+            continuous_color_map="viridis",
+        )

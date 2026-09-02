@@ -62,6 +62,7 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellNormalizeToLayer",
     "OpenBioSingleCellPearsonResidualsToLayer",
     "OpenBioSingleCellHighlyVariableGenes",
+    "OpenBioSingleCellHVGSelectionPlot",
     "OpenBioSingleCellScale",
     "OpenBioSingleCellCNMFRankSurvey",
     "OpenBioSingleCellCNMF",
@@ -69,6 +70,7 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellSCVIIntegration",
     "OpenBioSingleCellLeidenResolutionSweep",
     "OpenBioSingleCellPCA",
+    "OpenBioSingleCellPCAVariancePlot",
     "OpenBioSingleCellNeighbors",
     "OpenBioSingleCellUMAP",
     "OpenBioSingleCellTSNE",
@@ -102,6 +104,7 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellPseudobulkDESeq2",
     "OpenBioSingleCellSCVIDifferentialExpression",
     "OpenBioSingleCellSampleCompositionSummary",
+    "OpenBioSingleCellSampleCompositionPlot",
     "OpenBioSingleCellSchistNestedModel",
     "OpenBioSingleCellMiloDifferentialAbundance",
     "OpenBioSingleCellSccodaDifferentialComposition",
@@ -186,7 +189,7 @@ def test_input_extension_loads():
     assert isinstance(extension, OpenBioSingleCellExtension)
     node_ids = [node.GET_SCHEMA().node_id for node in NODE_CLASSES]
     schemas = [node.GET_SCHEMA() for node in NODE_CLASSES]
-    assert len(node_ids) == 96
+    assert len(node_ids) == 99
     assert len(node_ids) == len(set(node_ids))
     assert set(node_ids) == EXPECTED_NODE_IDS
     assert REMOVED_NODE_IDS.isdisjoint(node_ids)
@@ -203,21 +206,21 @@ def test_input_extension_loads():
         "openbio/single-cell/diagnostics": 3,
         "openbio/single-cell/differential-abundance": 4,
         "openbio/single-cell/differential-expression": 4,
-        "openbio/single-cell/dimension-reduction": 5,
+        "openbio/single-cell/dimension-reduction": 6,
         "openbio/single-cell/enrichment": 10,
         "openbio/single-cell/factorization": 2,
         "openbio/single-cell/input": 4,
         "openbio/single-cell/lineage": 4,
         "openbio/single-cell/marker-evidence": 2,
         "openbio/single-cell/output": 5,
-        "openbio/single-cell/preprocessing": 6,
+        "openbio/single-cell/preprocessing": 7,
         "openbio/single-cell/qc": 4,
         "openbio/single-cell/regulatory": 6,
         "openbio/single-cell/runtime": 1,
         "openbio/single-cell/study": 1,
         "openbio/single-cell/trajectory": 3,
         "openbio/single-cell/velocity": 7,
-        "openbio/single-cell/visualization": 2,
+        "openbio/single-cell/visualization": 3,
     }
     assert asyncio.run(extension.get_node_list()) == NODE_CLASSES
 
@@ -363,6 +366,11 @@ def test_node_outputs_use_only_their_concrete_public_contracts():
             ("summary", SummaryResultType.io_type),
             ("code", "STRING"),
         ],
+        "OpenBioSingleCellHVGSelectionPlot": [
+            ("plot", PlotResultType.io_type),
+            ("summary", SummaryResultType.io_type),
+            ("code", "STRING"),
+        ],
         "OpenBioSingleCellScale": [
             ("adata", AnnDataType.io_type),
             ("summary", SummaryResultType.io_type),
@@ -405,6 +413,11 @@ def test_node_outputs_use_only_their_concrete_public_contracts():
         ],
         "OpenBioSingleCellPCA": [
             ("adata", AnnDataType.io_type),
+            ("summary", SummaryResultType.io_type),
+            ("code", "STRING"),
+        ],
+        "OpenBioSingleCellPCAVariancePlot": [
+            ("plot", PlotResultType.io_type),
             ("summary", SummaryResultType.io_type),
             ("code", "STRING"),
         ],
@@ -548,6 +561,11 @@ def test_node_outputs_use_only_their_concrete_public_contracts():
         ],
         "OpenBioSingleCellSampleCompositionSummary": [
             ("table", TableResultType.io_type),
+            ("summary", SummaryResultType.io_type),
+            ("code", "STRING"),
+        ],
+        "OpenBioSingleCellSampleCompositionPlot": [
+            ("plot", PlotResultType.io_type),
             ("summary", SummaryResultType.io_type),
             ("code", "STRING"),
         ],

@@ -426,7 +426,10 @@ def test_clustering_template_preserves_counts_and_uses_a_layer_aware_pipeline():
     assert _widgets(workflow, "OpenBioSingleCellMarkerGenes")["layer_name"] == "log1p_norm"
     assert _widgets(workflow, "OpenBioSingleCellUMAPPlot") == {
         "embedding_key": "X_umap",
-        "color": "leiden",
+        "x_dimension": 1,
+        "y_dimension": 2,
+        "color": "obs",
+        "obs_key": "leiden",
         "color_mode": "auto",
         "point_size": 10.0,
         "continuous_color_map": "viridis",
@@ -514,6 +517,16 @@ def test_composition_template_fans_out_the_demo_study_parameters_as_strings():
         assert output["links"] == []
 
     composition = _node(workflow, "OpenBioSingleCellSampleCompositionSummary")
+    composition_plot = _node(workflow, "OpenBioSingleCellSampleCompositionPlot")
+    assert composition_plot["widgets_values_named"] == {"value": "proportion"}
+    _assert_node_link(
+        workflow,
+        composition,
+        "table",
+        composition_plot,
+        "table",
+        "OPENBIO_SINGLE_CELL_TABLE",
+    )
     connected_names = {"sample_key", "condition_key", "annotation_key"}
     linked_widgets = {item["name"]: item["widget"] for item in composition["inputs"] if item["name"] in connected_names}
     assert linked_widgets == {name: {"name": name} for name in connected_names}

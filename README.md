@@ -178,7 +178,8 @@ Open one of the five production starting-point templates in `example_workflows`:
   matrix merely to reach PCA.
 - `Sample Composition Comparison.json` loads AnnData that already contains sample metadata and fans reusable
   Sample, Condition, and annotation strings into one descriptive Sample Composition Summary node. Its complete
-  Sample-by-population table and report can be previewed, and the table can be exported.
+  Sample-by-population table drives a stacked proportion plot, preview, PNG export, CSV export, and report without
+  aggregating cells into a Condition-level pseudo-replicate.
 - `scVI Batch Integration and Contrast.json` trains scVI from raw counts in `adata.X`, constructs neighbors
   from `X_scVI`, visualizes the integrated embedding, and passes its native session-only model artifact to scVI
   differential expression instead of retraining it.
@@ -359,9 +360,15 @@ and a working local database connection.
   exact ordered tested-gene universe. Filter Marker Genes accepts only that direct pair; rerun filtering from the
   original ranking instead of chaining filters. These are exploratory Cluster marker results, not Sample-level
   Condition inference.
-- UMAP Plot and Marker Expression Plot are read-only renderers. They report the actual embedding dimensions,
-  expression source, missing-value handling, package versions, and plot-specific method; marker plots copy only
-  selected genes and grouping metadata. Seeded violin jitter is isolated from NumPy's global random state.
+- Embedding Plot and Grouped Gene Expression Plot are read-only renderers. Embedding Plot reads a selected pair of
+  dimensions from any validated stored embedding and colors cells by one observation column or one gene from an
+  explicit expression source. Grouped Gene Expression Plot retains dot, matrix, track, and violin modes and copies
+  only selected genes and grouping metadata. Both report missing-value handling and resolved plot semantics; seeded
+  violin jitter is isolated from NumPy's global random state.
+- Sample Composition Plot renders the canonical complete Sample-by-annotation table as stacked proportions or cell
+  counts while keeping Condition as grouping metadata rather than an inference unit. HVG Selection Plot reads the
+  stored flavor-specific selection evidence, PCA Variance Plot reads stored explained variance without recomputing
+  PCA, and QC Plots can render either the existing overview or source-coherent distributions by one observation group.
 - CellTypist Annotation produces provisional per-cell model labels and score evidence from an explicitly verified
   count or CP10K/log1p source. A selected model must already exist locally; execution does not enumerate or download
   the model catalog. Marker ORA Evidence consumes a direct filtered-marker table plus its pinned universe and an

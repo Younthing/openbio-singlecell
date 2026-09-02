@@ -7,11 +7,11 @@ from pathlib import Path
 from openbio_singlecell.artifact_codecs import ANNDATA_PAYLOAD, read_plot, read_table, write_anndata
 from openbio_singlecell.contracts import ensure_metadata, record_history
 from openbio_singlecell.operations_results import (
+    embedding_plot,
     filter_marker_genes,
     marker_expression_plot,
     marker_genes,
     pca_metadata_associations,
-    umap_plot,
 )
 from openbio_singlecell.worker_protocol import OperationContext, WorkerResponse
 
@@ -154,7 +154,7 @@ def test_filter_marker_genes_operation_returns_the_original_universe_ticket_refe
     }
 
 
-def test_umap_plot_operation_writes_png_without_rewriting_input(tmp_path, science):
+def test_embedding_plot_operation_writes_png_without_rewriting_input(tmp_path, science):
     adata = _marker_adata(science)
     adata.obsm["X_umap"] = science.np.arange(12, dtype=float).reshape(6, 2)
     input_root = tmp_path / "input"
@@ -166,13 +166,14 @@ def test_umap_plot_operation_writes_png_without_rewriting_input(tmp_path, scienc
     staging.mkdir()
     context = OperationContext(staging, str(uuid.uuid4()))
 
-    records = umap_plot(
+    records = embedding_plot(
         context,
         {"adata": _artifact_descriptor(input_root)},
         {
             "embedding_key": "X_umap",
-            "color": "cluster",
-            "color_mode": "auto",
+            "x_dimension": 1,
+            "y_dimension": 2,
+            "color": {"color": "obs", "obs_key": "cluster", "color_mode": "auto"},
             "point_size": 8.0,
             "continuous_color_map": "viridis",
             "categorical_palette": "tab20",

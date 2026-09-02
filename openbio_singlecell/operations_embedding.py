@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from . import dependencies
 from .analysis_reporting import AnalysisReference, make_analysis_report, summarize_numeric
-from .analysis_utils import finish_adata
+from .analysis_utils import finish_adata, make_plot_result
 from .expression_source import _PCA_SPEC, DynamicExpressionSource, ExpressionSource
 from .graph_analysis import (
     assess_leiden_stability,
@@ -28,7 +28,9 @@ from .operations_input import (
     require_input_names,
     require_parameters,
     write_anndata_output,
+    write_plot_output,
 )
+from .pca_plotting import _pca_variance_plot_impl, pca_variance_plot_code
 from .worker_protocol import JSONValue, OperationContext, register_operation
 
 if TYPE_CHECKING:
@@ -36,6 +38,7 @@ if TYPE_CHECKING:
 
 
 SOFTWARE_PACKAGES = ("scanpy", "anndata", "numpy", "scipy", "scikit-learn")
+PLOT_KIND = "OPENBIO_SINGLE_CELL_PLOT"
 _DRAW_GRAPH_RNG_LOCK = threading.RLock()
 
 SCANPY_REFERENCE = AnalysisReference(
@@ -49,6 +52,12 @@ PCA_REFERENCE = AnalysisReference(
     doi="10.1080/14786440109462720",
     url="https://doi.org/10.1080/14786440109462720",
     kind="method",
+)
+MATPLOTLIB_REFERENCE = AnalysisReference(
+    citation="Hunter JD. Matplotlib: A 2D Graphics Environment. Computing in Science & Engineering. 2007;9:90-95.",
+    doi="10.1109/MCSE.2007.55",
+    url="https://doi.org/10.1109/MCSE.2007.55",
+    kind="software",
 )
 UMAP_REFERENCE = AnalysisReference(
     citation="McInnes L, Healy J, Melville J. UMAP: Uniform Manifold Approximation and Projection. 2018.",
@@ -749,6 +758,54 @@ class OpenBioSingleCellPCA:
             random_seed=random_seed,
         )
         return output, summary, code
+
+
+def pca_variance_plot_owned(adata: Any, n_pcs: int = 0) -> tuple[Any, Any, str]:
+    started_at = time.perf_counter()
+    png, details = _pca_variance_plot_impl(adata, n_pcs=n_pcs)
+    parameters = {"n_pcs": details["requested_n_pcs"]}
+    warnings_list = details["warnings"]
+    code = pca_variance_plot_code(n_pcs=parameters["n_pcs"])
+    plotted = make_plot_result(
+        png=png,
+        title="PCA variance",
+        operation="pca_variance_plot",
+        parameters=parameters,
+        description=(
+            f"Read-only rendering of explained and cumulative variance for "
+            f"{details['plotted_components']:,} stored principal components."
+        ),
+        warnings=warnings_list,
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellPCAVariancePlot",
+        title="PCA variance",
+        operation="pca_variance_plot",
+        methods=(
+            "Read the canonical PCA variance ratios stored in adata.uns['pca']['variance_ratio'] without "
+            "recomputing PCA, then rendered per-component bars and a cumulative curve with Matplotlib Agg."
+        ),
+        results=(
+            f"Displayed {details['plotted_components']:,} of {details['available_components']:,} stored "
+            f"components, reaching {details['cumulative_variance_ratio'][-1]:.3%} cumulative explained variance."
+        ),
+        key_results=details,
+        parameters=parameters,
+        references=[PCA_REFERENCE, MATPLOTLIB_REFERENCE],
+        software_packages=["anndata", "matplotlib", "numpy"],
+        warnings=warnings_list,
+        limitations=[
+            "Explained variance is descriptive of the stored PCA fit and does not determine biological relevance."
+        ],
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+        code=code,
+    )
+    return plotted, report, code
 
 
 class OpenBioSingleCellNeighbors:
@@ -1779,6 +1836,18 @@ def pca(context: OperationContext, inputs: dict[str, JSONValue], parameters: dic
     )
 
 
+@register_operation("openbio.node.pcavarianceplot")
+def pca_variance_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    require_input_names(inputs, {"adata"}, operation="PCA Variance Plot")
+    require_parameters(parameters, {"n_pcs"}, operation="PCA Variance Plot")
+    plotted, report, code = pca_variance_plot_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
+
+
 @register_operation("openbio.node.neighbors")
 def neighbors(
     context: OperationContext, inputs: dict[str, JSONValue], parameters: dict[str, JSONValue]
@@ -1880,4 +1949,13 @@ def leiden(
     )
 
 
-__all__ = ["force_directed_graph", "leiden", "neighbors", "pca", "tsne", "umap"]
+__all__ = [
+    "force_directed_graph",
+    "leiden",
+    "neighbors",
+    "pca",
+    "pca_variance_plot",
+    "pca_variance_plot_owned",
+    "tsne",
+    "umap",
+]

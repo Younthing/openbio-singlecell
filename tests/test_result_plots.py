@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import uuid
 from types import SimpleNamespace
 
 import pytest
 
+from openbio_singlecell.artifact_codecs import ANNDATA_PAYLOAD, read_plot, write_anndata
 from openbio_singlecell.contracts import ensure_metadata
 from openbio_singlecell.nodes_results import (
     OpenBioSingleCellMarkerExpressionPlot,
     OpenBioSingleCellUMAPPlot,
 )
-from openbio_singlecell.operations_results import marker_expression_plot_owned, umap_plot_owned
-from openbio_singlecell.result_plotting import _marker_expression_plot_impl, _plot_umap_impl
+from openbio_singlecell.operations_results import embedding_plot, embedding_plot_owned, marker_expression_plot_owned
+from openbio_singlecell.result_plotting import _marker_expression_plot_impl, _plot_embedding_impl
+from openbio_singlecell.worker_protocol import OperationContext, WorkerResponse
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -96,13 +100,16 @@ def _assert_rng_state_equal(left, right, science):
     assert left[2:] == right[2:]
 
 
-def test_plot_schemas_are_frozen_and_hide_inactive_marker_options():
-    umap = OpenBioSingleCellUMAPPlot.define_schema()
-    assert [item.id for item in umap.inputs] == [
+def test_plot_schemas_are_frozen_and_hide_inactive_options():
+    embedding = OpenBioSingleCellUMAPPlot.define_schema()
+    assert embedding.node_id == "OpenBioSingleCellUMAPPlot"
+    assert embedding.display_name == "Embedding Plot"
+    assert [item.id for item in embedding.inputs] == [
         "adata",
         "embedding_key",
+        "x_dimension",
+        "y_dimension",
         "color",
-        "color_mode",
         "point_size",
         "continuous_color_map",
         "categorical_palette",
@@ -110,18 +117,31 @@ def test_plot_schemas_are_frozen_and_hide_inactive_marker_options():
         "missing_color",
         "legend_policy",
     ]
-    assert [item.display_name for item in umap.outputs] == ["plot", "summary", "code"]
-    assert umap.inputs[1].default == "X_umap"
-    assert umap.inputs[2].default == "leiden"
-    assert umap.inputs[3].default == "auto"
-    assert umap.inputs[4].default == 10.0
-    assert umap.inputs[5].default == "viridis"
-    assert umap.inputs[6].default == "tab20"
-    assert umap.inputs[7].default is True
-    assert umap.inputs[8].default == "lightgray"
-    assert umap.inputs[9].default == "automatic"
+    assert [item.display_name for item in embedding.outputs] == ["plot", "summary", "code"]
+    assert embedding.inputs[1].default == "X_umap"
+    assert embedding.inputs[2].default == 1
+    assert embedding.inputs[3].default == 2
+    color = embedding.inputs[4]
+    assert [option.key for option in color.options] == ["obs", "gene", "none"]
+    assert [[item.id for item in option.inputs] for option in color.options] == [
+        ["obs_key", "color_mode"],
+        ["gene", "source"],
+        [],
+    ]
+    assert color.options[0].inputs[0].default == "leiden"
+    assert color.options[0].inputs[1].default == "auto"
+    gene_source = color.options[1].inputs[1]
+    assert [option.key for option in gene_source.options] == ["X", "raw", "layer"]
+    assert gene_source.options[2].inputs[0].default == "log1p_norm"
+    assert embedding.inputs[5].default == 10.0
+    assert embedding.inputs[6].default == "viridis"
+    assert embedding.inputs[7].default == "tab20"
+    assert embedding.inputs[8].default is True
+    assert embedding.inputs[9].default == "lightgray"
+    assert embedding.inputs[10].default == "automatic"
 
     marker = OpenBioSingleCellMarkerExpressionPlot.define_schema()
+    assert marker.display_name == "Grouped Gene Expression Plot"
     assert [item.id for item in marker.inputs] == [
         "adata",
         "genes",
@@ -148,7 +168,7 @@ def test_plot_schemas_are_frozen_and_hide_inactive_marker_options():
     assert marker.inputs[6].advanced is True
 
 
-def test_umap_categorical_missing_order_summary_code_and_immutability(plot_adata, science):
+def test_embedding_categorical_missing_order_summary_code_and_immutability(plot_adata, science):
     plot_adata.obs["label"] = science.pd.Categorical(
         ["beta", "alpha", None, "beta", "alpha", "beta", "alpha", "beta", "alpha", "beta", "alpha", "beta"],
         categories=["beta", "alpha"],
@@ -156,11 +176,10 @@ def test_umap_categorical_missing_order_summary_code_and_immutability(plot_adata
     )
     snapshot = plot_adata.copy()
 
-    plotted, summary, code = umap_plot_owned(
+    plotted, summary, code = embedding_plot_owned(
         plot_adata,
         embedding_key="custom_umap",
-        color="label",
-        color_mode="auto",
+        color={"color": "obs", "obs_key": "label", "color_mode": "auto"},
         point_size=7.5,
         continuous_color_map="viridis",
         categorical_palette="Set2",
@@ -177,21 +196,20 @@ def test_umap_categorical_missing_order_summary_code_and_immutability(plot_adata
     assert any("special color" in warning for warning in summary.summary["warnings"])
     assert "scipy" in summary.summary["software_versions"]
     json.dumps(summary.summary, allow_nan=False)
-    compile(code, "<umap-plot-code>", "exec")
+    compile(code, "<embedding-plot-code>", "exec")
     namespace = {}
     exec(code, namespace)
-    generated = namespace["plot_umap"](plot_adata)
+    generated = namespace["plot_embedding"](plot_adata)
     assert generated == plotted.png
     _assert_adata_unchanged(plot_adata, snapshot, science)
 
 
-def test_umap_continuous_missing_sorting_range_and_constant_disclosure(plot_adata, science):
+def test_embedding_continuous_missing_sorting_range_and_constant_disclosure(plot_adata, science):
     plot_adata.obs["score"] = [3.0, 1.0, science.np.nan, 2.0, 4.0, 5.0, 8.0, 7.0, 6.0, 0.0, 9.0, 10.0]
-    _, summary, _ = umap_plot_owned(
+    _, summary, _ = embedding_plot_owned(
         plot_adata,
         embedding_key="custom_umap",
-        color="score",
-        color_mode="continuous",
+        color={"color": "obs", "obs_key": "score", "color_mode": "continuous"},
         sort_order=True,
     )
     color = summary.summary["key_results"]["color"]
@@ -202,11 +220,10 @@ def test_umap_continuous_missing_sorting_range_and_constant_disclosure(plot_adat
     assert any("special color" in warning for warning in summary.summary["warnings"])
 
     plot_adata.obs["score"] = 2.0
-    _, constant, _ = umap_plot_owned(
+    _, constant, _ = embedding_plot_owned(
         plot_adata,
         embedding_key="custom_umap",
-        color="score",
-        color_mode="continuous",
+        color={"color": "obs", "obs_key": "score", "color_mode": "continuous"},
     )
     normalization = constant.summary["key_results"]["color"]["normalization"]
     assert normalization["vmin"] < 2.0 < normalization["vmax"]
@@ -222,7 +239,7 @@ def test_umap_continuous_missing_sorting_range_and_constant_disclosure(plot_adat
         (lambda np, n: np.ones((n, 2), dtype=bool), "real numeric"),
     ],
 )
-def test_umap_rejects_malformed_coordinates(plot_adata, science, coordinates, message):
+def test_embedding_rejects_malformed_coordinates(plot_adata, science, coordinates, message):
     proxy = SimpleNamespace(
         n_obs=plot_adata.n_obs,
         obs=plot_adata.obs,
@@ -232,10 +249,10 @@ def test_umap_rejects_malformed_coordinates(plot_adata, science, coordinates, me
         isbacked=False,
     )
     with pytest.raises((TypeError, ValueError), match=message):
-        _plot_umap_impl(proxy, embedding_key="broken", color="")
+        _plot_embedding_impl(proxy, embedding_key="broken", color="", color_source="none")
 
 
-def test_umap_rejects_coordinate_index_misalignment_and_color_identity_collisions(plot_adata, science):
+def test_embedding_rejects_coordinate_index_misalignment_and_color_identity_collisions(plot_adata, science):
     proxy = SimpleNamespace(
         n_obs=plot_adata.n_obs,
         obs=plot_adata.obs,
@@ -249,7 +266,7 @@ def test_umap_rejects_coordinate_index_misalignment_and_color_identity_collision
         isbacked=False,
     )
     with pytest.raises(ValueError, match="not exactly aligned"):
-        _plot_umap_impl(proxy, embedding_key="misaligned", color="")
+        _plot_embedding_impl(proxy, embedding_key="misaligned", color="", color_source="none")
 
     plot_adata.obs["collision"] = science.pd.Series(
         [1, "1"] * 6,
@@ -257,10 +274,16 @@ def test_umap_rejects_coordinate_index_misalignment_and_color_identity_collision
         dtype=object,
     )
     with pytest.raises(ValueError, match="collapse after string conversion"):
-        _plot_umap_impl(plot_adata, embedding_key="custom_umap", color="collision", color_mode="categorical")
+        _plot_embedding_impl(
+            plot_adata,
+            embedding_key="custom_umap",
+            color="collision",
+            color_source="obs",
+            color_mode="categorical",
+        )
 
 
-def test_umap_uses_first_two_of_three_dimensions_and_discloses_uncolored_style(plot_adata, science):
+def test_embedding_uses_first_two_of_three_dimensions_and_discloses_uncolored_style(plot_adata, science):
     plot_adata.obsm["X_umap_3d"] = science.np.column_stack(
         [
             science.np.linspace(-1.0, 1.0, plot_adata.n_obs),
@@ -268,10 +291,10 @@ def test_umap_uses_first_two_of_three_dimensions_and_discloses_uncolored_style(p
             science.np.linspace(100.0, 200.0, plot_adata.n_obs),
         ]
     )
-    plotted, summary, code = umap_plot_owned(
+    plotted, summary, code = embedding_plot_owned(
         plot_adata,
         embedding_key="X_umap_3d",
-        color="",
+        color={"color": "none"},
     )
     details = summary.summary["key_results"]
     assert details["available_coordinate_dimensions"] == 3
@@ -280,7 +303,399 @@ def test_umap_uses_first_two_of_three_dimensions_and_discloses_uncolored_style(p
     assert details["rendering"]["uncolored_point_color"] == "#246bfe"
     namespace = {}
     exec(code, namespace)
-    assert namespace["plot_umap"](plot_adata) == plotted.png
+    assert namespace["plot_embedding"](plot_adata) == plotted.png
+
+
+def test_embedding_selects_any_one_based_dimension_pair_and_replays_code(plot_adata, science):
+    plot_adata.obsm["X_pca"] = science.np.column_stack(
+        [
+            science.np.linspace(-1.0, 1.0, plot_adata.n_obs),
+            science.np.linspace(10.0, 20.0, plot_adata.n_obs),
+            science.np.linspace(100.0, 200.0, plot_adata.n_obs),
+        ]
+    )
+    snapshot = plot_adata.copy()
+
+    plotted, summary, code = embedding_plot_owned(
+        plot_adata,
+        embedding_key="X_pca",
+        x_dimension=3,
+        y_dimension=1,
+        color={"color": "none"},
+    )
+
+    details = summary.summary["key_results"]
+    assert plotted.png.startswith(PNG_SIGNATURE)
+    assert plotted.source["operation"] == "embedding_plot"
+    assert summary.source["operation"] == "embedding_plot"
+    assert details["embedding_key"] == "X_pca"
+    assert details["available_coordinate_dimensions"] == 3
+    assert details["used_coordinate_dimensions"] == [3, 1]
+    assert details["coordinate_ranges"] == {
+        "X_pca 3": [100.0, 200.0],
+        "X_pca 1": [-1.0, 1.0],
+    }
+    assert details["color"]["target_kind"] == "none"
+    assert summary.summary["parameters"]["color"] == {"color": "none"}
+    assert set(summary.summary["parameters"]) == {
+        "embedding_key",
+        "x_dimension",
+        "y_dimension",
+        "color",
+        "point_size",
+        "continuous_color_map",
+        "categorical_palette",
+        "sort_order",
+        "missing_color",
+        "legend_policy",
+    }
+    assert "dimensions 3 and 1" in summary.summary["methods"]
+    assert not any("UMAP:" in reference["citation"] for reference in summary.summary["references"])
+    assert not any("UMAP is" in limitation for limitation in summary.summary["limitations"])
+    assert any("embedding computation provenance" in warning for warning in summary.summary["warnings"])
+    json.dumps(summary.summary, allow_nan=False)
+    compile(code, "<embedding-plot-code>", "exec")
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_embedding"](plot_adata) == plotted.png
+    _assert_adata_unchanged(plot_adata, snapshot, science)
+
+
+def test_embedding_sparse_coordinates_densify_only_selected_dimensions(plot_adata, science):
+    class SelectedColumnsOnlyCSR(science.sparse.csr_matrix):
+        densified_shapes = []
+
+        def toarray(self, *args, **kwargs):
+            type(self).densified_shapes.append(self.shape)
+            if self.shape[1] != 2:
+                raise AssertionError("Embedding materialized every sparse coordinate dimension.")
+            return super().toarray(*args, **kwargs)
+
+    width = 2_048
+    rows = science.np.tile(science.np.arange(plot_adata.n_obs), 2)
+    columns = science.np.repeat([1, width - 1], plot_adata.n_obs)
+    values = science.np.concatenate(
+        [
+            science.np.linspace(-1.0, 1.0, plot_adata.n_obs),
+            science.np.linspace(100.0, 200.0, plot_adata.n_obs),
+        ]
+    )
+    plot_adata.obsm["X_wide_sparse"] = SelectedColumnsOnlyCSR(
+        science.sparse.csr_matrix((values, (rows, columns)), shape=(plot_adata.n_obs, width))
+    )
+
+    plotted, summary, _ = embedding_plot_owned(
+        plot_adata,
+        embedding_key="X_wide_sparse",
+        x_dimension=width,
+        y_dimension=2,
+        color={"color": "none"},
+    )
+
+    assert plotted.png.startswith(PNG_SIGNATURE)
+    assert SelectedColumnsOnlyCSR.densified_shapes == [(plot_adata.n_obs, 2)]
+    assert summary.summary["key_results"]["coordinate_ranges"] == {
+        f"X_wide_sparse {width}": [100.0, 200.0],
+        "X_wide_sparse 2": [-1.0, 1.0],
+    }
+
+
+def test_embedding_provenance_verifies_matching_force_directed_graph_output(plot_adata, science):
+    plot_adata.obsm["X_draw_graph_custom"] = science.np.column_stack(
+        [
+            science.np.linspace(-1.0, 1.0, plot_adata.n_obs),
+            science.np.linspace(2.0, -2.0, plot_adata.n_obs),
+        ]
+    )
+    plot_adata.uns["draw_graph"] = {"params": {"layout": "fr", "random_state": 17}}
+    history = plot_adata.uns["openbio_singlecell"]["analysis_history"]
+    history["000001"] = {
+        "operation": "force_directed_graph",
+        "parameters": {"layout": "kk", "key_suffix": "other"},
+        "random_seed": 99,
+    }
+    history["000002"] = {
+        "operation": "force_directed_graph",
+        "parameters": {"layout": "fr", "key_suffix": "custom"},
+        "random_seed": 17,
+    }
+
+    _, summary, _ = embedding_plot_owned(
+        plot_adata,
+        embedding_key="X_draw_graph_custom",
+        color={"color": "none"},
+    )
+
+    provenance = summary.summary["key_results"]["embedding_provenance"]
+    assert provenance["metadata_key"] == "draw_graph"
+    assert provenance["scanpy_metadata_verified"] is True
+    assert provenance["openbio_history_verified"] is True
+    assert provenance["openbio_operation"] == "force_directed_graph"
+    assert provenance["scanpy_parameters"]["layout"] == "fr"
+    assert provenance["openbio_parameters"] == {"layout": "fr", "key_suffix": "custom"}
+    assert provenance["embedding_random_seed"] == 17
+    assert not any("provenance is unverified" in warning for warning in summary.summary["warnings"])
+    assert "umap-learn" not in summary.summary["software_versions"]
+    assert not any("UMAP:" in reference["citation"] for reference in summary.summary["references"])
+
+
+def test_embedding_provenance_does_not_attach_latest_draw_graph_metadata_to_older_coordinates(
+    plot_adata, science
+):
+    coordinates = plot_adata.obsm["custom_umap"].to_numpy()
+    plot_adata.obsm["X_draw_graph_fr"] = coordinates
+    plot_adata.obsm["X_draw_graph_kk"] = coordinates * 2.0
+    plot_adata.uns["draw_graph"] = {"params": {"layout": "kk", "random_state": 29}}
+    history = plot_adata.uns["openbio_singlecell"]["analysis_history"]
+    history["000001"] = {
+        "operation": "force_directed_graph",
+        "parameters": {"layout": "fr", "key_suffix": "fr"},
+        "random_seed": 17,
+    }
+    history["000002"] = {
+        "operation": "force_directed_graph",
+        "parameters": {"layout": "kk", "key_suffix": "kk"},
+        "random_seed": 29,
+    }
+
+    _, old_summary, _ = embedding_plot_owned(
+        plot_adata,
+        embedding_key="X_draw_graph_fr",
+        color={"color": "none"},
+    )
+    _, latest_summary, _ = embedding_plot_owned(
+        plot_adata,
+        embedding_key="X_draw_graph_kk",
+        color={"color": "none"},
+    )
+
+    old = old_summary.summary["key_results"]["embedding_provenance"]
+    assert old["scanpy_metadata_verified"] is False
+    assert "scanpy_parameters" not in old
+    assert old["openbio_history_verified"] is True
+    assert old["openbio_parameters"] == {"layout": "fr", "key_suffix": "fr"}
+    assert old["embedding_random_seed"] == 17
+    assert not any("provenance is unverified" in warning for warning in old_summary.summary["warnings"])
+
+    latest = latest_summary.summary["key_results"]["embedding_provenance"]
+    assert latest["scanpy_metadata_verified"] is True
+    assert latest["scanpy_parameters"]["layout"] == "kk"
+    assert latest["openbio_history_verified"] is True
+    assert latest["openbio_parameters"] == {"layout": "kk", "key_suffix": "kk"}
+
+
+def test_embedding_provenance_attaches_same_layout_metadata_only_to_latest_draw_graph_run(
+    plot_adata, science
+):
+    coordinates = plot_adata.obsm["custom_umap"].to_numpy()
+    plot_adata.obsm["X_draw_graph_fr"] = coordinates
+    plot_adata.obsm["X_draw_graph_repeat"] = coordinates * 2.0
+    plot_adata.uns["draw_graph"] = {"params": {"layout": "fr", "random_state": 29}}
+    history = plot_adata.uns["openbio_singlecell"]["analysis_history"]
+    history["000001"] = {
+        "operation": "force_directed_graph",
+        "parameters": {"layout": "fr", "key_suffix": "fr"},
+        "random_seed": 17,
+    }
+    history["000002"] = {
+        "operation": "force_directed_graph",
+        "parameters": {"layout": "fr", "key_suffix": "repeat"},
+        "random_seed": 29,
+    }
+
+    _, old_summary, _ = embedding_plot_owned(
+        plot_adata,
+        embedding_key="X_draw_graph_fr",
+        color={"color": "none"},
+    )
+    _, latest_summary, _ = embedding_plot_owned(
+        plot_adata,
+        embedding_key="X_draw_graph_repeat",
+        color={"color": "none"},
+    )
+
+    old = old_summary.summary["key_results"]["embedding_provenance"]
+    assert old["scanpy_metadata_verified"] is False
+    assert "scanpy_parameters" not in old
+    assert old["openbio_history_verified"] is True
+    assert old["openbio_parameters"] == {"layout": "fr", "key_suffix": "fr"}
+    assert old["embedding_random_seed"] == 17
+
+    latest = latest_summary.summary["key_results"]["embedding_provenance"]
+    assert latest["scanpy_metadata_verified"] is True
+    assert latest["scanpy_parameters"] == {"layout": "fr", "random_state": 29}
+    assert latest["openbio_history_verified"] is True
+    assert latest["openbio_parameters"] == {"layout": "fr", "key_suffix": "repeat"}
+    assert latest["embedding_random_seed"] == 29
+
+
+def test_embedding_provenance_requires_unique_draw_graph_coordinates_without_history(plot_adata, science):
+    coordinates = plot_adata.obsm["custom_umap"].to_numpy()
+    plot_adata.obsm["X_draw_graph_custom"] = coordinates
+    plot_adata.uns["draw_graph"] = {"params": {"layout": "fr"}}
+
+    _, unique_summary, _ = embedding_plot_owned(
+        plot_adata,
+        embedding_key="X_draw_graph_custom",
+        color={"color": "none"},
+    )
+
+    unique = unique_summary.summary["key_results"]["embedding_provenance"]
+    assert unique["scanpy_metadata_verified"] is True
+    assert unique["openbio_history_verified"] is False
+    assert unique["scanpy_parameters"] == {"layout": "fr"}
+    assert not any("provenance is unverified" in warning for warning in unique_summary.summary["warnings"])
+
+    plot_adata.obsm["X_draw_graph_other"] = coordinates * 2.0
+    _, ambiguous_summary, _ = embedding_plot_owned(
+        plot_adata,
+        embedding_key="X_draw_graph_custom",
+        color={"color": "none"},
+    )
+
+    ambiguous = ambiguous_summary.summary["key_results"]["embedding_provenance"]
+    assert ambiguous["scanpy_metadata_verified"] is False
+    assert ambiguous["openbio_history_verified"] is False
+    assert "scanpy_parameters" not in ambiguous
+    assert any("provenance is unverified" in warning for warning in ambiguous_summary.summary["warnings"])
+
+
+def test_embedding_dynamic_obs_target_preserves_continuous_behavior(plot_adata, science):
+    plot_adata.obs["score"] = science.np.linspace(0.0, 1.0, plot_adata.n_obs)
+
+    plotted, summary, code = embedding_plot_owned(
+        plot_adata,
+        embedding_key="custom_umap",
+        color={"color": "obs", "obs_key": "score", "color_mode": "continuous"},
+    )
+
+    color = summary.summary["key_results"]["color"]
+    assert plotted.png.startswith(PNG_SIGNATURE)
+    assert color["target_kind"] == "obs"
+    assert color["column"] == "score"
+    assert color["effective_mode"] == "continuous"
+    assert color["observed_range"] == [0.0, 1.0]
+    assert summary.summary["parameters"]["color"] == {
+        "color": "obs",
+        "obs_key": "score",
+        "color_mode": "continuous",
+    }
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_embedding"](plot_adata) == plotted.png
+
+
+@pytest.mark.parametrize(
+    ("gene", "source", "expected_range"),
+    [
+        ("G1", {"source": "X"}, [101.0, 109.0]),
+        (
+            "G1",
+            {"source": "layer", "layer_name": "log1p_norm"},
+            [0.6931471805599453, 2.302585092994046],
+        ),
+        ("RAW_ONLY", {"source": "raw"}, [0.0, 11.0]),
+    ],
+)
+def test_embedding_gene_target_uses_exact_explicit_expression_source(
+    plot_adata, science, gene, source, expected_range
+):
+    snapshot = plot_adata.copy()
+    target = {"color": "gene", "gene": gene, "source": source}
+
+    plotted, summary, code = embedding_plot_owned(
+        plot_adata,
+        embedding_key="custom_umap",
+        color=target,
+    )
+
+    color = summary.summary["key_results"]["color"]
+    assert plotted.png.startswith(PNG_SIGNATURE)
+    assert color["target_kind"] == "gene"
+    assert color["gene"] == gene
+    assert color["expression_source"] == source
+    science.np.testing.assert_allclose(color["observed_range"], expected_range)
+    assert summary.summary["parameters"]["color"] == target
+    json.dumps(summary.summary, allow_nan=False)
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_embedding"](plot_adata) == plotted.png
+    _assert_adata_unchanged(plot_adata, snapshot, science)
+
+
+@pytest.mark.parametrize(
+    ("target", "message"),
+    [
+        ({"color": "gene", "gene": "", "source": {"source": "X"}}, "Embedding gene cannot be empty"),
+        ({"color": "obs", "obs_key": "", "color_mode": "auto"}, "Embedding obs_key cannot be empty"),
+    ],
+)
+def test_embedding_explicit_target_cannot_be_empty(plot_adata, target, message):
+    with pytest.raises(ValueError, match=message):
+        embedding_plot_owned(
+            plot_adata,
+            embedding_key="custom_umap",
+            color=target,
+        )
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        {"color": "none", "obs_key": "cluster"},
+        {"color": ["gene"]},
+    ],
+)
+def test_embedding_rejects_inactive_or_unknown_dynamic_color_fields(plot_adata, target):
+    with pytest.raises(ValueError, match="inactive or unknown"):
+        embedding_plot_owned(plot_adata, embedding_key="custom_umap", color=target)
+
+
+def test_embedding_worker_round_trips_plot_without_rewriting_anndata(tmp_path, plot_adata):
+    plot_adata.obsm["custom_umap"] = plot_adata.obsm["custom_umap"].to_numpy()
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    write_anndata(input_root, plot_adata)
+    input_path = input_root / ANNDATA_PAYLOAD
+    before = hashlib.sha256(input_path.read_bytes()).digest()
+    staging = tmp_path / "plot.partial"
+    staging.mkdir()
+    context = OperationContext(staging, str(uuid.uuid4()))
+
+    records = embedding_plot(
+        context,
+        {
+            "adata": {
+                "type": "artifact",
+                "kind": "OPENBIO_ANNDATA",
+                "codec": "anndata-h5ad-v1",
+                "path": str(input_root.resolve()),
+            }
+        },
+        {
+            "embedding_key": "custom_umap",
+            "x_dimension": 2,
+            "y_dimension": 1,
+            "color": {"color": "gene", "gene": "RAW_ONLY", "source": {"source": "raw"}},
+            "point_size": 8.0,
+            "continuous_color_map": "viridis",
+            "categorical_palette": "tab20",
+            "sort_order": True,
+            "missing_color": "lightgray",
+            "legend_policy": "automatic",
+        },
+    )
+    WorkerResponse.success(context.request_id, records)
+
+    assert [record["name"] for record in records] == ["plot", "summary", "code"]
+    png, metadata = read_plot(staging / records[0]["payload"])
+    assert png.startswith(PNG_SIGNATURE)
+    assert metadata["parameters"]["color"] == {
+        "color": "gene",
+        "gene": "RAW_ONLY",
+        "source": {"source": "raw"},
+    }
+    assert hashlib.sha256(input_path.read_bytes()).digest() == before
 
 
 class _FakeSettings:
