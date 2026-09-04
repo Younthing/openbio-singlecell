@@ -12,6 +12,11 @@ from dataclasses import replace
 import pytest
 
 from openbio_singlecell.analysis_utils import make_table_result
+from openbio_singlecell.annotation_core import (
+    _celltypist_axis_fingerprint,
+    _celltypist_probability_fingerprint,
+    _celltypist_selected_fingerprint,
+)
 from openbio_singlecell.files import resolve_input_path
 from openbio_singlecell.marker_evidence import MARKER_COLUMNS, MARKER_UNIVERSE_COLUMNS
 from openbio_singlecell.node_types import AnnDataType, SummaryResultType, TableResultType
@@ -484,6 +489,18 @@ def test_celltypist_transforms_counts_once_and_preserves_verified_logged_input(s
     assert output.obsm["celltypist_decision_scores"].shape == (60, 2)
     assert output.uns["celltypist"]["annotation_status"] == "provisional"
     assert output.uns["celltypist"]["classes"] == ["A", "B"]
+    provenance = output.uns["celltypist"]
+    assert provenance["observation_axis_fingerprint_sha256"] == _celltypist_axis_fingerprint(output.obs_names)
+    assert provenance["probability_content_fingerprint_sha256"] == _celltypist_probability_fingerprint(
+        output.obsm["celltypist_probabilities"],
+        observation_ids=output.obs_names,
+        classes=["A", "B"],
+    )
+    assert provenance["selected_annotation_fingerprint_sha256"] == _celltypist_selected_fingerprint(
+        output.obs["celltypist_cell_type"].astype(str),
+        output.obs["celltypist_confidence"],
+        observation_ids=output.obs_names,
+    )
     assert report.summary["key_results"]["expression_transform"] == (
         "none" if logged else "normalize_total_10000_then_log1p"
     )

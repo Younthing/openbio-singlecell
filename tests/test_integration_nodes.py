@@ -164,7 +164,12 @@ def _fake_harmonypy(science):
         if module.mutate_input:
             data_mat[0, 0] = -12345.0
         corrected = science.np.asarray(data_mat, dtype=float) + 0.25
-        return types.SimpleNamespace(Z_corr=corrected, objective_harmony=[10.0, 7.0, 6.0])
+        return types.SimpleNamespace(
+            Z_corr=corrected,
+            objective_harmony=[10.0, 7.0, 6.0],
+            objective_kmeans=[10.0, 8.0, 7.0, 6.5, 6.0],
+            kmeans_rounds=[2, 2],
+        )
 
     module.run_harmony = run_harmony
     return module
@@ -294,7 +299,12 @@ def test_harmony_square_backend_result_preserves_reviewed_200_orientation(scienc
 
     def run_harmony(data_mat, meta_data, vars_use, **kwargs):
         del data_mat, meta_data, vars_use, kwargs
-        return types.SimpleNamespace(Z_corr=raw_z_corr.copy(), objective_harmony=[3.0, 2.0])
+        return types.SimpleNamespace(
+            Z_corr=raw_z_corr.copy(),
+            objective_harmony=[3.0, 2.0],
+            objective_kmeans=[3.0, 2.0],
+            kmeans_rounds=[1],
+        )
 
     fake.run_harmony = run_harmony
     monkeypatch.setitem(sys.modules, "harmonypy", fake)
@@ -534,9 +544,17 @@ def _fake_scvi(science):
             self.adata = adata
             self.parameters = kwargs
             self.is_trained = False
+            epoch = science.pd.Index([0, 1], name="epoch")
             self.history = {
-                "elbo_train": science.np.asarray([20.0, 12.0]),
-                "elbo_validation": science.np.asarray([22.0, 13.0]),
+                key: science.pd.DataFrame({key: values}, index=epoch.copy())
+                for key, values in {
+                    "elbo_train": [20.0, 12.0],
+                    "elbo_validation": [22.0, 13.0],
+                    "reconstruction_loss_train": [15.0, 9.0],
+                    "reconstruction_loss_validation": [17.0, 10.0],
+                    "kl_local_train": [5.0, 3.0],
+                    "kl_local_validation": [5.0, 3.0],
+                }.items()
             }
             self.train_indices = list(range(54))
             self.validation_indices = list(range(54, 60))
@@ -697,7 +715,7 @@ def test_scvi_fake_backend_reporting_code_and_private_model_state(integration_ad
     assert model == {
         "kind": "OPENBIO_SCVI_MODEL",
         "codec": "scvi-native-directory",
-        "members": ("model.pt",),
+        "members": ("model.pt", "openbio-training-diagnostics.json"),
     }
     assert raw_model.adata is not output
     assert set(raw_model.adata.obs["batch"].astype(str)) == {"lane_a", "lane_b"}
@@ -774,6 +792,14 @@ def test_scvi_real_backend_open_boundaries_smoke():
         "no_validation_holdout_warning": True,
         "overcomplete_warning": True,
         "status": "pass",
+        "training_diagnostic_metrics": [
+            "elbo_train",
+            "reconstruction_loss_train",
+            "kl_local_train",
+            "kl_global_train",
+        ],
+        "training_plot_code_parity": True,
+        "training_plot_png": True,
         "zero_total_genes": 1,
     }
 

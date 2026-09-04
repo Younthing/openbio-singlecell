@@ -4,13 +4,18 @@ import json
 import random
 import sys
 import types
+import uuid
 from importlib import metadata as importlib_metadata
 
 import pytest
 
-from openbio_singlecell.node_types import SummaryResultType, TableResultType
+from openbio_singlecell.abundance_artifact_codecs import MILO_RESULT_CODEC, read_milo_result
+from openbio_singlecell.artifact_codecs import ANNDATA_PAYLOAD, read_table, write_anndata
+from openbio_singlecell.milo_result import validate_milo_result
+from openbio_singlecell.node_types import MiloResultType, SummaryResultType, TableResultType
 from openbio_singlecell.nodes_abundance import OpenBioSingleCellMiloDifferentialAbundance
-from openbio_singlecell.operations_abundance import milo_owned
+from openbio_singlecell.operations_abundance import milo_differential_abundance, milo_owned
+from openbio_singlecell.worker_protocol import OperationContext, WorkerResponse
 
 
 class _FakeMuData(dict):
@@ -333,8 +338,8 @@ def _install_fake_milo_backend(science, monkeypatch, *, malformed=None):
     return pertpy
 
 
-def _execute_milo(adata, **overrides):
-    parameters = {
+def _milo_parameters():
+    return {
         "sample_key": "sample",
         "condition_key": "condition",
         "reference_condition": "control",
@@ -352,6 +357,10 @@ def _execute_milo(adata, **overrides):
         "min_abs_log2_fold_change": 0.0,
         "random_seed": 19,
     }
+
+
+def _execute_milo(adata, **overrides):
+    parameters = _milo_parameters()
     parameters.update(overrides)
     return milo_owned(adata, **parameters)
 
@@ -384,6 +393,7 @@ def test_milo_schema_exposes_one_pairwise_sample_contrast_and_report_outputs():
     assert inputs["continuous_covariate_keys_json"].default == "[]"
     assert inputs["spatial_fdr_threshold"].default == 0.1
     assert [(item.display_name, item.io_type) for item in schema.outputs] == [
+        ("result", MiloResultType.io_type),
         ("table", TableResultType.io_type),
         ("summary", SummaryResultType.io_type),
         ("code", "STRING"),
@@ -397,7 +407,24 @@ def test_milo_runs_one_edge_r_sample_contrast_and_code_is_equivalent(science, mo
     python_rng_before = random.getstate()
     numpy_rng_before = science.np.random.get_state()
 
-    table_result, report, code = _execute_milo(adata)
+    milo_result, table_result, report, code = _execute_milo(adata)
+
+    artifact_table, membership, graph, coordinates, observations, neighborhoods, provenance, _ = (
+        validate_milo_result(milo_result)
+    )
+    science.pd.testing.assert_frame_equal(artifact_table, table_result.table)
+    assert membership.shape == (24, 4)
+    assert graph.shape == (4, 4)
+    assert coordinates.shape == (4, 2)
+    assert observations == original.obs_names[:24].tolist()
+    assert neighborhoods == table_result.table["neighborhood_id"].tolist()
+    assert provenance["representation_key"] == "X_pca"
+    assert provenance["annotation_status"] == "provisional"
+    index_positions = [observations.index(name) for name in table_result.table["index_cell"]]
+    science.np.testing.assert_array_equal(
+        coordinates,
+        original.obsm["X_pca"][:24][index_positions, :2],
+    )
 
     assert table_result.table.columns.tolist() == [
         "neighborhood_id",
@@ -430,6 +457,10 @@ def test_milo_runs_one_edge_r_sample_contrast_and_code_is_equivalent(science, mo
     assert report.summary["key_results"]["tested_neighborhoods"] == 4
     assert report.summary["key_results"]["comparison_enriched_calls"] == 2
     assert report.summary["key_results"]["reference_enriched_calls"] == 1
+    overlap_preflight = report.summary["graph_evidence"]["overlap_graph_preflight"]
+    assert overlap_preflight["pair_contributions"] >= 0
+    assert overlap_preflight["maximum_pair_contributions"] == 10_000_000
+    assert overlap_preflight["maximum_working_bytes"] == 2 * 1024**3
     assert "analysis_summary" not in report.summary
     assert report.summary["parameters"]["solver"] == "edger"
     assert report.summary["parameters"]["neighbor_transformer"] == "pynndescent"
@@ -459,9 +490,45 @@ def test_milo_runs_one_edge_r_sample_contrast_and_code_is_equivalent(science, mo
 
     namespace = {}
     exec(code, namespace)
-    reproduced_table, reproduced_summary = namespace["run_milo_differential_abundance"](adata)
+    reproduced_table, reproduced_summary, reproduced_evidence = namespace["run_milo_differential_abundance"](adata)
     science.pd.testing.assert_frame_equal(reproduced_table, table_result.table)
     assert reproduced_summary == report.summary
+    science.np.testing.assert_array_equal(reproduced_evidence["representative_coordinates"], coordinates)
+
+
+def test_milo_worker_publishes_typed_result_and_retained_table_without_rewriting_input(
+    tmp_path, science, monkeypatch
+):
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    write_anndata(input_root, _milo_adata(science))
+    input_path = input_root / ANNDATA_PAYLOAD
+    before = input_path.read_bytes()
+    _install_fake_milo_backend(science, monkeypatch)
+    staging = tmp_path / "run.partial"
+    staging.mkdir()
+    context = OperationContext.from_request_path(staging / "request.json", str(uuid.uuid4()))
+
+    records = milo_differential_abundance(
+        context,
+        {
+            "adata": {
+                "type": "artifact",
+                "kind": "OPENBIO_ANNDATA",
+                "codec": "anndata-h5ad-v1",
+                "path": str(input_root.resolve()),
+            }
+        },
+        _milo_parameters(),
+    )
+    WorkerResponse.success(context.request_id, records)
+
+    assert [record["name"] for record in records] == ["result", "table", "summary", "code"]
+    assert records[0]["codec"] == MILO_RESULT_CODEC
+    artifact = read_milo_result(staging / records[0]["payload"])
+    table, _ = read_table(staging / records[1]["payload"])
+    science.pd.testing.assert_frame_equal(artifact.table, table)
+    assert input_path.read_bytes() == before
 
 
 @pytest.mark.parametrize(
@@ -517,7 +584,7 @@ def test_milo_encodes_valid_sample_level_nuisance_covariates_deterministically(s
     )
     fake = _install_fake_milo_backend(science, monkeypatch)
 
-    _, report, _ = _execute_milo(
+    _, _, report, _ = _execute_milo(
         adata,
         technical_batch_key="",
         categorical_covariate_keys_json='["batch"]',
@@ -657,8 +724,8 @@ def test_milo_reporting_thresholds_do_not_filter_or_refit_the_neighborhood_unive
     adata = _milo_adata(science)
     fake = _install_fake_milo_backend(science, monkeypatch)
 
-    baseline_table, _, _ = _execute_milo(adata)
-    strict_table, strict_report, _ = _execute_milo(
+    _, baseline_table, _, _ = _execute_milo(adata)
+    _, strict_table, strict_report, _ = _execute_milo(
         adata,
         spatial_fdr_threshold=0.0,
         min_abs_log2_fold_change=2.0,
@@ -681,7 +748,7 @@ def test_milo_discloses_extreme_cell_count_imbalance_without_treating_cells_as_r
     adata = adata[keep].copy()
     _install_fake_milo_backend(science, monkeypatch)
 
-    _, report, _ = _execute_milo(adata)
+    _, _, report, _ = _execute_milo(adata)
 
     assert report.summary["design_evidence"]["samples_by_condition"] == {"control": 3, "treated": 3}
     assert report.summary["input_evidence"]["condition_cell_counts"] == {"control": 3, "treated": 12}

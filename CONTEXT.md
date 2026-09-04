@@ -65,3 +65,7 @@ _Avoid_: Provisional annotation, classifier prediction
 **Condition contrast**:
 A replicate-aware comparison between biological conditions within a defined cell population.
 _Avoid_: Cell-level cluster marker test
+
+**Diagnostic evidence**:
+Reusable analysis output retained to assess model fit or result quality without rerunning the scientific analysis.
+_Avoid_: Plot cache, summary-only metric, recomputed analysis

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import itertools
 import json
 import math
 import random
+import uuid
 from collections import Counter
+from dataclasses import replace
 from types import SimpleNamespace
 
 import anndata as ad
@@ -16,11 +19,15 @@ import pytest
 from pandas.testing import assert_frame_equal
 
 import openbio_singlecell.cassiopeia_tree as lineage
+from openbio_singlecell.artifact_codecs import read_plot, write_anndata, write_table
+from openbio_singlecell.artifact_envelope import result_metadata
+from openbio_singlecell.cassiopeia_codec import write_characters, write_tree
 from openbio_singlecell.cassiopeia_tree import CassiopeiaCharacters, CassiopeiaTree
 from openbio_singlecell.node_types import (
     AnnDataType,
     CassiopeiaCharactersType,
     CassiopeiaTreeType,
+    PlotResultType,
     SummaryResultType,
     TableResultType,
 )
@@ -31,6 +38,22 @@ from openbio_singlecell.nodes_lineage import (
     OpenBioSingleCellCassiopeiaPlasticity,
     OpenBioSingleCellReconstructCassiopeiaTree,
 )
+from openbio_singlecell.operations_lineage import (
+    cassiopeia_expansion_plot,
+    cassiopeia_expansion_plot_owned,
+    cassiopeia_lineage_qc_plot,
+    cassiopeia_plasticity_plot,
+    cassiopeia_plasticity_plot_owned,
+    cassiopeia_tree_plot,
+    cassiopeia_tree_plot_owned,
+    expansion_owned,
+    lineage_qc_owned,
+    lineage_qc_plot_owned,
+    plasticity_owned,
+)
+from openbio_singlecell.worker_protocol import OperationContext
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def assign_missing_average(*args, **kwargs):
@@ -302,10 +325,42 @@ def _prepare(tmp_path, rows=None, module=lineage):
     )
 
 
+def _qc_owned(tmp_path):
+    path = tmp_path / "alleles.tsv"
+    pd.DataFrame(_rows()).to_csv(path, sep="\t", index=False)
+    return lineage_qc_owned(
+        path,
+        first_column_as_index=False,
+        lineage_column="Tumor",
+        cell_barcode_column="cellBC",
+        integration_barcode_column="intBC",
+        cut_site_columns="r1,r2",
+        prior_grouping_columns="Tumor,intBC",
+        missing_data_allele="",
+        allele_representation_threshold=0.98,
+        minimum_cells=2,
+        maximum_missing_fraction=1.0,
+        maximum_uncut_fraction=1.0,
+        minimum_unique_fraction=0.0,
+        minimum_informative_character_fraction=0.0,
+        max_file_mib=512,
+        max_matrix_gib=2.0,
+    )
+
+
 def _assert_rng_equal(before, after):
     assert before[0] == after[0]
     assert np.array_equal(before[1], after[1])
     assert before[2:] == after[2:]
+
+
+def _directory_fingerprint(path):
+    digest = hashlib.sha256()
+    for member in sorted(path.rglob("*")):
+        if member.is_file():
+            digest.update(member.relative_to(path).as_posix().encode("utf-8"))
+            digest.update(member.read_bytes())
+    return digest.hexdigest()
 
 
 def test_schemas_are_atomic_typed_and_report_code():
@@ -351,6 +406,40 @@ def test_schemas_are_atomic_typed_and_report_code():
     assert OpenBioSingleCellCassiopeiaPlasticity in LINEAGE_NODE_CLASSES
 
 
+def test_lineage_plot_schemas_are_domain_specific_and_typed():
+    expected = {
+        "OpenBioSingleCellCassiopeiaLineageQCPlot": [
+            ("characters", CassiopeiaCharactersType.io_type),
+            ("table", TableResultType.io_type),
+        ],
+        "OpenBioSingleCellCassiopeiaTreePlot": [
+            ("tree", CassiopeiaTreeType.io_type),
+            ("adata", AnnDataType.io_type),
+            ("annotation_key", "STRING"),
+        ],
+        "OpenBioSingleCellCassiopeiaExpansionPlot": [
+            ("tree", CassiopeiaTreeType.io_type),
+            ("table", TableResultType.io_type),
+        ],
+        "OpenBioSingleCellCassiopeiaPlasticityPlot": [
+            ("adata", AnnDataType.io_type),
+            ("tree", CassiopeiaTreeType.io_type),
+            ("table", TableResultType.io_type),
+            ("output_key", "STRING"),
+        ],
+    }
+    schemas = {node.define_schema().node_id: node.define_schema() for node in LINEAGE_NODE_CLASSES}
+    for node_id, inputs in expected.items():
+        schema = schemas[node_id]
+        assert schema.category == "openbio/single-cell/lineage"
+        assert [(item.id, item.io_type) for item in schema.inputs] == inputs
+        assert [(item.display_name, item.io_type) for item in schema.outputs] == [
+            ("plot", PlotResultType.io_type),
+            ("summary", SummaryResultType.io_type),
+            ("code", "STRING"),
+        ]
+
+
 def test_qc_strict_summary_denominators_and_defensive_artifact(tmp_path, fake_backend):
     artifact, table, summary, code = _prepare(tmp_path)
     assert isinstance(artifact, CassiopeiaCharacters)
@@ -369,6 +458,85 @@ def test_qc_strict_summary_denominators_and_defensive_artifact(tmp_path, fake_ba
     assert pristine.iloc[0, 0] != 99
     assert pristine_priors[0][1] != 0.1
     assert pristine_maps[0][1] != "tampered"
+
+
+def test_lineage_qc_plot_uses_exact_artifact_bound_table_without_mutation(tmp_path, fake_backend):
+    characters, table, _, _ = _qc_owned(tmp_path)
+    before_fingerprint = characters.fingerprint
+    before_table = table.table.copy(deep=True)
+
+    plotted, report, code = lineage_qc_plot_owned(characters, table)
+
+    assert plotted.png.startswith(PNG_SIGNATURE)
+    details = report.summary["key_results"]
+    assert details["lineages_plotted"] == 1
+    assert details["lineages_available"] == 1
+    assert details["status_counts"] == {"pass": 1, "warning": 0, "unavailable": 0}
+    assert table.parameters["characters_fingerprint"] == characters.fingerprint
+    assert table.parameters["qc_table_sha256"] == characters.metadata["qc_table_sha256"]
+    json.dumps(report.summary, allow_nan=False)
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_cassiopeia_lineage_qc"](characters, table.table) == plotted.png
+    assert characters.fingerprint == before_fingerprint
+    assert_frame_equal(table.table, before_table)
+
+
+def test_lineage_qc_plot_rejects_non_character_artifacts(tmp_path, fake_backend):
+    _, table, _, _ = _qc_owned(tmp_path)
+
+    with pytest.raises(TypeError, match="character artifact"):
+        lineage_qc_plot_owned(object(), table)
+
+
+def test_lineage_qc_plot_rejects_internally_inconsistent_table_metadata(tmp_path, fake_backend):
+    characters, table, _, _ = _qc_owned(tmp_path)
+
+    with pytest.raises(ValueError, match="table provenance"):
+        lineage_qc_plot_owned(characters, replace(table, input_cells=table.input_cells + 1))
+
+
+def test_lineage_qc_plot_worker_round_trips_artifacts_without_rewriting_inputs(tmp_path, fake_backend):
+    characters, table, _, _ = _qc_owned(tmp_path)
+    characters_root = tmp_path / "characters"
+    characters_root.mkdir()
+    write_characters(characters_root, characters)
+    table_root = tmp_path / "qc-table"
+    table_root.mkdir()
+    write_table(
+        table_root,
+        table.table,
+        result_metadata(table),
+        json_list_columns=("qc_warnings", "unavailability_reasons"),
+    )
+    before = (_directory_fingerprint(characters_root), _directory_fingerprint(table_root))
+    staging = tmp_path / "qc-plot.partial"
+    staging.mkdir()
+    context = OperationContext(staging, str(uuid.uuid4()))
+
+    records = cassiopeia_lineage_qc_plot(
+        context,
+        {
+            "characters": {
+                "type": "artifact",
+                "path": str(characters_root.resolve()),
+                "kind": "OPENBIO_CASSIOPEIA_CHARACTERS",
+                "codec": "openbio-cassiopeia-characters",
+            },
+            "table": {
+                "type": "artifact",
+                "path": str(table_root.resolve()),
+                "kind": "OPENBIO_SINGLE_CELL_TABLE",
+                "codec": "table-jsonl-v1",
+            },
+        },
+        {},
+    )
+
+    assert [record["name"] for record in records] == ["plot", "summary", "code"]
+    png, _ = read_plot(staging / records[0]["payload"])
+    assert png.startswith(PNG_SIGNATURE)
+    assert (_directory_fingerprint(characters_root), _directory_fingerprint(table_root)) == before
 
 
 @pytest.mark.parametrize(
@@ -507,6 +675,77 @@ def test_tree_artifact_detects_topology_tampering(tmp_path, fake_backend):
         tree.copy_tree()
 
 
+def test_tree_plot_uses_stored_topology_and_exact_leaf_annotations(tmp_path, fake_backend):
+    characters, _, _, _ = _qc_owned(tmp_path)
+    tree, _, _ = lineage.reconstruct_cassiopeia_tree(characters, "T1", openbio_version="test")
+    adata = _plasticity_adata()
+    before_tree = tree.fingerprint
+    before_obs = adata.obs.copy(deep=True)
+    solves_before = FakeVanillaGreedySolver.solve_count
+
+    plotted, report, code = cassiopeia_tree_plot_owned(tree, adata, annotation_key="cell_type")
+
+    assert plotted.png.startswith(PNG_SIGNATURE)
+    details = report.summary["key_results"]
+    assert details["lineage_id"] == "T1"
+    assert details["leaf_count"] == 4
+    assert details["annotation_categories"] == ["A", "B"]
+    assert details["ann_data_cells_not_in_tree"] == 1
+    assert details["topology_sha256"] == tree.topology_fingerprint
+    assert FakeVanillaGreedySolver.solve_count == solves_before
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_cassiopeia_tree"](tree, adata) == plotted.png
+    assert tree.fingerprint == before_tree
+    assert_frame_equal(adata.obs, before_obs)
+
+
+def test_tree_plot_rejects_non_tree_artifacts():
+    with pytest.raises(TypeError, match="tree artifact"):
+        cassiopeia_tree_plot_owned(object(), _plasticity_adata(), annotation_key="cell_type")
+
+
+def test_tree_plot_worker_reads_tree_and_anndata_without_rewriting_them(tmp_path, fake_backend, monkeypatch):
+    monkeypatch.setattr("openbio_singlecell.cassiopeia_codec._require_cassiopeia", lambda: fake_backend)
+    characters, _, _, _ = _qc_owned(tmp_path)
+    tree, _, _ = lineage.reconstruct_cassiopeia_tree(characters, "T1", openbio_version="test")
+    adata = _plasticity_adata()
+    tree_root = tmp_path / "tree-input"
+    tree_root.mkdir()
+    write_tree(tree_root, tree)
+    adata_root = tmp_path / "annotation-input"
+    adata_root.mkdir()
+    write_anndata(adata_root, adata)
+    before = (_directory_fingerprint(tree_root), _directory_fingerprint(adata_root))
+    staging = tmp_path / "tree-plot.partial"
+    staging.mkdir()
+    context = OperationContext(staging, str(uuid.uuid4()))
+
+    records = cassiopeia_tree_plot(
+        context,
+        {
+            "tree": {
+                "type": "artifact",
+                "path": str(tree_root.resolve()),
+                "kind": "OPENBIO_CASSIOPEIA_TREE",
+                "codec": "openbio-cassiopeia-tree",
+            },
+            "adata": {
+                "type": "artifact",
+                "path": str(adata_root.resolve()),
+                "kind": "OPENBIO_ANNDATA",
+                "codec": "anndata-h5ad-v1",
+            },
+        },
+        {"annotation_key": "cell_type"},
+    )
+
+    assert [record["name"] for record in records] == ["plot", "summary", "code"]
+    png, _ = read_plot(staging / records[0]["payload"])
+    assert png.startswith(PNG_SIGNATURE)
+    assert (_directory_fingerprint(tree_root), _directory_fingerprint(adata_root)) == before
+
+
 def test_expansion_independently_checks_formula_and_applies_bh(tmp_path, fake_backend):
     characters, _, _, _ = _prepare(tmp_path)
     tree, _, _ = lineage.reconstruct_cassiopeia_tree(characters, "T1", openbio_version="test")
@@ -521,6 +760,83 @@ def test_expansion_independently_checks_formula_and_applies_bh(tmp_path, fake_ba
     assert summary["key_results"]["eligible_hypotheses"] == 2
     json.dumps(summary, allow_nan=False)
     compile(code, "<cassiopeia-expansion-code>", "exec")
+
+
+def test_expansion_plot_is_bound_to_the_tested_topology_and_full_table(tmp_path, fake_backend):
+    characters, _, _, _ = _qc_owned(tmp_path)
+    tree, _, _ = lineage.reconstruct_cassiopeia_tree(characters, "T1", openbio_version="test")
+    table, _, _ = expansion_owned(tree, minimum_clade_size=2, minimum_depth=1, fdr_threshold=0.5)
+    before_tree = tree.fingerprint
+    before_table = table.table.copy(deep=True)
+    solves_before = FakeVanillaGreedySolver.solve_count
+
+    plotted, report, code = cassiopeia_expansion_plot_owned(tree, table)
+
+    assert plotted.png.startswith(PNG_SIGNATURE)
+    details = report.summary["key_results"]
+    assert details["lineage_id"] == "T1"
+    assert details["topology_nodes_plotted"] == 7
+    assert details["eligible_clades"] == 2
+    assert details["significant_clades"] == 0
+    assert details["topology_sha256"] == tree.topology_fingerprint
+    assert table.parameters["tree_fingerprint"] == tree.fingerprint
+    assert table.parameters["topology_sha256"] == tree.topology_fingerprint
+    assert FakeVanillaGreedySolver.solve_count == solves_before
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_cassiopeia_expansion"](tree, table.table) == plotted.png
+    assert tree.fingerprint == before_tree
+    assert_frame_equal(table.table, before_table)
+
+
+def test_expansion_plot_rejects_internally_inconsistent_table_metadata(tmp_path, fake_backend):
+    characters, _, _, _ = _qc_owned(tmp_path)
+    tree, _, _ = lineage.reconstruct_cassiopeia_tree(characters, "T1", openbio_version="test")
+    table, _, _ = expansion_owned(tree, minimum_clade_size=2, minimum_depth=1, fdr_threshold=0.5)
+
+    with pytest.raises(ValueError, match="table provenance"):
+        cassiopeia_expansion_plot_owned(tree, replace(table, input_cells=table.input_cells + 1))
+
+
+def test_expansion_plot_worker_preserves_tree_and_table_artifacts(tmp_path, fake_backend, monkeypatch):
+    monkeypatch.setattr("openbio_singlecell.cassiopeia_codec._require_cassiopeia", lambda: fake_backend)
+    characters, _, _, _ = _qc_owned(tmp_path)
+    tree, _, _ = lineage.reconstruct_cassiopeia_tree(characters, "T1", openbio_version="test")
+    table, _, _ = expansion_owned(tree, minimum_clade_size=2, minimum_depth=1, fdr_threshold=0.5)
+    tree_root = tmp_path / "expansion-tree"
+    tree_root.mkdir()
+    write_tree(tree_root, tree)
+    table_root = tmp_path / "expansion-table"
+    table_root.mkdir()
+    write_table(table_root, table.table, result_metadata(table))
+    before = (_directory_fingerprint(tree_root), _directory_fingerprint(table_root))
+    staging = tmp_path / "expansion-plot.partial"
+    staging.mkdir()
+    context = OperationContext(staging, str(uuid.uuid4()))
+
+    records = cassiopeia_expansion_plot(
+        context,
+        {
+            "tree": {
+                "type": "artifact",
+                "path": str(tree_root.resolve()),
+                "kind": "OPENBIO_CASSIOPEIA_TREE",
+                "codec": "openbio-cassiopeia-tree",
+            },
+            "table": {
+                "type": "artifact",
+                "path": str(table_root.resolve()),
+                "kind": "OPENBIO_SINGLE_CELL_TABLE",
+                "codec": "table-jsonl-v1",
+            },
+        },
+        {},
+    )
+
+    assert [record["name"] for record in records] == ["plot", "summary", "code"]
+    png, _ = read_plot(staging / records[0]["payload"])
+    assert png.startswith(PNG_SIGNATURE)
+    assert (_directory_fingerprint(tree_root), _directory_fingerprint(table_root)) == before
 
 
 def test_worker_expansion_keeps_only_the_backend_required_tree_copy(tmp_path, fake_backend):
@@ -587,6 +903,123 @@ def test_plasticity_uses_edge_denominator_preserves_inputs_and_reports_all_cells
     assert summary["parameters"]["subtree_denominator"] == "directed edge count"
     json.dumps(summary, allow_nan=False)
     compile(code, "<cassiopeia-plasticity-code>", "exec")
+
+
+def test_plasticity_plot_validates_scores_annotations_table_and_tree(tmp_path, fake_backend):
+    characters, _, _, _ = _qc_owned(tmp_path)
+    tree, _, _ = lineage.reconstruct_cassiopeia_tree(characters, "T1", openbio_version="test")
+    output, table, _, _ = plasticity_owned(
+        _plasticity_adata(),
+        tree,
+        annotation_key="cell_type",
+        annotation_status="unknown",
+        analysis_mode="exploratory",
+        minimum_state_fraction=0.025,
+        output_key="sc_effective_plasticity",
+        overwrite_existing=False,
+        max_working_gib=4.0,
+    )
+    before_tree = tree.fingerprint
+    before_obs = output.obs.copy(deep=True)
+    before_uns = copy.deepcopy(output.uns["openbio_cassiopeia_plasticity"])
+    solves_before = FakeVanillaGreedySolver.solve_count
+
+    plotted, report, code = cassiopeia_plasticity_plot_owned(
+        output,
+        tree,
+        table,
+        output_key="sc_effective_plasticity",
+    )
+
+    assert plotted.png.startswith(PNG_SIGNATURE)
+    details = report.summary["key_results"]
+    assert details["lineage_id"] == "T1"
+    assert details["included_cells"] == 4
+    assert details["annotation_categories"] == ["A", "B"]
+    assert details["status_counts"]["not_in_tree"] == 1
+    assert details["topology_sha256"] == tree.topology_fingerprint
+    assert table.parameters["tree_fingerprint"] == tree.fingerprint
+    assert FakeVanillaGreedySolver.solve_count == solves_before
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_cassiopeia_plasticity"](output, tree, table.table) == plotted.png
+    assert tree.fingerprint == before_tree
+    assert_frame_equal(output.obs, before_obs)
+    assert output.uns["openbio_cassiopeia_plasticity"] == before_uns
+
+
+def test_plasticity_plot_rejects_internally_inconsistent_table_metadata(tmp_path, fake_backend):
+    characters, _, _, _ = _qc_owned(tmp_path)
+    tree, _, _ = lineage.reconstruct_cassiopeia_tree(characters, "T1", openbio_version="test")
+    output, table, _, _ = plasticity_owned(_plasticity_adata(), tree, annotation_key="cell_type")
+
+    with pytest.raises(ValueError, match="table provenance"):
+        cassiopeia_plasticity_plot_owned(
+            output,
+            tree,
+            replace(table, input_genes=table.input_genes + 1),
+            output_key="sc_effective_plasticity",
+        )
+
+
+def test_plasticity_plot_worker_preserves_all_three_input_artifacts(tmp_path, fake_backend, monkeypatch):
+    monkeypatch.setattr("openbio_singlecell.cassiopeia_codec._require_cassiopeia", lambda: fake_backend)
+    characters, _, _, _ = _qc_owned(tmp_path)
+    tree, _, _ = lineage.reconstruct_cassiopeia_tree(characters, "T1", openbio_version="test")
+    output, table, _, _ = plasticity_owned(
+        _plasticity_adata(),
+        tree,
+        annotation_key="cell_type",
+        annotation_status="unknown",
+        analysis_mode="exploratory",
+        minimum_state_fraction=0.025,
+        output_key="sc_effective_plasticity",
+        overwrite_existing=False,
+        max_working_gib=4.0,
+    )
+    adata_root = tmp_path / "plasticity-adata"
+    adata_root.mkdir()
+    write_anndata(adata_root, output)
+    tree_root = tmp_path / "plasticity-tree"
+    tree_root.mkdir()
+    write_tree(tree_root, tree)
+    table_root = tmp_path / "plasticity-table"
+    table_root.mkdir()
+    write_table(table_root, table.table, result_metadata(table))
+    before = tuple(_directory_fingerprint(path) for path in (adata_root, tree_root, table_root))
+    staging = tmp_path / "plasticity-plot.partial"
+    staging.mkdir()
+    context = OperationContext(staging, str(uuid.uuid4()))
+
+    records = cassiopeia_plasticity_plot(
+        context,
+        {
+            "adata": {
+                "type": "artifact",
+                "path": str(adata_root.resolve()),
+                "kind": "OPENBIO_ANNDATA",
+                "codec": "anndata-h5ad-v1",
+            },
+            "tree": {
+                "type": "artifact",
+                "path": str(tree_root.resolve()),
+                "kind": "OPENBIO_CASSIOPEIA_TREE",
+                "codec": "openbio-cassiopeia-tree",
+            },
+            "table": {
+                "type": "artifact",
+                "path": str(table_root.resolve()),
+                "kind": "OPENBIO_SINGLE_CELL_TABLE",
+                "codec": "table-jsonl-v1",
+            },
+        },
+        {"output_key": "sc_effective_plasticity"},
+    )
+
+    assert [record["name"] for record in records] == ["plot", "summary", "code"]
+    png, _ = read_plot(staging / records[0]["payload"])
+    assert png.startswith(PNG_SIGNATURE)
+    assert tuple(_directory_fingerprint(path) for path in (adata_root, tree_root, table_root)) == before
 
 
 def test_worker_owned_plasticity_updates_its_private_anndata_in_place(tmp_path, fake_backend):

@@ -233,6 +233,51 @@ def _matrix_fingerprint(matrix: Any, *, obs_names: Sequence[str], var_names: Seq
     return digest.hexdigest()
 
 
+def _cell_cycle_axis_fingerprint(observation_ids: Sequence[str]) -> str:
+    values = list(observation_ids)
+    if any(not isinstance(value, str) or not value or value != value.strip() for value in values):
+        raise ValueError("Cell-cycle observation identifiers must be canonical strings.")
+    payload = json.dumps(
+        values,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _cell_cycle_score_fingerprint(
+    observation_ids: Sequence[str],
+    s_score: Any,
+    g2m_score: Any,
+    phase: Sequence[str],
+) -> str:
+    import numpy as np
+
+    observations = list(observation_ids)
+    phases = list(phase)
+    s_values = np.asarray(s_score, dtype=float)
+    g2m_values = np.asarray(g2m_score, dtype=float)
+    expected_shape = (len(observations),)
+    if s_values.shape != expected_shape or g2m_values.shape != expected_shape or len(phases) != len(observations):
+        raise ValueError("Cell-cycle score bundle does not align to the observation axis.")
+    if not bool(np.isfinite(s_values).all()) or not bool(np.isfinite(g2m_values).all()):
+        raise ValueError("Cell-cycle scores must be finite.")
+    if any(value not in {"G1", "S", "G2M"} for value in phases):
+        raise ValueError("Cell-cycle phases must use the canonical G1, S, and G2M labels.")
+    header = json.dumps(
+        {"observation_ids": observations, "phase": phases},
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(header)
+    digest.update(np.ascontiguousarray(s_values, dtype="<f8").tobytes())
+    digest.update(np.ascontiguousarray(g2m_values, dtype="<f8").tobytes())
+    return digest.hexdigest()
+
+
 def _validate_expression(
     adata: AnnData,
     *,
@@ -465,6 +510,13 @@ def analyze_cell_cycle_score(
         "n_bins": 25,
         "ctrl_as_ref": True,
         "control_size": control_size,
+        "observation_axis_fingerprint_sha256": _cell_cycle_axis_fingerprint(obs_names),
+        "score_bundle_fingerprint_sha256": _cell_cycle_score_fingerprint(
+            obs_names,
+            s_values,
+            g2m_values,
+            phases,
+        ),
     }
     results = (
         f"Scored {len(obs_names):,} cells using {len(found_s)}/{len(requested_s)} observed S-phase genes and "
@@ -546,6 +598,8 @@ def cell_cycle_code(
         _parse_custom_genes,
         _canonical_axes,
         _matrix_fingerprint,
+        _cell_cycle_axis_fingerprint,
+        _cell_cycle_score_fingerprint,
         _validate_expression,
     )
     helper_source = "\n\n".join(dedent(inspect.getsource(helper)).strip() for helper in helpers)
@@ -657,6 +711,8 @@ def score_cell_cycle(adata):
 
 
 __all__ = [
+    "_cell_cycle_axis_fingerprint",
+    "_cell_cycle_score_fingerprint",
     "CELL_CYCLE_NODE_ID",
     "CELL_CYCLE_REFERENCES",
     "CELL_CYCLE_SCHEMA",

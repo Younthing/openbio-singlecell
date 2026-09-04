@@ -2,13 +2,20 @@
 
 ## Unreleased
 
+- Add 45 domain-specific companion Plot nodes across correction, integration, clustering, marker evidence,
+  annotation, factorization, differential testing, enrichment, regulation, trajectory, velocity, copy number,
+  lineage, and cell prioritization. Companion nodes consume retained evidence read-only and consistently return a
+  PNG, strict summary, and equivalent code without rerunning the scientific analysis.
+- Retain complete Harmony/scVI training diagnostics, Milo neighborhood topology and coordinates,
+  scCODA/tascCODA posterior diagnostics, and Augur fold predictions in validated typed artifacts so convergence,
+  neighborhood, posterior/trace, and ROC plots remain auditable downstream.
 - Complete the core AnnData plotting path with Sample-level composition bars, flavor-aware HVG diagnostics, PCA
   explained and cumulative variance, grouped QC distributions, and a general stored-embedding renderer that colors
   cells by observation metadata or one explicitly selected expression-source gene. Grouped gene-expression plots
   retain their existing dot, matrix, track, and violin modes under a clearer display name.
 - Make the public surface current-only: remove eight retired or compatibility-only nodes, all hidden direct-call
   parameter aliases, the `ora` installation-extra alias, old analysis-history readers, incomplete scVI artifact
-  provenance defaults, and automatic browser-side workflow migration. The registry now contains exactly 99
+  provenance defaults, and automatic browser-side workflow migration. The registry now contains exactly 144
   non-deprecated nodes; saved graphs and process-local artifacts must match their current schemas.
 - Make result previews and H5AD/CSV/PNG output adapters failure-atomic. PNGs are fully decoded before publication,
   H5AD files are reopened to verify shape and axis identity, CSV files preserve explicit row-index identity, and

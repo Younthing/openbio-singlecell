@@ -29,7 +29,15 @@ def test_lineage_qc_operation_encodes_owned_characters_and_table(tmp_path, monke
         "openbio_singlecell.operations_lineage.lineage_qc_owned",
         lambda _path, **_parameters: (
             artifact,
-            SimpleNamespace(table=pd.DataFrame({"status": ["pass"]})),
+            SimpleNamespace(
+                table=pd.DataFrame(
+                    {
+                        "status": ["pass"],
+                        "qc_warnings": [[]],
+                        "unavailability_reasons": [[]],
+                    }
+                )
+            ),
             object(),
             "code",
         ),

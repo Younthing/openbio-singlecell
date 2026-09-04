@@ -12,6 +12,12 @@ from typing import TYPE_CHECKING, Any
 from . import dependencies
 from .analysis_reporting import AnalysisReference, make_analysis_report, summarize_numeric
 from .analysis_utils import finish_adata, make_plot_result
+from .embedding_diagnostic_plotting import (
+    _standalone_neighbor_graph_diagnostics_plot,
+    _standalone_pca_loadings_plot,
+    neighbor_graph_diagnostics_plot_code,
+    pca_loadings_plot_code,
+)
 from .expression_source import _PCA_SPEC, DynamicExpressionSource, ExpressionSource
 from .graph_analysis import (
     assess_leiden_stability,
@@ -808,6 +814,61 @@ def pca_variance_plot_owned(adata: Any, n_pcs: int = 0) -> tuple[Any, Any, str]:
     return plotted, report, code
 
 
+def pca_loadings_plot_owned(adata: Any, component: int = 1, n_genes: int = 20) -> tuple[Any, Any, str]:
+    started_at = time.perf_counter()
+    png, details = _standalone_pca_loadings_plot(
+        adata,
+        component=component,
+        n_genes=n_genes,
+        _return_details=True,
+    )
+    parameters = {"component": details["component"], "n_genes": details["requested_genes"]}
+    warnings_list = []
+    if details["plotted_genes"] < details["requested_genes"]:
+        warnings_list.append(
+            f"Requested {details['requested_genes']:,} genes but only {details['plotted_genes']:,} features exist."
+        )
+    code = pca_loadings_plot_code(**parameters)
+    plotted = make_plot_result(
+        png=png,
+        title=f"PC{details['component']} loadings",
+        operation="pca_loadings_plot",
+        parameters=parameters,
+        description="Read-only signed loading plot from the stored PCA bundle.",
+        warnings=warnings_list,
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellPCALoadingsPlot",
+        title=f"PC{details['component']} loadings",
+        operation="pca_loadings_plot",
+        methods=(
+            "Read the selected column of adata.varm['PCs'], ranked features by descending absolute loading "
+            "with stable feature-order ties, and rendered signed bars without recomputing PCA."
+        ),
+        results=(
+            f"Displayed {details['plotted_genes']:,} features for PC{details['component']}; "
+            f"{details['positive_loading_count']:,} shown loadings were positive and "
+            f"{details['negative_loading_count']:,} were negative."
+        ),
+        key_results=details,
+        parameters=parameters,
+        references=[PCA_REFERENCE, MATPLOTLIB_REFERENCE],
+        software_packages=["anndata", "matplotlib", "numpy"],
+        warnings=warnings_list,
+        limitations=[
+            "PCA component signs are arbitrary; loading magnitude is descriptive and is not marker evidence."
+        ],
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+        code=code,
+    )
+    return plotted, report, code
+
+
 class OpenBioSingleCellNeighbors:
     @classmethod
     def execute(
@@ -959,6 +1020,67 @@ class OpenBioSingleCellNeighbors:
             random_seed=random_seed,
         )
         return output, summary, code
+
+
+def neighbor_graph_diagnostics_plot_owned(
+    adata: Any,
+    neighbors_key: str = "neighbors",
+    max_working_memory_gib: float = 4.0,
+) -> tuple[Any, Any, str]:
+    started_at = time.perf_counter()
+    png, details = _standalone_neighbor_graph_diagnostics_plot(
+        adata,
+        neighbors_key=neighbors_key,
+        max_working_memory_gib=max_working_memory_gib,
+        _return_details=True,
+    )
+    parameters = {
+        "neighbors_key": details["neighbors_key"],
+        "max_working_memory_gib": details["memory_preflight"]["max_working_memory_gib"],
+    }
+    warnings_list = []
+    if details["connected_components"] > 1:
+        warnings_list.append(
+            f"The stored graph has {details['connected_components']:,} connected components."
+        )
+    code = neighbor_graph_diagnostics_plot_code(**parameters)
+    plotted = make_plot_result(
+        png=png,
+        title=f"Neighbor graph diagnostics: {details['neighbors_key']}",
+        operation="neighbor_graph_diagnostics_plot",
+        parameters=parameters,
+        description="Read-only graph degree, distance, and connected-component diagnostics.",
+        warnings=warnings_list,
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellNeighborGraphDiagnosticsPlot",
+        title=f"Neighbor graph diagnostics: {details['neighbors_key']}",
+        operation="neighbor_graph_diagnostics_plot",
+        methods=(
+            "Validated the named stored connectivity and distance matrices, then rendered cell degree, stored "
+            "positive distances, and connected-component sizes without rebuilding the neighbor graph."
+        ),
+        results=(
+            f"The graph contains {details['observations']:,} observations across "
+            f"{details['connected_components']:,} connected component(s)."
+        ),
+        key_results=details,
+        parameters=parameters,
+        references=[SCANPY_REFERENCE, MATPLOTLIB_REFERENCE],
+        software_packages=["anndata", "matplotlib", "numpy", "scipy"],
+        warnings=warnings_list,
+        limitations=[
+            "Graph diagnostics describe stored geometry; they do not establish biological populations or an optimal neighbor setting."
+        ],
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+        code=code,
+    )
+    return plotted, report, code
 
 
 class OpenBioSingleCellUMAP:
@@ -1848,6 +1970,18 @@ def pca_variance_plot(
     return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
 
 
+@register_operation("openbio.node.pcaloadingsplot")
+def pca_loadings_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    require_input_names(inputs, {"adata"}, operation="PCA Loadings Plot")
+    require_parameters(parameters, {"component", "n_genes"}, operation="PCA Loadings Plot")
+    plotted, report, code = pca_loadings_plot_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
+
+
 @register_operation("openbio.node.neighbors")
 def neighbors(
     context: OperationContext, inputs: dict[str, JSONValue], parameters: dict[str, JSONValue]
@@ -1869,6 +2003,22 @@ def neighbors(
         },
         runner=OpenBioSingleCellNeighbors.execute,
     )
+
+
+@register_operation("openbio.node.neighborgraphdiagnosticsplot")
+def neighbor_graph_diagnostics_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    require_input_names(inputs, {"adata"}, operation="Neighbor Graph Diagnostics Plot")
+    require_parameters(
+        parameters,
+        {"neighbors_key", "max_working_memory_gib"},
+        operation="Neighbor Graph Diagnostics Plot",
+    )
+    plotted, report, code = neighbor_graph_diagnostics_plot_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
 
 
 @register_operation("openbio.node.umap")
@@ -1952,8 +2102,12 @@ def leiden(
 __all__ = [
     "force_directed_graph",
     "leiden",
+    "neighbor_graph_diagnostics_plot",
+    "neighbor_graph_diagnostics_plot_owned",
     "neighbors",
     "pca",
+    "pca_loadings_plot",
+    "pca_loadings_plot_owned",
     "pca_variance_plot",
     "pca_variance_plot_owned",
     "tsne",

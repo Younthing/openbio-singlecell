@@ -243,6 +243,61 @@ def _standalone_graph_fingerprint(matrix, obs_names, *, np):
     return digest.hexdigest()
 
 
+def _standalone_hierarchy_evidence_fingerprint(adata, *, key_added, np):
+    import hashlib
+    import json
+    from collections.abc import Mapping
+
+    schist_root = adata.uns.get("schist")
+    bundle = schist_root.get(key_added) if isinstance(schist_root, Mapping) else None
+    if not isinstance(bundle, Mapping):
+        raise ValueError("Schist hierarchy fingerprint requires the stored hierarchy bundle.")
+    stats, blocks, params = bundle.get("stats"), bundle.get("blocks"), bundle.get("params")
+    if not all(isinstance(value, Mapping) for value in (stats, blocks, params)):
+        raise ValueError("Schist hierarchy fingerprint requires stats, blocks, and params mappings.")
+    try:
+        levels = sorted(int(key) for key in blocks)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Schist hierarchy fingerprint block keys must be integer strings.") from error
+    if levels != list(range(len(levels))) or any(str(level) not in blocks for level in levels) or not levels:
+        raise ValueError("Schist hierarchy fingerprint requires consecutive string-keyed levels.")
+    digest = hashlib.sha256(b"openbio-singlecell/schist-hierarchy-evidence/v1\0")
+    observation_axis = json.dumps(
+        [str(value) for value in adata.obs_names],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest.update(observation_axis)
+    parameter_payload = json.dumps(
+        _plain_json(dict(params)),
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest.update(parameter_payload)
+    try:
+        entropy = np.asarray([stats.get("entropy")], dtype="<f8")
+        modularity = np.ascontiguousarray(stats.get("modularity"), dtype="<f8")
+        level_entropy = np.ascontiguousarray(stats.get("level_entropy"), dtype="<f8")
+    except (TypeError, ValueError) as error:
+        raise ValueError("Schist hierarchy fingerprint statistics are not numeric.") from error
+    for values in (entropy, modularity, level_entropy):
+        digest.update(json.dumps(list(values.shape), separators=(",", ":")).encode("ascii"))
+        digest.update(values.tobytes(order="C"))
+    for level in levels:
+        membership = np.asarray(
+            [int(str(value)) for value in adata.obs[f"{key_added}_level_{level}"]],
+            dtype="<i8",
+        )
+        marginal = np.ascontiguousarray(adata.obsm[f"CM_{key_added}_level_{level}"], dtype="<f8")
+        parent = np.ascontiguousarray(blocks[str(level)], dtype="<i8")
+        for values in (membership, marginal, parent):
+            digest.update(json.dumps(list(values.shape), separators=(",", ":")).encode("ascii"))
+            digest.update(values.tobytes(order="C"))
+    return digest.hexdigest()
+
+
 def _standalone_validate_graph(adata, *, neighbors_key, posterior_samples, budget_bytes, np, pd, sparse):
     from collections.abc import Mapping
 
@@ -972,6 +1027,8 @@ def _standalone_summary(
             "total_entropy": hierarchy["entropy"],
             "informative_level_count": hierarchy["informative_level_count"],
             "root_level": hierarchy["root_level"],
+            "hierarchy_evidence_schema": hierarchy["evidence_schema"],
+            "hierarchy_evidence_sha256": hierarchy["evidence_sha256"],
             "output_storage": {
                 "obs_membership_keys": hierarchy["obs_keys"],
                 "obsm_marginal_keys": hierarchy["obsm_keys"],
@@ -1111,6 +1168,15 @@ def _standalone_schist_nested_model(
         pd=pd,
         sparse=sparse,
     )
+    hierarchy_bundle = output.uns["schist"][settings["key_added"]]
+    hierarchy_bundle["openbio_evidence_schema"] = "openbio-singlecell/schist-hierarchy-evidence/v1"
+    hierarchy_bundle["openbio_evidence_sha256"] = _standalone_hierarchy_evidence_fingerprint(
+        output,
+        key_added=settings["key_added"],
+        np=np,
+    )
+    hierarchy["evidence_schema"] = hierarchy_bundle["openbio_evidence_schema"]
+    hierarchy["evidence_sha256"] = hierarchy_bundle["openbio_evidence_sha256"]
     _standalone_h5ad_roundtrip(
         output,
         key_added=settings["key_added"],
@@ -1151,6 +1217,7 @@ _STANDALONE_HELPERS = (
     _standalone_memory_estimate,
     _standalone_numeric_summary,
     _standalone_graph_fingerprint,
+    _standalone_hierarchy_evidence_fingerprint,
     _standalone_validate_graph,
     _standalone_require_backend,
     _standalone_hash_update,

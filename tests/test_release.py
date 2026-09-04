@@ -46,6 +46,8 @@ EXPECTED_ARTIFACT_TICKET_WIRE_TYPES = {
     "table": "OPENBIO_SINGLE_CELL_TABLE",
     "plot": "OPENBIO_SINGLE_CELL_PLOT",
     "augur_result": "OPENBIO_AUGUR_RESULT",
+    "milo_result": "OPENBIO_MILO_RESULT",
+    "composition_model_result": "OPENBIO_COMPOSITION_MODEL_RESULT",
     "dgidb_resource": "OPENBIO_DGIDB_RESOURCE",
     "liana_result": "OPENBIO_LIANA_RESULT",
     "tf_activity": "OPENBIO_TF_ACTIVITY",

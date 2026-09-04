@@ -174,15 +174,17 @@ Open one of the five production starting-point templates in `example_workflows`:
   retained data, and writes a clean H5AD only through the explicit save node.
 - `Cell Clustering and Marker Discovery.json` reads raw counts from `adata.X`, leaves `X` and existing layers
   unchanged, and creates a normalized `log1p_norm` layer for highly variable genes, PCA, clustering, marker ranking,
-  plots, and explicit outputs. It deliberately omits Scale so the production path does not densify the expression
-  matrix merely to reach PCA.
+  and explicit outputs. It previews stored HVG, PCA-variance, neighbor-graph, embedding, and direct marker-evidence
+  diagnostics. It deliberately omits Scale so the production path does not densify the expression matrix merely to
+  reach PCA.
 - `Sample Composition Comparison.json` loads AnnData that already contains sample metadata and fans reusable
   Sample, Condition, and annotation strings into one descriptive Sample Composition Summary node. Its complete
   Sample-by-population table drives a stacked proportion plot, preview, PNG export, CSV export, and report without
   aggregating cells into a Condition-level pseudo-replicate.
 - `scVI Batch Integration and Contrast.json` trains scVI from raw counts in `adata.X`, constructs neighbors
-  from `X_scVI`, visualizes the integrated embedding, and passes its native session-only model artifact to scVI
-  differential expression instead of retraining it.
+  from `X_scVI`, previews the retained training metrics, visualizes the integrated embedding, and passes its native
+  session-only model artifact to scVI differential expression instead of retraining it. The resulting population DE
+  evidence is plotted with its posterior semantics rather than presented as a frequentist Sample-level contrast.
 - `Single-Cell Best Practice.json` is the production-oriented end-to-end example for the supplied multi-sample
   study. It re-audits QC, removes predicted doublets, applies sample-wise MAD rules, preserves full-gene counts in
   both `layers["counts"]` and `raw`, trains scVI on a 5,000-HVG count view, joins its Leiden labels back to the
@@ -226,11 +228,11 @@ contain the scVI embedding or graph. The HVG-scVI H5AD retains the 5,000-gene ac
 UMAP, and Leiden results; AnnData's full-gene `raw` snapshot remains available for recovery after variable
 subsetting. Neither H5AD stores the trained scVI model weights.
 
-Within this existing-node implementation, sample-wise MAD decisions are exact but the before/after QC plots are
-global rather than sample-faceted. The HVG and full-gene top-marker tables are Scanpy cluster rankings used as
-annotation evidence; they are not scVI all-cluster DE or replicate-aware condition tests. The reference dotplot is a
-fixed canonical marker panel because marker tables cannot currently drive a gene-list input dynamically. CellTypist
-uses `Adult_Human_Vascular.pkl` as a provisional reference. The pseudobulk branch selects its provisional
+Within this existing-node implementation, sample-wise MAD decisions and Scrublet evidence have dedicated diagnostic
+plots. The HVG and full-gene top-marker tables are Scanpy cluster rankings used as annotation evidence; they are not
+scVI all-cluster DE or replicate-aware condition tests. Marker Evidence Plot reads the direct ranked table and tested
+universe to choose each group's upstream-ranked genes without reranking them. CellTypist uses
+`Adult_Human_Vascular.pkl` as a provisional reference. The pseudobulk branch selects its provisional
 `smc_pc_intermediate` label before fitting `~group` for `nonDM_ED` versus `Normal`; this is a real model label but
 is only a runnable starting choice. Replace it with a populated provisional label after reviewing CellTypist output,
 or connect the same branch to the later curated `cell_type` column. Duplicate the explicit population-selection
@@ -240,6 +242,33 @@ The scVI `model` output is a native session-only artifact for downstream nodes i
 session, never a live Python object in ComfyUI. Saving the workflow records the connection and parameters, not the
 native model directory; after restarting ComfyUI, rerun scVI Integration before executing its
 differential-expression consumer.
+
+## Companion plot catalog
+
+Plot nodes are grouped by the scientific result they interpret, rather than under one catch-all visualization menu.
+The generic Embedding and Grouped Gene Expression plots remain cross-domain because they intentionally inspect any
+compatible AnnData. The domain companions are:
+
+| Scientific category | Companion plots |
+| --- | --- |
+| QC and correction | QC Plots; MAD Outlier Plot; Scrublet Diagnostics Plot |
+| Preprocessing and dimension reduction | HVG Selection Plot; PCA Variance Plot; PCA Loadings Plot; Neighbor Graph Diagnostics Plot; Embedding Plot |
+| Batch integration and clustering | Harmony Convergence Plot; scVI Training Plot; Leiden Resolution Sweep Plot; Schist Hierarchy Plot |
+| Marker evidence and annotation | Marker Evidence Plot; Grouped Gene Expression Plot; Marker ORA Evidence Plot; CellTypist Diagnostics Plot; Cell Cycle Score Plot |
+| Factorization | cNMF Rank Plot; cNMF Programs Plot |
+| Differential expression | Pseudobulk QC Plot; Pseudobulk Condition Contrast Plot; scVI Population DE Evidence Plot |
+| Differential abundance | Sample Composition Plot; Milo Differential Abundance Plot; scCODA Differential Composition Plot; tascCODA Differential Composition Plot |
+| Enrichment | Score/Activity Plot; Pathway Score Contrast Plot; Ranked GSEA Plot; ORA Evidence Plot; Drug Hypergeometric Plot; Drug GSEA Plot |
+| Regulatory | TF Activity Plot; TF Activity Ranking Plot; SCENIC Activity Plot; SCENIC Regulon Specificity Plot; SCENIC Binarization Plot; SCENIC Regulon Membership Plot |
+| Trajectory and velocity | PAGA Plot; Diffusion Spectrum Plot; DPT Gene Trend Plot; Velocity Stream Plot; Velocity Dynamics Plot; Velocity Gene Ranking Plot |
+| Copy number | CNV Heatmap Plot; CNV Score Plot; generic Embedding Plot for stored CNV PCA coordinates |
+| Lineage and prioritization | Cassiopeia Lineage QC Plot; Cassiopeia Tree Plot; Cassiopeia Expansion Plot; Cassiopeia Plasticity Plot; Augur Plot |
+| Cell communication and diagnostics | LIANA Dot Plot; PCA Metadata Associations Plot; Population Centroid Correlation's existing heatmap |
+
+Harmony and scVI now retain complete convergence/training sequences. Milo retains neighborhood membership, graph,
+and representative coordinates; scCODA/tascCODA retain posterior and sampler diagnostics; Augur retains fold-level
+labels and prediction scores. Results created before these evidence contracts must be rerun before their new
+convergence, neighborhood, posterior, trace, or ROC views can be rendered.
 
 ## Study parameters
 
@@ -316,6 +345,10 @@ and a working local database connection.
   plugin-owned `OPENBIO_SINGLE_CELL_TABLE`, `OPENBIO_SINGLE_CELL_PLOT`, and
   `OPENBIO_SINGLE_CELL_SUMMARY` wire types. Tables and plots are File artifacts; summaries, code, scalar values,
   and small metrics remain strict JSON-compatible values or strings.
+- Scientific plots use domain-specific read-only companion nodes in the same category as the result they explain.
+  Each companion accepts the exact AnnData, table, or typed artifact produced upstream, offers only closed views of
+  that one scientific contract, and returns `plot`, `summary`, and equivalent `code`. Changing a view rerenders the
+  retained evidence without rerunning preprocessing, model fitting, statistical testing, or resource download.
 - Refactored analysis and transformation nodes expose their primary result first, followed by a structured
   `summary` and a standard `STRING` `code` port. The summary wire carries an OpenBio result artifact whose
   `.summary` payload is strict JSON-compatible data with report-ready

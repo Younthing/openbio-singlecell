@@ -25,9 +25,12 @@ def test_differential_nodes_are_schema_only():
     assert "dependencies" not in source
     assert [node.define_schema().node_id for node in DIFFERENTIAL_NODE_CLASSES] == [
         "OpenBioSingleCellPseudobulk",
+        "OpenBioSingleCellPseudobulkQCPlot",
         "OpenBioSingleCellPseudobulkEdgeR",
         "OpenBioSingleCellPseudobulkDESeq2",
+        "OpenBioSingleCellPseudobulkConditionContrastPlot",
         "OpenBioSingleCellSCVIDifferentialExpression",
+        "OpenBioSingleCellSCVIPopulationDEEvidencePlot",
     ]
 
 
@@ -40,9 +43,12 @@ def test_differential_operations_publish_the_expected_contract_ids():
     assert scvi_differential_expression.__name__ == "scvi_differential_expression"
     assert {
         "openbio.node.pseudobulk",
+        "openbio.node.pseudobulkqcplot",
         "openbio.node.pseudobulkedger",
         "openbio.node.pseudobulkdeseq2",
+        "openbio.node.pseudobulkconditioncontrastplot",
         "openbio.node.scvidifferentialexpression",
+        "openbio.node.scvipopulationdeevidenceplot",
     }.issubset(registered_operation_ids())
 
 

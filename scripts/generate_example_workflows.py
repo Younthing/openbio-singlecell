@@ -368,6 +368,8 @@ def _cell_clustering() -> tuple[str, dict[str, Any]]:
                 "overwrite_existing": False,
             },
         ),
+        _node("hvg_plot", "OpenBioSingleCellHVGSelectionPlot", (400, -500)),
+        _node("hvg_plot_preview", "OpenBioSingleCellPreviewResult", (760, -550)),
         _node(
             "pca",
             "OpenBioSingleCellPCA",
@@ -380,6 +382,8 @@ def _cell_clustering() -> tuple[str, dict[str, Any]]:
                 "random_seed": 0,
             },
         ),
+        _node("pca_variance_plot", "OpenBioSingleCellPCAVariancePlot", (1500, -360)),
+        _node("pca_variance_preview", "OpenBioSingleCellPreviewResult", (1860, -410)),
         _node(
             "neighbors",
             "OpenBioSingleCellNeighbors",
@@ -393,6 +397,8 @@ def _cell_clustering() -> tuple[str, dict[str, Any]]:
                 "random_seed": 0,
             },
         ),
+        _node("neighbor_diagnostics", "OpenBioSingleCellNeighborGraphDiagnosticsPlot", (1860, -200)),
+        _node("neighbor_diagnostics_preview", "OpenBioSingleCellPreviewResult", (2220, -250)),
         _node("umap", "OpenBioSingleCellUMAP", (1860, 70)),
         _node("leiden", "OpenBioSingleCellLeiden", (2220, 70)),
         _node(
@@ -423,6 +429,17 @@ def _cell_clustering() -> tuple[str, dict[str, Any]]:
             (3320, 20),
             {"filename_prefix": "cluster_markers_filtered_from_top100"},
         ),
+        _node(
+            "marker_evidence_plot",
+            "OpenBioSingleCellMarkerEvidencePlot",
+            (3680, -360),
+            {
+                "top_genes_per_group": 5,
+                "source": "layer",
+                "source.layer_name": "log1p_norm",
+            },
+        ),
+        _node("marker_evidence_preview", "OpenBioSingleCellPreviewResult", (4040, -410)),
         _node(
             "umap_plot",
             "OpenBioSingleCellUMAPPlot",
@@ -461,8 +478,14 @@ def _cell_clustering() -> tuple[str, dict[str, Any]]:
     connections = [
         ("load", "adata", "normalize", "adata"),
         ("normalize", "adata", "hvg", "adata"),
+        ("hvg", "adata", "hvg_plot", "adata"),
+        ("hvg_plot", "plot", "hvg_plot_preview", "result"),
         ("hvg", "adata", "pca", "adata"),
+        ("pca", "adata", "pca_variance_plot", "adata"),
+        ("pca_variance_plot", "plot", "pca_variance_preview", "result"),
         ("pca", "adata", "neighbors", "adata"),
+        ("neighbors", "adata", "neighbor_diagnostics", "adata"),
+        ("neighbor_diagnostics", "plot", "neighbor_diagnostics_preview", "result"),
         ("neighbors", "adata", "umap", "adata"),
         ("umap", "adata", "leiden", "adata"),
         ("leiden", "adata", "markers", "adata"),
@@ -471,6 +494,10 @@ def _cell_clustering() -> tuple[str, dict[str, Any]]:
         ("markers", "universe", "marker_filter", "universe"),
         ("marker_filter", "table", "markers_preview", "result"),
         ("marker_filter", "table", "markers_filtered_csv", "table"),
+        ("leiden", "adata", "marker_evidence_plot", "adata"),
+        ("marker_filter", "table", "marker_evidence_plot", "table"),
+        ("marker_filter", "universe", "marker_evidence_plot", "universe"),
+        ("marker_evidence_plot", "plot", "marker_evidence_preview", "result"),
         ("leiden", "adata", "umap_plot", "adata"),
         ("umap_plot", "plot", "umap_preview", "result"),
         ("umap_plot", "plot", "umap_png", "plot"),
@@ -480,12 +507,12 @@ def _cell_clustering() -> tuple[str, dict[str, Any]]:
     ]
     groups = [
         _group(1, "1 · Load raw integer counts in adata.X", (0, 0, 360, 250)),
-        _group(2, "2 · Normalize to a layer and select variable genes", (360, -20, 760, 330)),
-        _group(3, "3 · Embed and cluster cells", (1100, -20, 1480, 330)),
-        _group(4, "4 · Discover and filter cluster markers", (2560, -520, 1100, 660)),
+        _group(2, "2 · Normalize to a layer and inspect variable genes", (360, -650, 760, 960)),
+        _group(3, "3 · Embed, diagnose, and cluster cells", (1100, -480, 1480, 790)),
+        _group(4, "4 · Discover, filter, and plot cluster-marker evidence", (2560, -520, 1840, 660)),
         _group(5, "5 · Review and export", (2560, 150, 1100, 780)),
     ]
-    return stem, _workflow(stem, nodes, connections, groups, scale=0.48, offset=(40, 520))
+    return stem, _workflow(stem, nodes, connections, groups, scale=0.42, offset=(40, 560))
 
 
 def _sample_composition() -> tuple[str, dict[str, Any]]:
@@ -591,6 +618,8 @@ def _scvi_integration() -> tuple[str, dict[str, Any]]:
             (1840, 50),
             {"source": "X", "technical_batch_key": "batch"},
         ),
+        _node("training_plot", "OpenBioSingleCellSCVITrainingPlot", (2220, -1080)),
+        _node("training_plot_preview", "OpenBioSingleCellPreviewResult", (2580, -1130)),
         _node(
             "neighbors",
             "OpenBioSingleCellNeighbors",
@@ -630,10 +659,12 @@ def _scvi_integration() -> tuple[str, dict[str, Any]]:
             (2580, -260),
             {"filename_prefix": "scvi_differential_expression"},
         ),
+        _node("de_plot", "OpenBioSingleCellSCVIPopulationDEEvidencePlot", (2580, -820)),
+        _node("de_plot_preview", "OpenBioSingleCellPreviewResult", (2940, -870)),
         _node(
             "batch_plot",
             "OpenBioSingleCellUMAPPlot",
-            (3320, -330),
+            (3720, -330),
             {
                 "embedding_key": "X_umap",
                 "x_dimension": 1,
@@ -649,17 +680,17 @@ def _scvi_integration() -> tuple[str, dict[str, Any]]:
                 "legend_policy": "automatic",
             },
         ),
-        _node("batch_preview", "OpenBioSingleCellPreviewResult", (3680, -420)),
+        _node("batch_preview", "OpenBioSingleCellPreviewResult", (4080, -420)),
         _node(
             "batch_png",
             "OpenBioSingleCellSavePNG",
-            (3680, -140),
+            (4080, -140),
             {"filename_prefix": "scvi_umap_batch"},
         ),
         _node(
             "cell_type_plot",
             "OpenBioSingleCellUMAPPlot",
-            (3320, 100),
+            (3720, 100),
             {
                 "embedding_key": "X_umap",
                 "x_dimension": 1,
@@ -675,17 +706,17 @@ def _scvi_integration() -> tuple[str, dict[str, Any]]:
                 "legend_policy": "automatic",
             },
         ),
-        _node("cell_type_preview", "OpenBioSingleCellPreviewResult", (3680, 20)),
+        _node("cell_type_preview", "OpenBioSingleCellPreviewResult", (4080, 20)),
         _node(
             "cell_type_png",
             "OpenBioSingleCellSavePNG",
-            (3680, 300),
+            (4080, 300),
             {"filename_prefix": "scvi_umap_cell_type"},
         ),
         _node(
             "save_adata",
             "OpenBioSingleCellSaveH5AD",
-            (3320, 520),
+            (3720, 520),
             {"filename_prefix": "scvi_integrated_adata"},
         ),
     ]
@@ -695,6 +726,8 @@ def _scvi_integration() -> tuple[str, dict[str, Any]]:
         ("filter_cells", "adata", "filter_genes", "adata"),
         ("filter_genes", "adata", "normalize", "adata"),
         ("normalize", "adata", "scvi", "adata"),
+        ("scvi", "model", "training_plot", "model"),
+        ("training_plot", "plot", "training_plot_preview", "result"),
         ("scvi", "adata", "neighbors", "adata"),
         ("neighbors", "adata", "umap", "adata"),
         ("umap", "adata", "leiden", "adata"),
@@ -702,6 +735,8 @@ def _scvi_integration() -> tuple[str, dict[str, Any]]:
         ("scvi", "model", "de", "model"),
         ("de", "table", "de_preview", "result"),
         ("de", "table", "de_csv", "table"),
+        ("de", "table", "de_plot", "table"),
+        ("de_plot", "plot", "de_plot_preview", "result"),
         ("leiden", "adata", "batch_plot", "adata"),
         ("batch_plot", "plot", "batch_preview", "result"),
         ("batch_plot", "plot", "batch_png", "plot"),
@@ -714,11 +749,12 @@ def _scvi_integration() -> tuple[str, dict[str, Any]]:
         _group(1, "1 · Load and clean counts", (0, 0, 1460, 350)),
         _group(2, "2 · Normalize without replacing raw adata.X", (1460, 0, 360, 350)),
         _group(3, "3 · Train scVI from raw integer counts", (1800, -20, 400, 370)),
-        _group(4, "4 · Build integrated neighborhoods", (2180, 0, 1100, 350)),
-        _group(5, "5 · Contrast cell types with the trained model", (2180, -590, 760, 540)),
-        _group(6, "6 · Review and export integrated results", (3280, -450, 760, 1100)),
+        _group(4, "4 · Inspect retained scVI training diagnostics", (2180, -1210, 760, 400)),
+        _group(5, "5 · Build integrated neighborhoods", (2180, 0, 1100, 350)),
+        _group(6, "6 · Contrast and plot cell-type evidence", (2180, -930, 1120, 880)),
+        _group(7, "7 · Review and export integrated results", (3680, -450, 760, 1100)),
     ]
-    return stem, _workflow(stem, nodes, connections, groups, scale=0.44, offset=(40, 520))
+    return stem, _workflow(stem, nodes, connections, groups, scale=0.4, offset=(40, 640))
 
 
 def _single_cell_best_practice() -> tuple[str, dict[str, Any]]:

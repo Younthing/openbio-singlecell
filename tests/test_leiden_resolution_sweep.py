@@ -14,6 +14,7 @@ from sklearn.metrics import adjusted_rand_score
 from openbio_singlecell.artifact_codecs import ANNDATA_PAYLOAD, read_anndata, read_table, write_anndata
 from openbio_singlecell.artifact_envelope import summary_from_metadata, table_from_metadata
 from openbio_singlecell.graph_analysis import resolve_named_graph
+from openbio_singlecell.leiden_sweep_plotting import leiden_resolution_metrics_fingerprint
 from openbio_singlecell.nodes_integration import OpenBioSingleCellLeidenResolutionSweep as LeidenResolutionSweepNode
 from openbio_singlecell.operations_input import ANNDATA_CODEC, ANNDATA_KIND
 from openbio_singlecell.operations_integration import (
@@ -163,6 +164,7 @@ def test_sweep_operation_publishes_portable_table_in_declared_order(tmp_path, sc
     assert list(table.columns) == METRIC_COLUMNS
     assert table["resolution"].tolist() == [0.4, 0.8]
     assert metadata["kind"] == "table"
+    assert metadata["parameters"]["table_content_fingerprint_sha256"] == leiden_resolution_metrics_fingerprint(table)
     written = read_anndata(staging / records[0]["payload"])
     assert {"leiden_0_4", "leiden_0_8"} <= set(written.obs)
     assert input_payload.read_bytes() == before

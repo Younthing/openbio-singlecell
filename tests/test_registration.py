@@ -25,8 +25,10 @@ from openbio_singlecell.node_types import (
     CassiopeiaTreeType,
     CNMFRunType,
     CNVStateType,
+    CompositionModelResultType,
     DGIdbResourceType,
     LianaResultType,
+    MiloResultType,
     PlotResultType,
     PseudobulkType,
     SCENICResultArtifactType,
@@ -133,6 +135,51 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellFilterMarkerGenes",
     "OpenBioSingleCellMarkerExpressionPlot",
     "OpenBioSingleCellPCAMetadataAssociations",
+    "OpenBioSingleCellAugurPlot",
+    "OpenBioSingleCellCNMFProgramsPlot",
+    "OpenBioSingleCellCNMFRankPlot",
+    "OpenBioSingleCellCNVHeatmapPlot",
+    "OpenBioSingleCellCNVScorePlot",
+    "OpenBioSingleCellCassiopeiaExpansionPlot",
+    "OpenBioSingleCellCassiopeiaLineageQCPlot",
+    "OpenBioSingleCellCassiopeiaPlasticityPlot",
+    "OpenBioSingleCellCassiopeiaTreePlot",
+    "OpenBioSingleCellCellCycleScorePlot",
+    "OpenBioSingleCellCellTypistDiagnosticsPlot",
+    "OpenBioSingleCellDPTGeneTrendPlot",
+    "OpenBioSingleCellDiffusionSpectrumPlot",
+    "OpenBioSingleCellDrugGSEAPlot",
+    "OpenBioSingleCellDrugHypergeometricPlot",
+    "OpenBioSingleCellHarmonyConvergencePlot",
+    "OpenBioSingleCellLeidenResolutionSweepPlot",
+    "OpenBioSingleCellMADOutlierPlot",
+    "OpenBioSingleCellMarkerEvidencePlot",
+    "OpenBioSingleCellMarkerORAEvidencePlot",
+    "OpenBioSingleCellMiloDifferentialAbundancePlot",
+    "OpenBioSingleCellNeighborGraphDiagnosticsPlot",
+    "OpenBioSingleCellORAEvidencePlot",
+    "OpenBioSingleCellPAGAPlot",
+    "OpenBioSingleCellPCALoadingsPlot",
+    "OpenBioSingleCellPCAMetadataAssociationsPlot",
+    "OpenBioSingleCellPathwayScoreContrastPlot",
+    "OpenBioSingleCellPseudobulkConditionContrastPlot",
+    "OpenBioSingleCellPseudobulkQCPlot",
+    "OpenBioSingleCellRankedGSEAPlot",
+    "OpenBioSingleCellSCENICActivityPlot",
+    "OpenBioSingleCellSCENICBinarizationPlot",
+    "OpenBioSingleCellSCENICRegulonMembershipPlot",
+    "OpenBioSingleCellSCENICRegulonSpecificityPlot",
+    "OpenBioSingleCellSCVIPopulationDEEvidencePlot",
+    "OpenBioSingleCellSCVITrainingPlot",
+    "OpenBioSingleCellSccodaDifferentialCompositionPlot",
+    "OpenBioSingleCellSchistHierarchyPlot",
+    "OpenBioSingleCellScoreActivityPlot",
+    "OpenBioSingleCellScrubletDiagnosticsPlot",
+    "OpenBioSingleCellTFActivityPlot",
+    "OpenBioSingleCellTFActivityRankingPlot",
+    "OpenBioSingleCellTasccodaDifferentialCompositionPlot",
+    "OpenBioSingleCellVelocityDynamicsPlot",
+    "OpenBioSingleCellVelocityGeneRankingPlot",
     "OpenBioSingleCellPreviewResult",
     "OpenBioSingleCellSaveH5AD",
     "OpenBioSingleCellExportCSV",
@@ -170,6 +217,8 @@ def test_package_metadata_is_versioned():
     assert CassiopeiaTreeType.io_type == "OPENBIO_CASSIOPEIA_TREE"
     assert CNMFRunType.io_type == "OPENBIO_CNMF_RUN"
     assert CNVStateType.io_type == "OPENBIO_CNV_STATE"
+    assert CompositionModelResultType.io_type == "OPENBIO_COMPOSITION_MODEL_RESULT"
+    assert MiloResultType.io_type == "OPENBIO_MILO_RESULT"
     assert PseudobulkType.io_type == "OPENBIO_SINGLE_CELL_PSEUDOBULK"
     assert VelocityStateType.io_type == "OPENBIO_VELOCITY_STATE"
 
@@ -189,38 +238,38 @@ def test_input_extension_loads():
     assert isinstance(extension, OpenBioSingleCellExtension)
     node_ids = [node.GET_SCHEMA().node_id for node in NODE_CLASSES]
     schemas = [node.GET_SCHEMA() for node in NODE_CLASSES]
-    assert len(node_ids) == 99
+    assert len(node_ids) == 144
     assert len(node_ids) == len(set(node_ids))
     assert set(node_ids) == EXPECTED_NODE_IDS
     assert REMOVED_NODE_IDS.isdisjoint(node_ids)
     assert all(schema.is_deprecated is False for schema in schemas)
     assert Counter(schema.category for schema in schemas) == {
-        "openbio/single-cell/annotation": 4,
-        "openbio/single-cell/batch-integration": 2,
+        "openbio/single-cell/annotation": 7,
+        "openbio/single-cell/batch-integration": 4,
         "openbio/single-cell/cell-communication": 2,
-        "openbio/single-cell/cell-prioritization": 2,
-        "openbio/single-cell/clustering": 3,
-        "openbio/single-cell/copy-number": 3,
-        "openbio/single-cell/correction": 3,
+        "openbio/single-cell/cell-prioritization": 3,
+        "openbio/single-cell/clustering": 5,
+        "openbio/single-cell/copy-number": 5,
+        "openbio/single-cell/correction": 5,
         "openbio/single-cell/data": 4,
-        "openbio/single-cell/diagnostics": 3,
-        "openbio/single-cell/differential-abundance": 4,
-        "openbio/single-cell/differential-expression": 4,
-        "openbio/single-cell/dimension-reduction": 6,
-        "openbio/single-cell/enrichment": 10,
-        "openbio/single-cell/factorization": 2,
+        "openbio/single-cell/diagnostics": 4,
+        "openbio/single-cell/differential-abundance": 8,
+        "openbio/single-cell/differential-expression": 7,
+        "openbio/single-cell/dimension-reduction": 8,
+        "openbio/single-cell/enrichment": 16,
+        "openbio/single-cell/factorization": 4,
         "openbio/single-cell/input": 4,
-        "openbio/single-cell/lineage": 4,
-        "openbio/single-cell/marker-evidence": 2,
+        "openbio/single-cell/lineage": 8,
+        "openbio/single-cell/marker-evidence": 3,
         "openbio/single-cell/output": 5,
         "openbio/single-cell/preprocessing": 7,
         "openbio/single-cell/qc": 4,
-        "openbio/single-cell/regulatory": 6,
+        "openbio/single-cell/regulatory": 12,
         "openbio/single-cell/runtime": 1,
         "openbio/single-cell/study": 1,
-        "openbio/single-cell/trajectory": 3,
-        "openbio/single-cell/velocity": 7,
-        "openbio/single-cell/visualization": 3,
+        "openbio/single-cell/trajectory": 6,
+        "openbio/single-cell/velocity": 9,
+        "openbio/single-cell/visualization": 2,
     }
     assert asyncio.run(extension.get_node_list()) == NODE_CLASSES
 
@@ -234,6 +283,21 @@ def test_node_categories_preserve_domain_distinctions():
     assert categories["OpenBioSingleCellAnnDataSummary"] == "openbio/single-cell/diagnostics"
     assert categories["OpenBioSingleCellCellCycleScore"] == "openbio/single-cell/annotation"
     assert categories["OpenBioSingleCellCellTypeCorrelation"] == "openbio/single-cell/diagnostics"
+    assert categories["OpenBioSingleCellSampleCompositionPlot"] == "openbio/single-cell/differential-abundance"
+
+
+def test_only_cross_domain_anndata_plots_use_the_visualization_category():
+    visualization_plots = {
+        schema.node_id
+        for node in NODE_CLASSES
+        if (schema := node.GET_SCHEMA()).category == "openbio/single-cell/visualization"
+        and any(output.io_type == PlotResultType.io_type for output in schema.outputs)
+    }
+
+    assert visualization_plots == {
+        "OpenBioSingleCellMarkerExpressionPlot",
+        "OpenBioSingleCellUMAPPlot",
+    }
 
 
 def test_scientific_nodes_are_async_and_expose_one_optional_worker_socket():
@@ -570,16 +634,19 @@ def test_node_outputs_use_only_their_concrete_public_contracts():
             ("code", "STRING"),
         ],
         "OpenBioSingleCellMiloDifferentialAbundance": [
+            ("result", MiloResultType.io_type),
             ("table", TableResultType.io_type),
             ("summary", SummaryResultType.io_type),
             ("code", "STRING"),
         ],
         "OpenBioSingleCellSccodaDifferentialComposition": [
+            ("result", CompositionModelResultType.io_type),
             ("table", TableResultType.io_type),
             ("summary", SummaryResultType.io_type),
             ("code", "STRING"),
         ],
         "OpenBioSingleCellTasccodaDifferentialComposition": [
+            ("result", CompositionModelResultType.io_type),
             ("table", TableResultType.io_type),
             ("summary", SummaryResultType.io_type),
             ("code", "STRING"),
@@ -765,10 +832,19 @@ def test_node_outputs_use_only_their_concrete_public_contracts():
             ("comparison", "STRING"),
         ],
     }
+    standard_plot_outputs = [
+        ("plot", PlotResultType.io_type),
+        ("summary", SummaryResultType.io_type),
+        ("code", "STRING"),
+    ]
     for node in NODE_CLASSES:
         schema = node.GET_SCHEMA()
         actual_outputs = [(output.display_name, output.io_type) for output in schema.outputs]
-        expected_outputs = expected_multi_outputs.get(schema.node_id)
+        expected_outputs = (
+            standard_plot_outputs
+            if schema.node_id == "OpenBioSingleCellQCPlots" or schema.node_id.endswith("Plot")
+            else expected_multi_outputs.get(schema.node_id)
+        )
         if expected_outputs is not None:
             assert actual_outputs == expected_outputs
         elif actual_outputs:
@@ -786,8 +862,10 @@ def test_registered_ports_reject_generic_and_legacy_analysis_contracts():
         CassiopeiaTreeType.io_type,
         CNMFRunType.io_type,
         CNVStateType.io_type,
+        CompositionModelResultType.io_type,
         DGIdbResourceType.io_type,
         LianaResultType.io_type,
+        MiloResultType.io_type,
         PlotResultType.io_type,
         PseudobulkType.io_type,
         SCENICResultArtifactType.io_type,
@@ -827,8 +905,10 @@ def test_registered_ports_reject_generic_and_legacy_analysis_contracts():
                 CassiopeiaTreeType.io_type,
                 CNMFRunType.io_type,
                 CNVStateType.io_type,
+                CompositionModelResultType.io_type,
                 DGIdbResourceType.io_type,
                 LianaResultType.io_type,
+                MiloResultType.io_type,
                 PseudobulkType.io_type,
                 SCENICResultArtifactType.io_type,
                 TFActivityArtifactType.io_type,
@@ -848,8 +928,10 @@ def test_registered_ports_reject_generic_and_legacy_analysis_contracts():
             CassiopeiaCharactersType.io_type,
             CassiopeiaTreeType.io_type,
             CNVStateType.io_type,
+            CompositionModelResultType.io_type,
             DGIdbResourceType.io_type,
             LianaResultType.io_type,
+            MiloResultType.io_type,
             PlotResultType.io_type,
             PseudobulkType.io_type,
             SCENICResultArtifactType.io_type,
@@ -858,17 +940,29 @@ def test_registered_ports_reject_generic_and_legacy_analysis_contracts():
             VelocityStateType.io_type,
         },
         ("OpenBioSingleCellAugurResults", "result"): {AugurResultType.io_type},
+        ("OpenBioSingleCellAugurPlot", "result"): {AugurResultType.io_type},
         ("OpenBioSingleCellDrugGSEA", "resource"): {DGIdbResourceType.io_type},
         ("OpenBioSingleCellDrugHypergeometric", "resource"): {DGIdbResourceType.io_type},
         ("OpenBioSingleCellDrugScores", "resource"): {DGIdbResourceType.io_type},
         ("OpenBioSingleCellLianaDotPlot", "result"): {LianaResultType.io_type},
         ("OpenBioSingleCellCNVPCA", "cnv_state"): {CNVStateType.io_type},
         ("OpenBioSingleCellCNVScore", "cnv_state"): {CNVStateType.io_type},
+        ("OpenBioSingleCellCNVHeatmapPlot", "cnv_state"): {CNVStateType.io_type},
         ("OpenBioSingleCellCNMF", "run"): {CNMFRunType.io_type},
+        ("OpenBioSingleCellPseudobulkQCPlot", "pseudobulk"): {PseudobulkType.io_type},
         ("OpenBioSingleCellPseudobulkEdgeR", "pseudobulk"): {PseudobulkType.io_type},
         ("OpenBioSingleCellPseudobulkDESeq2", "pseudobulk"): {PseudobulkType.io_type},
         ("OpenBioSingleCellSCVIDifferentialExpression", "model"): {SCVIModelType.io_type},
+        ("OpenBioSingleCellSCVITrainingPlot", "model"): {SCVIModelType.io_type},
+        ("OpenBioSingleCellMiloDifferentialAbundancePlot", "result"): {MiloResultType.io_type},
+        ("OpenBioSingleCellSccodaDifferentialCompositionPlot", "result"): {
+            CompositionModelResultType.io_type
+        },
+        ("OpenBioSingleCellTasccodaDifferentialCompositionPlot", "result"): {
+            CompositionModelResultType.io_type
+        },
         ("OpenBioSingleCellRankTFActivities", "activities"): {TFActivityArtifactType.io_type},
+        ("OpenBioSingleCellTFActivityPlot", "activities"): {TFActivityArtifactType.io_type},
         ("OpenBioSingleCellSCENICRegulonSpecificity", "scenic_result"): {
             SCENICResultArtifactType.io_type
         },
@@ -878,16 +972,26 @@ def test_registered_ports_reject_generic_and_legacy_analysis_contracts():
         ("OpenBioSingleCellSCENICTFModules", "scenic_result"): {
             SCENICResultArtifactType.io_type
         },
+        ("OpenBioSingleCellSCENICActivityPlot", "scenic_result"): {
+            SCENICResultArtifactType.io_type
+        },
         ("OpenBioSingleCellReconstructCassiopeiaTree", "characters"): {
+            CassiopeiaCharactersType.io_type
+        },
+        ("OpenBioSingleCellCassiopeiaLineageQCPlot", "characters"): {
             CassiopeiaCharactersType.io_type
         },
         ("OpenBioSingleCellCassiopeiaExpansionTest", "tree"): {CassiopeiaTreeType.io_type},
         ("OpenBioSingleCellCassiopeiaPlasticity", "tree"): {CassiopeiaTreeType.io_type},
+        ("OpenBioSingleCellCassiopeiaTreePlot", "tree"): {CassiopeiaTreeType.io_type},
+        ("OpenBioSingleCellCassiopeiaExpansionPlot", "tree"): {CassiopeiaTreeType.io_type},
+        ("OpenBioSingleCellCassiopeiaPlasticityPlot", "tree"): {CassiopeiaTreeType.io_type},
         ("OpenBioSingleCellVelocityMoments", "velocity_state"): {VelocityStateType.io_type},
         ("OpenBioSingleCellEstimateVelocity", "velocity_state"): {VelocityStateType.io_type},
         ("OpenBioSingleCellVelocityGraph", "velocity_state"): {VelocityStateType.io_type},
         ("OpenBioSingleCellRecoverDynamics", "velocity_state"): {VelocityStateType.io_type},
         ("OpenBioSingleCellVelocityGeneRanking", "velocity_state"): {VelocityStateType.io_type},
+        ("OpenBioSingleCellVelocityDynamicsPlot", "velocity_state"): {VelocityStateType.io_type},
         ("OpenBioSingleCellVelocityStreamPlot", "velocity_state"): {VelocityStateType.io_type},
     }
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from comfy_api.latest import io
 
-from .node_types import AnnDataType, analysis_outputs
+from .node_types import AnnDataType, PlotResultType, analysis_outputs
 
 SCHIST_CATEGORY = "openbio/single-cell/clustering"
 
@@ -27,10 +27,27 @@ class OpenBioSingleCellSchistNestedModel(io.ComfyNode):
             outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
-SCHIST_NODE_CLASSES = [OpenBioSingleCellSchistNestedModel]
+
+class OpenBioSingleCellSchistHierarchyPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellSchistHierarchyPlot",
+            display_name="Schist Hierarchy Plot",
+            category=SCHIST_CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input("key_added", default="nsbm"),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
+SCHIST_NODE_CLASSES = [OpenBioSingleCellSchistNestedModel, OpenBioSingleCellSchistHierarchyPlot]
 
 
 __all__ = [
     "OpenBioSingleCellSchistNestedModel",
+    "OpenBioSingleCellSchistHierarchyPlot",
     "SCHIST_NODE_CLASSES",
 ]

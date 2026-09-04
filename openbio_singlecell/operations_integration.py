@@ -13,7 +13,14 @@ from typing import TYPE_CHECKING, Any
 
 from . import dependencies
 from .analysis_reporting import AnalysisReference, make_analysis_report, summarize_numeric
-from .analysis_utils import finish_adata, make_table_result, matrix_totals_and_nonzero, validate_count_expression
+from .analysis_utils import (
+    finish_adata,
+    make_plot_result,
+    make_table_result,
+    matrix_totals_and_nonzero,
+    validate_count_expression,
+)
+from .artifact_envelope import table_from_metadata
 from .expression_source import _SCVI_SPEC, DynamicExpressionSource, ExpressionSource
 from .graph_analysis import (
     assess_leiden_stability,
@@ -24,15 +31,36 @@ from .graph_analysis import (
     validate_leiden_settings,
     validate_random_seed,
 )
+from .integration_plotting import (
+    HARMONY_DIAGNOSTIC_SCHEMA,
+    harmony_convergence_plot_code,
+    make_harmony_diagnostic_evidence,
+    render_harmony_convergence_plot,
+    render_scvi_training_plot,
+    scvi_training_plot_code,
+)
+from .leiden_sweep_plotting import (
+    leiden_resolution_metrics_fingerprint,
+    leiden_resolution_sweep_plot_code,
+    run_leiden_resolution_sweep_plot,
+)
 from .operations_input import (
     analysis_outputs,
     read_anndata_input,
+    read_table_input,
+    require_artifact_input,
     require_input_names,
     require_parameters,
     write_anndata_output,
+    write_plot_output,
     write_table_output,
 )
-from .scvi_model import SCVI_GLOBAL_RNG_LOCK
+from .scvi_model import (
+    SCVI_GLOBAL_RNG_LOCK,
+    build_scvi_training_diagnostics,
+    read_scvi_training_diagnostics,
+    write_scvi_training_diagnostics,
+)
 from .worker_protocol import JSONValue, OperationContext, register_operation
 
 if TYPE_CHECKING:
@@ -84,6 +112,12 @@ SCVI_API_REFERENCE = AnalysisReference(
     citation="scvi-tools SCVI public API and introductory workflow.",
     url="https://docs.scvi-tools.org/en/latest/api/reference/scvi.model.SCVI.html",
     kind="software_documentation",
+)
+MATPLOTLIB_REFERENCE = AnalysisReference(
+    citation="Hunter JD. Matplotlib: A 2D Graphics Environment. Computing in Science & Engineering. 2007;9:90-95.",
+    doi="10.1109/MCSE.2007.55",
+    url="https://doi.org/10.1109/MCSE.2007.55",
+    kind="software",
 )
 INTEGRATION_BENCHMARK_REFERENCE = AnalysisReference(
     citation=(
@@ -272,51 +306,8 @@ def _resolve_harmony_theta(theta: Mapping[str, object] | None) -> tuple[str, flo
     return "custom", resolved
 
 
-def _history_values(value: Any, science: Any) -> Any:
-    if hasattr(value, "to_numpy"):
-        value = value.to_numpy()
-    array = science.np.asarray(value, dtype=float).ravel()
-    return array[science.np.isfinite(array)]
-
-
 def _scvi_training_diagnostics(model: Any) -> dict[str, Any]:
-    science = dependencies.require_scientific_dependencies()
-    history = getattr(model, "history", None)
-    metrics: dict[str, dict[str, float | int | None]] = {}
-    lengths = []
-    if isinstance(history, Mapping):
-        for key in (
-            "elbo_train",
-            "elbo_validation",
-            "reconstruction_loss_train",
-            "reconstruction_loss_validation",
-            "kl_local_train",
-            "kl_local_validation",
-        ):
-            if key not in history:
-                continue
-            try:
-                values = _history_values(history[key], science)
-            except (TypeError, ValueError):
-                continue
-            lengths.append(int(values.size))
-            if values.size:
-                metrics[key] = {
-                    "n": int(values.size),
-                    "first": float(values[0]),
-                    "last": float(values[-1]),
-                    "best": float(values.min()),
-                }
-    return {
-        "actual_epochs": max(lengths) if lengths else None,
-        "metrics": metrics,
-        "train_cells": len(getattr(model, "train_indices", ())) if hasattr(model, "train_indices") else None,
-        "validation_cells": len(getattr(model, "validation_indices", ()))
-        if hasattr(model, "validation_indices")
-        else None,
-        "test_cells": len(getattr(model, "test_indices", ())) if hasattr(model, "test_indices") else None,
-        "device": str(getattr(model, "device", "unknown")),
-    }
+    return build_scvi_training_diagnostics(model)
 
 
 _LEIDEN_METRIC_COLUMNS = (
@@ -619,7 +610,13 @@ def _leiden_resolution_sweep_code(parameters: Mapping[str, Any]) -> str:
 
 
 def _harmony_code(parameters: Mapping[str, Any]) -> str:
-    return dedent(
+    evidence_implementation = inspect.getsource(make_harmony_diagnostic_evidence)
+    return (
+        "from __future__ import annotations\n\n"
+        f"HARMONY_DIAGNOSTIC_SCHEMA = {HARMONY_DIAGNOSTIC_SCHEMA!r}\n\n\n"
+        + evidence_implementation
+        + "\n\n\n"
+        + dedent(
         f"""
         def run_harmony_integration(adata):
             import inspect
@@ -759,17 +756,31 @@ def _harmony_code(parameters: Mapping[str, Any]) -> str:
             corrected = np.asarray(raw_corrected, dtype=float).copy()
             output.obsm[adjusted_basis] = corrected
             harmony_metadata = dict(existing_metadata or {{}})
-            harmony_metadata[adjusted_basis] = {{
-                "technical_batch_keys": list(technical_batch_keys),
-                "basis": basis,
-                "theta_mode": theta_mode,
-                "theta": theta_value,
-                "random_seed": {parameters["random_seed"]!r},
-            }}
+            harmony_metadata[adjusted_basis] = make_harmony_diagnostic_evidence(
+                values,
+                corrected,
+                output.obs_names,
+                getattr(result, "objective_harmony", ()),
+                getattr(result, "objective_kmeans", ()),
+                getattr(result, "kmeans_rounds", ()),
+                basis=basis,
+                adjusted_basis=adjusted_basis,
+                technical_batch_keys=list(technical_batch_keys),
+                technical_batch_values={{
+                    key: output.obs[key].astype(str).tolist() for key in technical_batch_keys
+                }},
+                theta_mode=theta_mode,
+                theta=theta_value,
+                harmonypy_version=distribution_version,
+                random_seed={parameters["random_seed"]!r},
+                max_iter_harmony={parameters["max_iter_harmony"]!r},
+                max_iter_kmeans={parameters["max_iter_kmeans"]!r},
+            )
             output.uns["harmony"] = harmony_metadata
             return output
         """
-    ).strip()
+        ).strip()
+    )
 
 
 def _scvi_code(parameters: Mapping[str, Any]) -> str:
@@ -1173,9 +1184,26 @@ class OpenBioSingleCellHarmonyIntegration:
         corrected = science.np.asarray(raw_corrected, dtype=float).copy()
         orientation = "n_obs_by_components_preserved"
         output.obsm[adjusted_basis] = corrected
-        objective = science.np.asarray(getattr(result, "objective_harmony", ()), dtype=float).ravel()
-        finite_objective = objective[science.np.isfinite(objective)]
-        rounds = int(finite_objective.size)
+        harmony_evidence = make_harmony_diagnostic_evidence(
+            basis_values,
+            corrected,
+            output.obs_names,
+            getattr(result, "objective_harmony", ()),
+            getattr(result, "objective_kmeans", ()),
+            getattr(result, "kmeans_rounds", ()),
+            basis=basis,
+            adjusted_basis=adjusted_basis,
+            technical_batch_keys=keys,
+            technical_batch_values={key: output.obs[key].astype(str).tolist() for key in keys},
+            theta_mode=theta_mode,
+            theta=resolved_theta,
+            harmonypy_version=harmonypy_version,
+            random_seed=random_seed,
+            max_iter_harmony=max_iter_harmony,
+            max_iter_kmeans=max_iter_kmeans,
+        )
+        objective = [record["value"] for record in harmony_evidence["payload"]["harmony_objective"]]
+        rounds = len(objective)
         displacement = science.np.linalg.norm(corrected - basis_values, axis=1)
         parameters = {
             "technical_batch_keys": keys,
@@ -1200,13 +1228,7 @@ class OpenBioSingleCellHarmonyIntegration:
             "required_backend_keywords": list(required_keywords),
         }
         harmony_metadata = dict(existing_metadata or {})
-        harmony_metadata[adjusted_basis] = {
-            "technical_batch_keys": keys,
-            "basis": basis,
-            "theta_mode": theta_mode,
-            "theta": resolved_theta,
-            "random_seed": random_seed,
-        }
+        harmony_metadata[adjusted_basis] = harmony_evidence
         output.uns["harmony"] = harmony_metadata
         warnings = [
             "Technical batch keys are user declarations; confounding can remove Sample or Condition biology.",
@@ -1274,8 +1296,14 @@ class OpenBioSingleCellHarmonyIntegration:
                 "backend_orientation": orientation,
                 "backend_z_corr_shape": list(expected_shape),
                 "harmony_round_values": rounds,
-                "objective_initial": float(finite_objective[0]) if rounds else None,
-                "objective_final": float(finite_objective[-1]) if rounds else None,
+                "completed_harmony_outer_rounds": len(harmony_evidence["payload"]["outer_rounds"]),
+                "kmeans_objective_values": len(harmony_evidence["payload"]["kmeans_objective"]),
+                "objective_initial": objective[0],
+                "objective_final": objective[-1],
+                "harmony_diagnostic_evidence": {
+                    "schema_version": harmony_evidence["schema_version"],
+                    "payload_sha256": harmony_evidence["payload_sha256"],
+                },
                 "displacement_norm": summarize_numeric(displacement),
                 "constant_input_components": int(constant_component_indices.size),
                 "constant_input_component_indices": constant_component_indices.tolist(),
@@ -1624,8 +1652,6 @@ class OpenBioSingleCellSCVIIntegration:
             warnings.append(
                 f"The model used {genes:,} features; scvi-tools generally recommends approximately 1,000-10,000 HVGs."
             )
-        if diagnostics["actual_epochs"] is None:
-            warnings.append("The installed backend did not expose a usable training-history length.")
         finish_adata(
             output, "scvi_integration", parameters, cells, genes, started_at, random_seed=random_seed, warnings=warnings
         )
@@ -1840,6 +1866,19 @@ class OpenBioSingleCellLeidenResolutionSweep:
             previous_resolution = resolution
             previous_membership = partition.membership
 
+        table = science.pd.DataFrame(rows, columns=list(_LEIDEN_METRIC_COLUMNS))
+        for column in (
+            "stability_mean_ari",
+            "stability_min_ari",
+            "stability_max_ari",
+            "adjacent_previous_resolution",
+            "adjacent_resolution_ari",
+        ):
+            table[column] = science.pd.array(table[column], dtype="Float64")
+        parameters = {
+            **parameters,
+            "table_content_fingerprint_sha256": leiden_resolution_metrics_fingerprint(table),
+        }
         finish_adata(
             output,
             "leiden_resolution_sweep",
@@ -1876,15 +1915,6 @@ class OpenBioSingleCellLeidenResolutionSweep:
             )
 
         code = _leiden_resolution_sweep_code(parameters)
-        table = science.pd.DataFrame(rows, columns=list(_LEIDEN_METRIC_COLUMNS))
-        for column in (
-            "stability_mean_ari",
-            "stability_min_ari",
-            "stability_max_ari",
-            "adjacent_previous_resolution",
-            "adjacent_resolution_ari",
-        ):
-            table[column] = science.pd.array(table[column], dtype="Float64")
         table_result = make_table_result(
             table=table,
             title="Leiden resolution metrics",
@@ -1920,6 +1950,9 @@ class OpenBioSingleCellLeidenResolutionSweep:
                 "total_runs": total_runs,
                 "stability_seeds": [random_seed + offset for offset in range(stability_repeats)],
                 "resolution_metrics": rows,
+                "resolution_metrics_content_fingerprint_sha256": parameters[
+                    "table_content_fingerprint_sha256"
+                ],
                 "cluster_sizes_by_resolution": cluster_sizes_by_resolution,
                 "graph": graph_report,
             },
@@ -1953,9 +1986,97 @@ class OpenBioSingleCellLeidenResolutionSweep:
         return output, table_result, report, code
 
 
+def leiden_resolution_sweep_plot_owned(
+    resolution_metrics: Any,
+    *,
+    view: Any = None,
+) -> tuple[Any, Any, str]:
+    from .contracts import TableResult
+
+    if not isinstance(resolution_metrics, TableResult):
+        raise TypeError(
+            "Leiden Resolution Sweep Plot requires the resolution_metrics TableResult from Leiden Resolution Sweep."
+        )
+    if (
+        not isinstance(resolution_metrics.source, dict)
+        or resolution_metrics.parameters != resolution_metrics.source.get("parameters")
+        or resolution_metrics.input_cells != resolution_metrics.source.get("input_cells")
+        or resolution_metrics.input_genes != resolution_metrics.source.get("input_genes")
+    ):
+        raise ValueError("Leiden Resolution Sweep Plot requires internally consistent producer provenance.")
+    producer = {
+        "operation": resolution_metrics.source.get("operation"),
+        "parameters": resolution_metrics.parameters,
+        "input_cells": resolution_metrics.input_cells,
+        "input_genes": resolution_metrics.input_genes,
+    }
+    started_at = time.perf_counter()
+    png, details = run_leiden_resolution_sweep_plot(
+        resolution_metrics.table,
+        producer=producer,
+        view=view,
+    )
+    parameters = {"view": details["view_parameters"]}
+    warnings = []
+    if details["stability_min_ari"] is None:
+        warnings.append("Repeat-start stability was not assessed because the sweep retained only one start per resolution.")
+    elif any(value < 0.9 for value in details["stability_min_ari"]):
+        warnings.append("At least one stored resolution has minimum repeat-start ARI below 0.9.")
+    if any(value > 0.8 for _, value in details["cluster_fraction_ranges"]):
+        warnings.append("At least one stored resolution is dominated by a cluster containing over 80% of cells.")
+    code = leiden_resolution_sweep_plot_code(producer=producer, view=details["view_parameters"])
+    description = (
+        f"Rendered {len(details['resolutions']):,} stored Leiden resolution rows without rerunning clustering or "
+        "selecting a preferred resolution."
+    )
+    common = {
+        "parameters": parameters,
+        "description": description,
+        "warnings": warnings,
+        "input_cells": resolution_metrics.input_cells,
+        "input_genes": resolution_metrics.input_genes,
+        "started_at": started_at,
+        "random_seed": resolution_metrics.random_seed,
+    }
+    plotted = make_plot_result(
+        png=png,
+        title=details["title"],
+        operation="leiden_resolution_sweep_plot",
+        **common,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellLeidenResolutionSweepPlot",
+        title="Leiden resolution sweep plot summary",
+        operation="leiden_resolution_sweep_plot",
+        methods=(
+            "Validated the exact Leiden Resolution Sweep producer, resolution and partition-key axes, canonical "
+            "metric schema, cluster-size arithmetic, modularity, repeat-start ARI, and adjacent-resolution ARI, "
+            "then rendered one read-only diagnostic view."
+        ),
+        results=description,
+        key_results={key: value for key, value in details.items() if key not in {"view_parameters", "title"}},
+        parameters=parameters,
+        references=(LEIDEN_REFERENCE, MATPLOTLIB_REFERENCE),
+        software_packages=("matplotlib", "numpy", "pandas", "scikit-learn"),
+        warnings=warnings,
+        limitations=(
+            "Resolution, modularity, and stability are graph-dependent diagnostics, not automatic selection criteria.",
+            "Optimization stability does not establish biological validity or Curated annotation.",
+            "Pooled-cell graph communities are not Sample-level Condition inference.",
+        ),
+        input_cells=resolution_metrics.input_cells,
+        input_genes=resolution_metrics.input_genes,
+        started_at=started_at,
+        code=code,
+        random_seed=resolution_metrics.random_seed,
+    )
+    return plotted, report, code
+
+
 TABLE_KIND = "OPENBIO_SINGLE_CELL_TABLE"
 SCVI_MODEL_KIND = "OPENBIO_SCVI_MODEL"
 SCVI_MODEL_CODEC = "scvi-native-directory"
+PLOT_KIND = "OPENBIO_SINGLE_CELL_PLOT"
 
 
 def _adata_input(inputs: dict[str, JSONValue], *, operation: str) -> Any:
@@ -1990,6 +2111,75 @@ def harmony_integration(
         _adata_input(inputs, operation="Harmony Integration"), **parameters
     )
     return _standard_records(context, output, summary, code)
+
+
+def harmony_convergence_plot_owned(
+    adata: Any,
+    *,
+    adjusted_basis: str = "X_pca_harmony",
+    max_image_pixels: int = 40_000_000,
+) -> tuple[Any, Any, str]:
+    started_at = time.perf_counter()
+    png, details = render_harmony_convergence_plot(
+        adata,
+        adjusted_basis=adjusted_basis,
+        max_image_pixels=max_image_pixels,
+    )
+    parameters = {"adjusted_basis": adjusted_basis, "max_image_pixels": max_image_pixels}
+    code = harmony_convergence_plot_code(**parameters)
+    warnings = list(details["warnings"])
+    plot = make_plot_result(
+        title="Harmony Convergence",
+        operation="harmony_convergence_plot",
+        parameters=parameters,
+        description="Read-only rendering of retained Harmony objective trajectories.",
+        warnings=warnings,
+        input_cells=details["input_cells"],
+        input_genes=details["input_genes"],
+        started_at=started_at,
+        png=png,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellHarmonyConvergencePlot",
+        title="Harmony convergence summary",
+        operation="harmony_convergence_plot",
+        methods=(
+            "Rendered the complete retained harmonypy outer-loop and clustering objective sequences with their "
+            "native initialization and round identities; Harmony was not rerun."
+        ),
+        results=(
+            f"Displayed {details['harmony_objective_points']:,} outer-objective values and "
+            f"{details['kmeans_objective_points']:,} clustering-objective values across "
+            f"{details['outer_rounds']:,} completed outer rounds."
+        ),
+        key_results=details,
+        parameters=parameters,
+        references=(HARMONY_REFERENCE, HARMONYPY_REFERENCE),
+        software_packages=("anndata", "numpy", "matplotlib"),
+        warnings=warnings,
+        limitations=(
+            "Objective convergence does not establish Technical-batch removal or preservation of Condition biology.",
+            "The objective scales are backend diagnostics and should not be compared across unrelated fits.",
+        ),
+        input_cells=details["input_cells"],
+        input_genes=details["input_genes"],
+        started_at=started_at,
+        code=code,
+    )
+    return plot, report, code
+
+
+@register_operation("openbio.node.harmonyconvergenceplot")
+def harmony_convergence_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    operation = "Harmony Convergence Plot"
+    require_input_names(inputs, {"adata"}, operation=operation)
+    require_parameters(parameters, {"adjusted_basis", "max_image_pixels"}, operation=operation)
+    plot, report, code = harmony_convergence_plot_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plot, kind=PLOT_KIND))
 
 
 @register_operation("openbio.node.scviintegration")
@@ -2028,6 +2218,12 @@ def scvi_integration(
     save(str(model_root), overwrite=False, save_anndata=True)
     if not model_root.is_dir():
         raise RuntimeError("scVI model.save did not create its native model directory.")
+    write_scvi_training_diagnostics(
+        model_root,
+        summary.summary["key_results"]["training"],
+        training_parameters=summary.summary["parameters"],
+        software_versions=summary.summary["software_versions"],
+    )
     return analysis_outputs(
         summary,
         code,
@@ -2040,6 +2236,95 @@ def scvi_integration(
             "payload": model_root.relative_to(context.output_root).as_posix(),
         },
     )
+
+
+def scvi_training_plot_owned(
+    native_diagnostics: Mapping[str, Any],
+    *,
+    max_image_pixels: int = 40_000_000,
+) -> tuple[Any, Any, str]:
+    if not isinstance(native_diagnostics, Mapping) or set(native_diagnostics) != {
+        "training_diagnostics",
+        "training_parameters",
+        "software_versions",
+        "model_identity",
+    }:
+        raise ValueError("scVI Training Plot requires canonical native diagnostic evidence.")
+    started_at = time.perf_counter()
+    png, details = render_scvi_training_plot(
+        native_diagnostics["training_diagnostics"],
+        max_image_pixels=max_image_pixels,
+    )
+    details.update(
+        {
+            "producer_training_parameters": dict(native_diagnostics["training_parameters"]),
+            "producer_software_versions": dict(native_diagnostics["software_versions"]),
+            "native_model_identity": dict(native_diagnostics["model_identity"]),
+        }
+    )
+    parameters = {"max_image_pixels": max_image_pixels}
+    code = scvi_training_plot_code(**parameters)
+    warnings = list(details["warnings"])
+    plot = make_plot_result(
+        title="scVI Training",
+        operation="scvi_training_plot",
+        parameters=parameters,
+        description="Read-only rendering of retained native scVI epoch metrics.",
+        warnings=warnings,
+        input_cells=details["training_observations"],
+        input_genes=details["fitted_features"],
+        started_at=started_at,
+        png=png,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellSCVITrainingPlot",
+        title="scVI training summary",
+        operation="scvi_training_plot",
+        methods=(
+            "Rendered all retained supported scVI train and validation epoch metrics from the native model "
+            "artifact's verified OpenBio diagnostic sidecar; the model was not loaded or retrained."
+        ),
+        results=(
+            f"Displayed {details['total_plotted_points']:,} metric points from "
+            f"{details['actual_epochs']:,} training epochs in {len(details['plotted_panels']):,} panels."
+        ),
+        key_results=details,
+        parameters=parameters,
+        references=(SCVI_REFERENCE, SCVI_TOOLS_REFERENCE, SCVI_API_REFERENCE),
+        software_packages=("numpy", "matplotlib"),
+        warnings=warnings,
+        limitations=(
+            "Training curves diagnose optimization only; they do not establish Technical-batch removal or biological conservation.",
+            "Metric values should not be compared across unrelated model architectures or data representations.",
+        ),
+        input_cells=details["training_observations"],
+        input_genes=details["fitted_features"],
+        started_at=started_at,
+        code=code,
+    )
+    return plot, report, code
+
+
+@register_operation("openbio.node.scvitrainingplot")
+def scvi_training_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    operation = "scVI Training Plot"
+    require_input_names(inputs, {"model"}, operation=operation)
+    require_parameters(parameters, {"max_image_pixels"}, operation=operation)
+    model_root = require_artifact_input(
+        inputs,
+        "model",
+        kind=SCVI_MODEL_KIND,
+        codec=SCVI_MODEL_CODEC,
+    )
+    plot, report, code = scvi_training_plot_owned(
+        read_scvi_training_diagnostics(model_root),
+        **parameters,
+    )
+    return analysis_outputs(report, code, write_plot_output(context, plot, kind=PLOT_KIND))
 
 
 @register_operation("openbio.node.leidenresolutionsweep")
@@ -2067,4 +2352,28 @@ def leiden_resolution_sweep(
     )
 
 
-__all__ = ["harmony_integration", "leiden_resolution_sweep", "scvi_integration"]
+@register_operation("openbio.node.leidenresolutionsweepplot")
+def leiden_resolution_sweep_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    require_input_names(inputs, {"resolution_metrics"}, operation="Leiden Resolution Sweep Plot")
+    require_parameters(parameters, {"view"}, operation="Leiden Resolution Sweep Plot")
+    table, metadata = read_table_input(inputs, "resolution_metrics", kind=TABLE_KIND)
+    result = table_from_metadata(metadata, table)
+    plotted, report, code = leiden_resolution_sweep_plot_owned(result, **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
+
+
+__all__ = [
+    "harmony_convergence_plot",
+    "harmony_convergence_plot_owned",
+    "harmony_integration",
+    "leiden_resolution_sweep",
+    "leiden_resolution_sweep_plot",
+    "leiden_resolution_sweep_plot_owned",
+    "scvi_integration",
+    "scvi_training_plot",
+    "scvi_training_plot_owned",
+]

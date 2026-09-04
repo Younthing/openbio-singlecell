@@ -16,7 +16,8 @@ from openbio_singlecell.artifact_codecs import ANNDATA_PAYLOAD, read_anndata, wr
 from openbio_singlecell.artifact_envelope import summary_from_metadata
 from openbio_singlecell.contracts import ensure_metadata
 from openbio_singlecell.operations_input import ANNDATA_CODEC, ANNDATA_KIND
-from openbio_singlecell.operations_integration import scvi_integration
+from openbio_singlecell.operations_integration import scvi_integration, scvi_training_plot_owned
+from openbio_singlecell.scvi_model import read_scvi_training_diagnostics
 from openbio_singlecell.worker_protocol import OperationContext
 
 
@@ -95,6 +96,11 @@ def main() -> None:
         report = summary_from_metadata(records[2]["value"])
         code = records[3]["value"]
         model = import_module("scvi.model").SCVI.load(str(model_root), adata=output)
+        native_diagnostics = read_scvi_training_diagnostics(model_root)
+        training_plot, training_report, training_code = scvi_training_plot_owned(native_diagnostics)
+        training_namespace = {}
+        exec(training_code, training_namespace)
+        generated_training_png = training_namespace["plot_scvi_training"](model_root)
 
         _require(input_payload.read_bytes() == before, "Real scVI operation modified its input artifact.")
         _require(model_root.is_dir(), "Real scVI operation did not publish its native model directory.")
@@ -107,6 +113,10 @@ def main() -> None:
     _require(report.summary["key_results"]["zero_total_genes"] == 1, "Zero-total gene accounting drifted.")
     _require(report.summary["parameters"]["n_latent"] == 8, "n_latent reporting drifted.")
     _require(report.summary["parameters"]["train_size"] == 1.0, "train_size reporting drifted.")
+    _require(
+        "kl_global_train" in native_diagnostics["training_diagnostics"]["metrics"],
+        "Real scVI training diagnostics dropped the native global-KL sequence.",
+    )
     _require(
         report.summary["parameters"]["check_val_every_n_epoch"] is None,
         "No-holdout training cadence reporting drifted.",
@@ -135,6 +145,9 @@ def main() -> None:
         "no_validation_holdout_warning": no_validation_holdout_warning,
         "overcomplete_warning": overcomplete_warning,
         "status": "pass",
+        "training_diagnostic_metrics": training_report.summary["key_results"]["plotted_metrics"],
+        "training_plot_code_parity": generated_training_png == training_plot.png,
+        "training_plot_png": training_plot.png.startswith(b"\x89PNG\r\n\x1a\n"),
         "zero_total_genes": report.summary["key_results"]["zero_total_genes"],
     }
     print("OPENBIO_SCVI_REAL_SMOKE=" + json.dumps(payload, sort_keys=True, allow_nan=False))

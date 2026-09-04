@@ -534,6 +534,81 @@ def _standalone_celltypist_summary(diagnostics):
     return summary
 
 
+def _celltypist_axis_fingerprint(observation_ids):
+    import hashlib
+    import json
+
+    values = list(observation_ids)
+    if any(not isinstance(value, str) or not value or value != value.strip() for value in values):
+        raise ValueError("CellTypist observation identifiers must be canonical strings.")
+    payload = json.dumps(
+        values,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _celltypist_probability_fingerprint(matrix, *, observation_ids, classes):
+    import hashlib
+    import json
+
+    import numpy as np
+
+    observations = list(observation_ids)
+    class_axis = list(classes)
+    values = np.asarray(matrix)
+    if values.shape != (len(observations), len(class_axis)):
+        raise ValueError("CellTypist probability matrix does not align to its observation and class axes.")
+    if (
+        not np.issubdtype(values.dtype, np.number)
+        or np.issubdtype(values.dtype, np.bool_)
+        or np.iscomplexobj(values)
+    ):
+        raise TypeError("CellTypist probabilities must contain real numeric values.")
+    if not bool(np.isfinite(values).all()):
+        raise ValueError("CellTypist probabilities must be finite.")
+    header = json.dumps(
+        {"observation_ids": observations, "classes": class_axis},
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(header)
+    digest.update(np.ascontiguousarray(values, dtype="<f8").tobytes())
+    return digest.hexdigest()
+
+
+def _celltypist_selected_fingerprint(labels, probabilities, *, observation_ids):
+    import hashlib
+    import json
+    import math
+
+    observations = list(observation_ids)
+    selected_labels = list(labels)
+    selected_probabilities = list(probabilities)
+    if len(selected_labels) != len(observations) or len(selected_probabilities) != len(observations):
+        raise ValueError("CellTypist selected annotation does not align to the observation axis.")
+    rows = []
+    for label, probability in zip(selected_labels, selected_probabilities, strict=True):
+        if not isinstance(label, str) or not label:
+            raise ValueError("CellTypist selected labels must be nonempty strings.")
+        value = float(probability)
+        if not (math.isfinite(value) or math.isnan(value)):
+            raise ValueError("CellTypist selected probabilities must be finite or missing.")
+        rows.append([label, None if math.isnan(value) else value.hex()])
+    payload = json.dumps(
+        {"observation_ids": observations, "rows": rows},
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _standalone_celltypist_annotation(
     adata,
     *,
@@ -1285,6 +1360,17 @@ def _standalone_celltypist_annotation(
         },
         "software_versions": software_versions,
         "warnings": warnings,
+        "observation_axis_fingerprint_sha256": _celltypist_axis_fingerprint(adata.obs_names),
+        "probability_content_fingerprint_sha256": _celltypist_probability_fingerprint(
+            probability_values,
+            observation_ids=adata.obs_names,
+            classes=model_classes,
+        ),
+        "selected_annotation_fingerprint_sha256": _celltypist_selected_fingerprint(
+            selected_labels,
+            selected_probabilities,
+            observation_ids=adata.obs_names,
+        ),
     }
     diagnostics = {
         "cells": int(adata.n_obs),
@@ -1553,6 +1639,15 @@ def celltypist_annotation_code(
 {_standalone_source(_standalone_resolve_celltypist_model_path)}
 
 
+{_standalone_source(_celltypist_axis_fingerprint)}
+
+
+{_standalone_source(_celltypist_probability_fingerprint)}
+
+
+{_standalone_source(_celltypist_selected_fingerprint)}
+
+
 {_standalone_source(_standalone_celltypist_annotation)}
 
 
@@ -1590,6 +1685,9 @@ def run_celltypist_annotation(adata):
 
 
 __all__ = [
+    "_celltypist_axis_fingerprint",
+    "_celltypist_probability_fingerprint",
+    "_celltypist_selected_fingerprint",
     "build_celltypist_summary",
     "celltypist_annotation_code",
     "celltypist_model_fingerprint",

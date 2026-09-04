@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from comfy_api.latest import io
 
-from .augur import AUGUR_CLASSIFIERS, AUGUR_VIEWS
+from .augur import AUGUR_CLASSIFIERS, AUGUR_PLOT_VIEWS, AUGUR_VIEWS
 from .expression_source import _AUGUR_SPEC
 from .node_types import AnnDataType, AugurResultType, PlotResultType, TableResultType, analysis_outputs
 
@@ -80,6 +80,60 @@ class OpenBioSingleCellAugurResults(io.ComfyNode):
         )
 
 
+class OpenBioSingleCellAugurPlot(io.ComfyNode):
+    @staticmethod
+    def _resolve_view(view: object) -> tuple[str, int]:
+        if not isinstance(view, dict):
+            raise TypeError("Augur plot view must be a DynamicCombo value.")
+        mode = view.get("view")
+        if mode not in AUGUR_PLOT_VIEWS or set(view) != {"view", "top_n"}:
+            raise ValueError("Augur plot view payload has an unsupported branch or inactive fields.")
+        top_n = view["top_n"]
+        if isinstance(top_n, bool) or not isinstance(top_n, int):
+            raise TypeError("Augur plot top_n must be an integer.")
+        if not 1 <= top_n <= 200:
+            raise ValueError("Augur plot top_n must be between 1 and 200.")
+        return mode, top_n
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellAugurPlot",
+            display_name="Augur Plot",
+            category=PRIORITY_CATEGORY,
+            description="Render a bounded read-only view of validated Augur diagnostic evidence.",
+            inputs=[
+                AugurResultType.Input("result"),
+                io.DynamicCombo.Input(
+                    "view",
+                    options=[
+                        io.DynamicCombo.Option(
+                            mode,
+                            [io.Int.Input("top_n", default=20, min=1, max=200)],
+                        )
+                        for mode in AUGUR_PLOT_VIEWS
+                    ],
+                ),
+                io.Int.Input("max_plot_rows", default=100_000, min=1, max=2**31 - 1, advanced=True),
+                io.Int.Input(
+                    "max_image_pixels",
+                    default=40_000_000,
+                    min=1,
+                    max=2**31 - 1,
+                    advanced=True,
+                ),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+    @classmethod
+    def prepare_worker_arguments(cls, kwargs: dict[str, object]) -> dict[str, object]:
+        prepared = dict(kwargs)
+        view, top_n = cls._resolve_view(prepared.pop("view", None))
+        prepared.update(view=view, top_n=top_n)
+        return prepared
+
+
 class OpenBioSingleCellCellTypeCorrelation(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -118,6 +172,7 @@ class OpenBioSingleCellCellTypeCorrelation(io.ComfyNode):
 POPULATION_NODE_CLASSES = [
     OpenBioSingleCellAugur,
     OpenBioSingleCellAugurResults,
+    OpenBioSingleCellAugurPlot,
     OpenBioSingleCellCellTypeCorrelation,
 ]
 
@@ -125,6 +180,7 @@ POPULATION_NODE_CLASSES = [
 __all__ = [
     "OpenBioSingleCellAugur",
     "OpenBioSingleCellAugurResults",
+    "OpenBioSingleCellAugurPlot",
     "OpenBioSingleCellCellTypeCorrelation",
     "POPULATION_NODE_CLASSES",
 ]

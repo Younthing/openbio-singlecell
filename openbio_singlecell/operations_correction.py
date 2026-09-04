@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 import time
 from textwrap import dedent
 from typing import Any, Literal
 
 from . import dependencies
 from .analysis_reporting import AnalysisReference, make_analysis_report, summarize_numeric
-from .analysis_utils import finish_adata, validate_count_expression
+from .analysis_utils import finish_adata, make_plot_result, validate_count_expression
+from .correction_plotting import (
+    mad_outlier_plot_code,
+    run_mad_outlier_plot,
+    run_scrublet_diagnostics_plot,
+    scrublet_diagnostics_plot_code,
+)
 from .expression_source import _SCRUBLET_SPEC, ExpressionSource
 from .operations_input import (
     analysis_outputs,
@@ -14,6 +21,7 @@ from .operations_input import (
     require_input_names,
     require_parameters,
     write_anndata_output,
+    write_plot_output,
 )
 from .worker_protocol import JSONValue, OperationContext, ProtocolError, register_operation
 
@@ -56,6 +64,12 @@ ANNDATA_REFERENCE = AnalysisReference(
     citation="AnnData documentation: annotated data matrices and observation subsetting.",
     url="https://anndata.readthedocs.io/en/stable/generated/anndata.AnnData.html",
     kind="software_documentation",
+)
+MATPLOTLIB_REFERENCE = AnalysisReference(
+    citation="Hunter JD. Matplotlib: A 2D Graphics Environment. Computing in Science & Engineering. 2007;9:90-95.",
+    doi="10.1109/MCSE.2007.55",
+    url="https://doi.org/10.1109/MCSE.2007.55",
+    kind="software",
 )
 
 def _input_anndata(
@@ -148,6 +162,15 @@ def _comma_separated_metrics(value: str) -> list[str]:
     if not metrics:
         raise ValueError("At least one QC metric is required.")
     return metrics
+
+
+def _observation_axis_fingerprint(names: Any) -> str:
+    digest = hashlib.sha256()
+    for value in names:
+        encoded = str(value).encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "little"))
+        digest.update(encoded)
+    return f"sha256:{digest.hexdigest()}"
 
 
 def _mad_outlier_statistics(
@@ -350,6 +373,54 @@ def mark_mad_outliers_owned(
         }
         for group_label, positions in groups
     ]
+    threshold_rows = [
+        {"metric": metric["metric"], **group}
+        for metric in metric_statistics
+        for group in metric["groups"]
+    ]
+    threshold_frame = science.pd.DataFrame.from_records(
+        threshold_rows,
+        columns=[
+            "metric",
+            "group",
+            "status",
+            "n",
+            "finite",
+            "missing",
+            "median",
+            "mad",
+            "lower_threshold",
+            "upper_threshold",
+            "flagged",
+        ],
+    )
+    for column in ("median", "mad", "lower_threshold", "upper_threshold"):
+        threshold_frame[column] = science.pd.to_numeric(threshold_frame[column], errors="coerce")
+    adata.uns["openbio_mad_outliers"] = {
+        "schema_version": 1,
+        "producer_operation": "mark_mad_outliers",
+        "observation_axis_fingerprint_sha256": _observation_axis_fingerprint(adata.obs_names),
+        "metrics": selected_metrics,
+        "batch_key": batch_key,
+        "output_column": output_column,
+        "nmads": nmads,
+        "direction": direction,
+        "scale_mad": scale_mad,
+        "minimum_group_size": minimum_group_size,
+        "thresholds": threshold_frame,
+        "group_rates": science.pd.DataFrame.from_records(
+            (
+                {
+                    "group": group["group"],
+                    "cells": group["cells"],
+                    "marked": group["flagged"],
+                    "marked_fraction": group["flagged"] / group["cells"],
+                }
+                for group in group_union
+            ),
+            columns=["group", "cells", "marked", "marked_fraction"],
+        ),
+    }
     flagged_cells = int(flags.sum())
     report, code = make_analysis_report(
         node_id="OpenBioSingleCellMarkMADOutliers",
@@ -390,6 +461,60 @@ def mark_mad_outliers_owned(
     return adata, report, code
 
 
+def mad_outlier_plot_owned(adata: Any, *, view: Any = None) -> tuple[Any, Any, str]:
+    started_at = time.perf_counter()
+    png, details = run_mad_outlier_plot(adata, view=view)
+    parameters = {"view": details["view_parameters"]}
+    code = mad_outlier_plot_code(view=details["view_parameters"])
+    warnings = []
+    if details["missing_metric_values"]:
+        warnings.append(
+            f"Excluded {details['missing_metric_values']:,} non-finite metric value(s) from histogram rendering."
+        )
+    description = (
+        f"Rendered {details['view'].replace('_', ' ')} for {details['plotted_observations']:,} cells, "
+        f"{len(details['metrics']):,} metric(s), and {len(details['groups']):,} Sample/group(s)."
+    )
+    common = {
+        "parameters": parameters,
+        "description": description,
+        "warnings": warnings,
+        "input_cells": int(adata.n_obs),
+        "input_genes": int(adata.n_vars),
+        "started_at": started_at,
+    }
+    plotted = make_plot_result(
+        png=png,
+        title=details["title"],
+        operation="mad_outlier_plot",
+        **common,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellMADOutlierPlot",
+        title="MAD outlier plot summary",
+        operation="mad_outlier_plot",
+        methods=(
+            "Validated the stored Mark MAD Outliers producer provenance, observation axis, threshold grid, "
+            "metric values, and union flag before read-only Matplotlib rendering."
+        ),
+        results=description,
+        key_results={key: value for key, value in details.items() if key not in {"view_parameters", "title"}},
+        parameters=parameters,
+        references=(LEYS_MAD_REFERENCE, SCIPY_MAD_REFERENCE, MATPLOTLIB_REFERENCE),
+        software_packages=("numpy", "pandas", "scipy", "matplotlib", "anndata"),
+        warnings=warnings,
+        limitations=(
+            "MAD flags are dataset- and Sample-dependent QC evidence, not universal low-quality-cell definitions.",
+            "The plot visualizes stored thresholds and descriptive marked fractions; it does not choose thresholds or remove cells.",
+        ),
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+        code=code,
+    )
+    return plotted, report, code
+
+
 @register_operation("openbio.node.markmadoutliers")
 def mark_mad_outliers(
     context: OperationContext,
@@ -404,6 +529,18 @@ def mark_mad_outliers(
         expected_parameters=expected,
     )
     return _records(context, *mark_mad_outliers_owned(adata, **parameters))
+
+
+@register_operation("openbio.node.madoutlierplot")
+def mad_outlier_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    require_input_names(inputs, {"adata"}, operation="MAD Outlier Plot")
+    require_parameters(parameters, {"view"}, operation="MAD Outlier Plot")
+    plotted, report, code = mad_outlier_plot_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind="OPENBIO_SINGLE_CELL_PLOT"))
 
 
 def _scrublet_group_payloads(scrublet_uns: Any) -> dict[str, dict[str, Any]]:
@@ -441,6 +578,55 @@ def _scrublet_thresholds(scrublet_uns: Any, expected_groups: list[str]) -> dict[
             f"{missing_thresholds}. Inspect the simulated score distribution and rerun with a manual threshold."
         )
     return thresholds
+
+
+def _scrublet_simulated_scores(scrublet_uns: Any, expected_groups: list[str]) -> dict[str, Any]:
+    science = dependencies.require_scientific_dependencies()
+    payloads = _scrublet_group_payloads(scrublet_uns)
+    if set(payloads) != set(expected_groups):
+        missing = sorted(set(expected_groups) - set(payloads))
+        raise RuntimeError(f"Scanpy Scrublet did not return results for every Sample/group: {missing}")
+    simulated = {}
+    for label in expected_groups:
+        values = science.np.asarray(payloads[label].get("doublet_scores_sim"))
+        if values.ndim != 1 or values.size < 1:
+            raise RuntimeError(
+                f"Scanpy Scrublet did not retain a one-dimensional simulated score sequence for Sample/group {label!r}."
+            )
+        if (
+            not bool(science.np.issubdtype(values.dtype, science.np.number))
+            or bool(science.np.iscomplexobj(values))
+            or not bool(science.np.isfinite(values).all())
+        ):
+            raise RuntimeError(
+                f"Scanpy Scrublet produced invalid simulated doublet scores for Sample/group {label!r}."
+            )
+        simulated[label] = values.astype(float, copy=False)
+    return simulated
+
+
+def _scrublet_score_evidence_fingerprint(
+    scores: Any,
+    predictions: Any,
+    thresholds: dict[str, float],
+    simulated_scores: dict[str, Any],
+    groups: list[str],
+) -> str:
+    science = dependencies.require_scientific_dependencies()
+    digest = hashlib.sha256(b"scrublet-score-evidence-v1")
+    for values, dtype in ((scores, science.np.float64), (predictions, science.np.uint8)):
+        array = science.np.asarray(values, dtype=dtype)
+        digest.update(str(tuple(array.shape)).encode("ascii"))
+        digest.update(science.np.ascontiguousarray(array).tobytes())
+    for group in groups:
+        encoded = group.encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "little"))
+        digest.update(encoded)
+        digest.update(science.np.asarray([thresholds[group]], dtype=science.np.float64).tobytes())
+        simulated = science.np.asarray(simulated_scores[group], dtype=science.np.float64)
+        digest.update(str(tuple(simulated.shape)).encode("ascii"))
+        digest.update(science.np.ascontiguousarray(simulated).tobytes())
+    return f"sha256:{digest.hexdigest()}"
 
 
 def _scrublet_code(expression: ExpressionSource, parameters: dict[str, Any]) -> str:
@@ -667,6 +853,7 @@ def scrublet_owned(
             ("obs['doublet_score']", "doublet_score" in adata.obs),
             ("obs['predicted_doublet']", "predicted_doublet" in adata.obs),
             ("uns['scrublet']", "scrublet" in adata.uns),
+            ("uns['openbio_scrublet_diagnostics']", "openbio_scrublet_diagnostics" in adata.uns),
         )
         if present
     ]
@@ -742,6 +929,7 @@ def scrublet_owned(
         raise
     scrublet_uns = work.uns.get("scrublet")
     thresholds = _scrublet_thresholds(scrublet_uns, expected_groups)
+    simulated_scores = _scrublet_simulated_scores(scrublet_uns, expected_groups)
     if "doublet_score" not in work.obs or "predicted_doublet" not in work.obs:
         raise RuntimeError("Scanpy Scrublet did not produce its documented observation columns.")
     scores = science.np.asarray(work.obs["doublet_score"], dtype=float)
@@ -805,6 +993,42 @@ def scrublet_owned(
                 "effective_parameters": group_payloads[group_label].get("parameters", {}),
             }
         )
+    adata.uns["openbio_scrublet_diagnostics"] = {
+        "schema_version": 1,
+        "producer_operation": "scrublet",
+        "observation_axis_fingerprint_sha256": _observation_axis_fingerprint(adata.obs_names),
+        "batch_key": batch_key,
+        "score_column": "doublet_score",
+        "prediction_column": "predicted_doublet",
+        "score_evidence_fingerprint_sha256": _scrublet_score_evidence_fingerprint(
+            scores,
+            predictions.to_numpy(dtype=bool),
+            thresholds,
+            simulated_scores,
+            [group["group"] for group in per_group],
+        ),
+        "group_statistics": science.pd.DataFrame.from_records(
+            (
+                {
+                    "group": group["group"],
+                    "cells": group["cells"],
+                    "predicted_doublets": group["predicted_doublets"],
+                    "predicted_fraction": group["predicted_doublets"] / group["cells"],
+                    "threshold": group["threshold"],
+                    "simulated_count": int(simulated_scores[group["group"]].size),
+                }
+                for group in per_group
+            ),
+            columns=[
+                "group",
+                "cells",
+                "predicted_doublets",
+                "predicted_fraction",
+                "threshold",
+                "simulated_count",
+            ],
+        ),
+    }
     predicted_percent = float(predicted_count * 100.0 / cells)
     report, code = make_analysis_report(
         node_id="OpenBioSingleCellScrublet",
@@ -847,6 +1071,57 @@ def scrublet_owned(
     return adata, report, code
 
 
+def scrublet_diagnostics_plot_owned(adata: Any, *, view: Any = None) -> tuple[Any, Any, str]:
+    started_at = time.perf_counter()
+    png, details = run_scrublet_diagnostics_plot(adata, view=view)
+    parameters = {"view": details["view_parameters"]}
+    code = scrublet_diagnostics_plot_code(view=details["view_parameters"])
+    description = (
+        f"Rendered {details['view'].replace('_', ' ')} for {details['plotted_observed_scores']:,} observed "
+        f"scores, {details['plotted_simulated_scores']:,} simulated scores, and "
+        f"{len(details['groups']):,} Sample/group(s)."
+    )
+    common = {
+        "parameters": parameters,
+        "description": description,
+        "warnings": [],
+        "input_cells": int(adata.n_obs),
+        "input_genes": int(adata.n_vars),
+        "started_at": started_at,
+    }
+    plotted = make_plot_result(
+        png=png,
+        title=details["title"],
+        operation="scrublet_diagnostics_plot",
+        **common,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellScrubletDiagnosticsPlot",
+        title="Scrublet diagnostics plot summary",
+        operation="scrublet_diagnostics_plot",
+        methods=(
+            "Validated the Run Scrublet producer provenance, observation axis, observed scores, complete "
+            "simulated-score sequences, effective thresholds, predictions, and Sample/group statistics before "
+            "read-only Matplotlib rendering."
+        ),
+        results=description,
+        key_results={key: value for key, value in details.items() if key not in {"view_parameters", "title"}},
+        parameters=parameters,
+        references=(SCRUBLET_REFERENCE, SCANPY_REFERENCE, MATPLOTLIB_REFERENCE),
+        software_packages=("scanpy", "numpy", "pandas", "matplotlib", "anndata"),
+        warnings=[],
+        limitations=(
+            "Scrublet predictions are model-based QC evidence, not ground-truth doublet labels.",
+            "Observed-versus-simulated separation and predicted fractions do not establish a universal filtering threshold.",
+        ),
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+        code=code,
+    )
+    return plotted, report, code
+
+
 @register_operation("openbio.node.scrublet")
 def scrublet(
     context: OperationContext,
@@ -866,6 +1141,18 @@ def scrublet(
     }
     adata = _input_anndata(inputs, parameters, operation="Scrublet", expected_parameters=expected)
     return _records(context, *scrublet_owned(adata, **parameters))
+
+
+@register_operation("openbio.node.scrubletdiagnosticsplot")
+def scrublet_diagnostics_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    require_input_names(inputs, {"adata"}, operation="Scrublet Diagnostics Plot")
+    require_parameters(parameters, {"view"}, operation="Scrublet Diagnostics Plot")
+    plotted, report, code = scrublet_diagnostics_plot_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind="OPENBIO_SINGLE_CELL_PLOT"))
 
 
 def _filter_doublets_code(prediction_column: str) -> str:
@@ -977,8 +1264,12 @@ def filter_doublets(
 __all__ = [
     "filter_doublets",
     "filter_doublets_owned",
+    "mad_outlier_plot",
+    "mad_outlier_plot_owned",
     "mark_mad_outliers",
     "mark_mad_outliers_owned",
     "scrublet",
+    "scrublet_diagnostics_plot",
+    "scrublet_diagnostics_plot_owned",
     "scrublet_owned",
 ]

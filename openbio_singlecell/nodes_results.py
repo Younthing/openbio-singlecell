@@ -129,6 +129,30 @@ class OpenBioSingleCellFilterMarkerGenes(io.ComfyNode):
         )
 
 
+class OpenBioSingleCellMarkerEvidencePlot(io.ComfyNode):
+    EXPRESSION_SOURCE = _MARKER_SPEC
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellMarkerEvidencePlot",
+            display_name="Marker Evidence Plot",
+            category=MARKER_CATEGORY,
+            description=(
+                "Render upstream-ranked Cluster marker evidence from its exact table and tested-gene universe; "
+                "no marker test, rank, Condition contrast, or annotation is recomputed."
+            ),
+            inputs=[
+                AnnDataType.Input("adata"),
+                TableResultType.Input("table"),
+                TableResultType.Input("universe"),
+                io.Int.Input("top_genes_per_group", default=5, min=1, max=20),
+                cls.EXPRESSION_SOURCE.input(),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
 class OpenBioSingleCellMarkerExpressionPlot(io.ComfyNode):
     EXPRESSION_SOURCE = _MARKER_PLOT_SPEC
 
@@ -223,20 +247,51 @@ class OpenBioSingleCellPCAMetadataAssociations(io.ComfyNode):
         )
 
 
+class OpenBioSingleCellPCAMetadataAssociationsPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellPCAMetadataAssociationsPlot",
+            display_name="PCA Metadata Associations Plot",
+            category=DIAGNOSTIC_CATEGORY,
+            description=(
+                "Render stored Sample-level PCA metadata association effect sizes without repeating statistical tests."
+            ),
+            inputs=[
+                TableResultType.Input("table"),
+                io.DynamicCombo.Input(
+                    "view",
+                    options=[
+                        io.DynamicCombo.Option("association_heatmap", []),
+                        io.DynamicCombo.Option(
+                            "effect_sizes",
+                            [io.Int.Input("max_associations", default=30, min=1, max=100)],
+                        ),
+                    ],
+                ),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
 RESULT_NODE_CLASSES = [
     OpenBioSingleCellMarkerGenes,
     OpenBioSingleCellUMAPPlot,
     OpenBioSingleCellFilterMarkerGenes,
+    OpenBioSingleCellMarkerEvidencePlot,
     OpenBioSingleCellMarkerExpressionPlot,
     OpenBioSingleCellPCAMetadataAssociations,
+    OpenBioSingleCellPCAMetadataAssociationsPlot,
 ]
 
 __all__ = [
     "MARKER_COLUMNS",
     "RESULT_NODE_CLASSES",
     "OpenBioSingleCellFilterMarkerGenes",
+    "OpenBioSingleCellMarkerEvidencePlot",
     "OpenBioSingleCellMarkerExpressionPlot",
     "OpenBioSingleCellMarkerGenes",
     "OpenBioSingleCellPCAMetadataAssociations",
+    "OpenBioSingleCellPCAMetadataAssociationsPlot",
     "OpenBioSingleCellUMAPPlot",
 ]

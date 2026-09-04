@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from . import PLUGIN_VERSION, dependencies
 from .analysis_reporting import AnalysisReference, make_analysis_report
-from .analysis_utils import finish_adata, make_summary_result, make_table_result
+from .analysis_utils import finish_adata, make_plot_result, make_summary_result, make_table_result
 from .annotation_core import (
     build_celltypist_summary,
     celltypist_annotation_code,
@@ -14,9 +15,12 @@ from .annotation_core import (
     run_celltypist_annotation,
     run_map_cluster_annotations,
 )
+from .annotation_plotting import _standalone_celltypist_diagnostics_plot, celltypist_diagnostics_plot_code
 from .artifact_envelope import table_from_metadata
+from .contracts import TableResult
 from .expression_source import _CELLTYPIST_SPEC, DynamicExpressionSource
 from .marker_evidence import validate_marker_artifact_pair
+from .marker_ora_plotting import _standalone_marker_ora_evidence_plot, marker_ora_evidence_plot_code
 from .operations_input import (
     analysis_outputs,
     read_anndata_input,
@@ -25,12 +29,14 @@ from .operations_input import (
     require_input_names,
     require_parameters,
     write_anndata_output,
+    write_plot_output,
     write_table_output,
 )
 from .ora_evidence import build_marker_ora_summary, marker_ora_evidence_code, run_marker_ora_evidence
 from .worker_protocol import JSONValue, OperationContext, ProtocolError, register_operation
 
 TABLE_KIND = "OPENBIO_SINGLE_CELL_TABLE"
+PLOT_KIND = "OPENBIO_SINGLE_CELL_PLOT"
 CELLTYPIST_EXPRESSION_SOURCE = _CELLTYPIST_SPEC
 
 ANNOTATION_PRACTICE_REFERENCE = AnalysisReference(
@@ -58,6 +64,30 @@ ANNDATA_REFERENCE = AnalysisReference(
     doi="10.21105/joss.04371",
     url="https://doi.org/10.21105/joss.04371",
     kind="software",
+)
+MATPLOTLIB_REFERENCE = AnalysisReference(
+    citation="Hunter JD. Matplotlib: A 2D Graphics Environment. Computing in Science & Engineering. 2007;9:90-95.",
+    doi="10.1109/MCSE.2007.55",
+    url="https://doi.org/10.1109/MCSE.2007.55",
+    kind="software",
+)
+CELLTYPIST_REFERENCE = AnalysisReference(
+    citation=(
+        "Domínguez Conde C, Xu C, Jarvis LB, et al. Cross-tissue immune cell analysis reveals "
+        "tissue-specific features in humans. Science. 2022;376:eabl5197."
+    ),
+    doi="10.1126/science.abl5197",
+    url="https://doi.org/10.1126/science.abl5197",
+    kind="method",
+)
+FISHER_REFERENCE = AnalysisReference(
+    citation=(
+        "Fisher RA. On the interpretation of chi-square from contingency tables, and the calculation of P. "
+        "Journal of the Royal Statistical Society. 1922;85:87-94."
+    ),
+    doi="10.2307/2340521",
+    url="https://doi.org/10.2307/2340521",
+    kind="method",
 )
 JSON_REFERENCE = AnalysisReference(
     citation="Bray T. The JavaScript Object Notation (JSON) Data Interchange Format. RFC 8259.",
@@ -153,6 +183,79 @@ def celltypist_owned(
     return output, report, code
 
 
+def celltypist_diagnostics_plot_owned(
+    adata: Any,
+    *,
+    metadata_key: str = "celltypist",
+    view: dict[str, object] | None = None,
+) -> tuple[Any, Any, str]:
+    dependencies.require_scientific_dependencies()
+    started_at = time.perf_counter()
+    png, details = _standalone_celltypist_diagnostics_plot(
+        adata,
+        metadata_key=metadata_key,
+        view=view,
+        _return_details=True,
+    )
+    parameters = {
+        "metadata_key": details["metadata_key"],
+        "view": details["view_parameters"],
+    }
+    warnings = list(details["warnings"])
+    code = celltypist_diagnostics_plot_code(
+        metadata_key=details["metadata_key"],
+        view=details["view_parameters"],
+    )
+    plotted = make_plot_result(
+        png=png,
+        title=details["title"],
+        operation="celltypist_diagnostics_plot",
+        parameters=parameters,
+        description=(
+            f"Read-only {details['view'].replace('_', ' ')} over stored CellTypist class scores for "
+            f"{details['plotted_cells']:,} cells."
+        ),
+        warnings=warnings,
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellCellTypistDiagnosticsPlot",
+        title=details["title"],
+        operation="celltypist_diagnostics_plot",
+        methods=(
+            "Validated schema-version-1 CellTypist producer provenance, the observation and model-class axes, "
+            "stored label/confidence columns, probability content fingerprints, and OpenBio annotation history. "
+            "Rendered only the selected diagnostic view from stored sigmoid scores without loading a model or "
+            "rerunning classification."
+        ),
+        results=(
+            f"Displayed {details['view'].replace('_', ' ')} for {details['plotted_cells']:,} cells from "
+            f"{details['model_class_count']:,} model classes. These remain CellTypist Provisional annotation "
+            "diagnostics and are not a Sample-level Condition contrast or Curated annotation."
+        ),
+        key_results=details,
+        parameters=parameters,
+        references=[CELLTYPIST_REFERENCE, MATPLOTLIB_REFERENCE, ANNDATA_REFERENCE],
+        software_packages=["anndata", "matplotlib", "numpy", "pandas"],
+        warnings=warnings,
+        limitations=[
+            "CellTypist outputs are Provisional annotation and require marker, tissue, and study-context review "
+            "before Curated annotation.",
+            "Independent sigmoid class scores are not calibrated multiclass probabilities or biological certainty.",
+            "Cell-level score distributions are descriptive and are not a replicate-aware Condition contrast.",
+            "The probability heatmap averages within the explicit grouping column and does not infer lineage, "
+            "identity, or statistical significance.",
+        ],
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+        code=code,
+    )
+    return plotted, report, code
+
+
 def marker_ora_owned(
     table: Any,
     universe: Any,
@@ -246,6 +349,91 @@ def marker_ora_owned(
         started_at=started_at,
     )
     return result, report, code
+
+
+def marker_ora_evidence_plot_owned(
+    table: Any,
+    *,
+    view: dict[str, object] | None = None,
+) -> tuple[Any, Any, str]:
+    if not isinstance(table, TableResult):
+        raise TypeError("Marker ORA Evidence Plot requires a TableResult input.")
+    if not isinstance(table.source, Mapping) or table.source.get("operation") != "marker_ora_evidence":
+        raise ValueError("Marker ORA Evidence Plot requires its exact Marker ORA Evidence producer.")
+    source_parameters = table.source.get("parameters")
+    if not isinstance(source_parameters, Mapping) or dict(source_parameters) != table.parameters:
+        raise ValueError("Marker ORA Evidence Plot producer parameters are inconsistent.")
+    producer = {
+        "operation": table.source["operation"],
+        "parameters": dict(table.parameters),
+        "input_cells": int(table.input_cells),
+        "input_genes": int(table.input_genes),
+    }
+    started_at = time.perf_counter()
+    png, details = _standalone_marker_ora_evidence_plot(
+        table.table,
+        producer=producer,
+        view=view,
+        _return_details=True,
+    )
+    parameters = {"view": details["view_parameters"]}
+    warnings = []
+    if details["plotted_rows"] < details["available_rows"]:
+        warnings.append(
+            f"Displayed {details['plotted_rows']:,} of {details['available_rows']:,} stored rows by taking "
+            "the first max_terms_per_group rows in upstream rank order."
+        )
+    code = marker_ora_evidence_plot_code(producer=producer, view=details["view_parameters"])
+    title = "Marker ORA evidence"
+    plotted = make_plot_result(
+        png=png,
+        title=title,
+        operation="marker_ora_evidence_plot",
+        parameters=parameters,
+        description=(
+            f"Read-only {details['view'].replace('_', ' ')} for {details['plotted_rows']:,} stored "
+            "group-source evidence rows."
+        ),
+        warnings=warnings,
+        input_cells=int(table.input_cells),
+        input_genes=int(table.input_genes),
+        started_at=started_at,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellMarkerORAEvidencePlot",
+        title=title,
+        operation="marker_ora_evidence_plot",
+        methods=(
+            "Validated the exact canonical Marker ORA table, producer operation and policy, upstream marker "
+            "fingerprints, contingency identities, Haldane–Anscombe log odds, overlap-gene JSON, descriptive "
+            "gates, within-group order, and current-content fingerprint. Rendered only the stored evidence; "
+            "no file was opened and no hypothesis was retested."
+        ),
+        results=(
+            f"Displayed {details['plotted_rows']:,} stored rows across {len(details['groups']):,} groups; "
+            f"{details['eligible_rows']:,} displayed rows met the producer's descriptive gates. This remains "
+            "exploratory Cluster marker evidence and does not assign a Curated annotation or establish a "
+            "Condition contrast."
+        ),
+        key_results=details,
+        parameters=parameters,
+        references=[FISHER_REFERENCE, MATPLOTLIB_REFERENCE, ANNOTATION_PRACTICE_REFERENCE],
+        software_packages=["matplotlib", "numpy", "pandas"],
+        warnings=warnings,
+        limitations=[
+            "Marker ORA is exploratory Cluster marker evidence, not a Curated annotation or cell-type truth.",
+            "Marker selection and over-representation evidence reuse the same cells and are not independent "
+            "confirmatory tests or a Sample-level Condition contrast.",
+            "Odds ratios, overlaps, and adjusted p-values depend on the upstream marker filter, tested-gene "
+            "universe, set collection, and descriptive thresholds.",
+            "Truncation for display preserves upstream rank order and does not change the stored evidence.",
+        ],
+        input_cells=int(table.input_cells),
+        input_genes=int(table.input_genes),
+        started_at=started_at,
+        code=code,
+    )
+    return plotted, report, code
 
 
 def map_cluster_annotations_owned(
@@ -380,6 +568,18 @@ def celltypist_annotation(
     return _result_records(context, *celltypist_owned(read_anndata_input(inputs), **parameters))
 
 
+@register_operation("openbio.node.celltypistdiagnosticsplot")
+def celltypist_diagnostics_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    require_input_names(inputs, {"adata"}, operation="CellTypist Diagnostics Plot")
+    require_parameters(parameters, {"metadata_key", "view"}, operation="CellTypist Diagnostics Plot")
+    plotted, report, code = celltypist_diagnostics_plot_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
+
+
 @register_operation("openbio.node.markeroraevidence")
 def marker_ora_evidence(
     context: OperationContext, inputs: dict[str, JSONValue], parameters: dict[str, JSONValue]
@@ -408,6 +608,18 @@ def marker_ora_evidence(
     return analysis_outputs(report, code, write_table_output(context, result, kind=TABLE_KIND))
 
 
+@register_operation("openbio.node.markeroraevidenceplot")
+def marker_ora_evidence_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    require_input_names(inputs, {"table"}, operation="Marker ORA Evidence Plot")
+    require_parameters(parameters, {"view"}, operation="Marker ORA Evidence Plot")
+    plotted, report, code = marker_ora_evidence_plot_owned(_table_input(inputs, "table"), **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
+
+
 @register_operation("openbio.node.mapclusterannotations")
 def map_cluster_annotations(
     context: OperationContext, inputs: dict[str, JSONValue], parameters: dict[str, JSONValue]
@@ -428,9 +640,13 @@ def map_cluster_annotations(
 __all__ = [
     "CELLTYPIST_EXPRESSION_SOURCE",
     "celltypist_annotation",
+    "celltypist_diagnostics_plot",
+    "celltypist_diagnostics_plot_owned",
     "celltypist_owned",
     "map_cluster_annotations",
     "map_cluster_annotations_owned",
     "marker_ora_evidence",
+    "marker_ora_evidence_plot",
+    "marker_ora_evidence_plot_owned",
     "marker_ora_owned",
 ]

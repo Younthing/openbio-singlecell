@@ -164,6 +164,59 @@ class OpenBioSingleCellVelocityGeneRanking(io.ComfyNode):
         )
 
 
+class OpenBioSingleCellVelocityDynamicsPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellVelocityDynamicsPlot",
+            display_name="Velocity Dynamics Plot",
+            category=CATEGORY,
+            description=(
+                "Read-only phase-portrait or fit-loss evidence from one verified recovered-dynamics state."
+            ),
+            inputs=[
+                VelocityStateType.Input("velocity_state"),
+                io.String.Input("gene", default=""),
+                io.DynamicCombo.Input(
+                    "view",
+                    options=[
+                        io.DynamicCombo.Option("phase_portrait", []),
+                        io.DynamicCombo.Option("fit_loss", []),
+                    ],
+                ),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
+class OpenBioSingleCellVelocityGeneRankingPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellVelocityGeneRankingPlot",
+            display_name="Velocity Gene Ranking Plot",
+            category=CATEGORY,
+            description="Read-only visualization of the canonical recovered-dynamics fit ranking table.",
+            inputs=[
+                TableResultType.Input("table"),
+                io.DynamicCombo.Input(
+                    "view",
+                    options=[
+                        io.DynamicCombo.Option(
+                            "fit_quality",
+                            [io.Int.Input("max_genes", default=30, min=1, max=100)],
+                        ),
+                        io.DynamicCombo.Option(
+                            "kinetic_parameters",
+                            [io.Int.Input("max_genes", default=30, min=1, max=100)],
+                        ),
+                    ],
+                ),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
 class OpenBioSingleCellVelocityStreamPlot(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -191,8 +244,14 @@ VELOCITY_NODE_CLASSES = [
     OpenBioSingleCellVelocityGraph,
     OpenBioSingleCellRecoverDynamics,
     OpenBioSingleCellVelocityGeneRanking,
+    OpenBioSingleCellVelocityDynamicsPlot,
+    OpenBioSingleCellVelocityGeneRankingPlot,
     OpenBioSingleCellVelocityStreamPlot,
 ]
 
 
-__all__ = ["VELOCITY_NODE_CLASSES"]
+__all__ = [
+    "VELOCITY_NODE_CLASSES",
+    "OpenBioSingleCellVelocityDynamicsPlot",
+    "OpenBioSingleCellVelocityGeneRankingPlot",
+]

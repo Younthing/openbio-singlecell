@@ -9,6 +9,7 @@ import types
 
 import pytest
 
+from openbio_singlecell.differential_evidence import differential_table_content_fingerprint
 from openbio_singlecell.operations_differential import run_scvi_differential_owned
 from openbio_singlecell.scvi_de_evidence import (
     SCVI_DE_REFERENCES,
@@ -232,7 +233,6 @@ def scvi_evidence_fixture(science, monkeypatch):
             "size_factor_key": "",
             "random_seed": 17,
         },
-        diagnostics={"actual_epochs": 3, "metrics": {"elbo_train": {"last": 5.0}}},
     )
     return registered, raw_model, model
 
@@ -406,6 +406,11 @@ def test_scvi_model_de_node_returns_table_summary_and_equivalent_code(scvi_evide
     assert result.source["operation"] == "scvi_model_de_evidence"
     assert report.summary["status"] == "exploratory_model_evidence"
     assert result.table.shape == (3, 23)
+    assert result.parameters["table_content_fingerprint_sha256"] == differential_table_content_fingerprint(
+        result.table,
+        contract="scvi_model_de_evidence/change",
+    )
+    assert report.summary["parameters"] == result.parameters
     namespace = {}
     exec(code, namespace)
     reproduced_table, reproduced_summary = namespace["scvi_model_de_evidence"](adata, model)

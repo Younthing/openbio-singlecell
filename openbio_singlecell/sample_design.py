@@ -5,6 +5,7 @@ import textwrap
 from typing import Any
 
 from .analysis_reporting import _package_version, _plain_json, collect_software_versions, summarize_numeric
+from .differential_evidence import differential_table_content_fingerprint
 from .pseudobulk import (
     _standalone_artifact_fingerprint,
     _standalone_validate_pseudobulk_artifact,
@@ -968,6 +969,10 @@ def _standalone_run_edger(
             "result_truncation": False,
         },
     }
+    parameters["table_content_fingerprint_sha256"] = differential_table_content_fingerprint(
+        table,
+        contract="pseudobulk_edger",
+    )
     warnings = [
         "Weak-expression filtering is design- and library-size-dependent; changing its thresholds changes the tested FDR universe.",
         "Reported log2 fold changes are unshrunk and may be unstable for low-count genes or small Sample sizes.",
@@ -1324,6 +1329,10 @@ def _standalone_run_pydeseq2(
             "max_disp": realized_max_disp,
         },
     }
+    parameters["table_content_fingerprint_sha256"] = differential_table_content_fingerprint(
+        table,
+        contract="pseudobulk_deseq2",
+    )
     warnings = [
         "Weak-expression prefiltering and PyDESeq2 independent filtering are distinct stages; changing either changes power or adjusted-p-value availability.",
         "Reported log2 fold changes are unshrunk maximum-likelihood estimates and may be unstable for low-count genes or small Sample sizes.",
@@ -1487,6 +1496,7 @@ def pseudobulk_engine_code(*, engine: str, **parameters: Any) -> str:
         _standalone_backend_matrix_fingerprint,
         _standalone_backend_input_snapshot,
         _standalone_validate_backend_input_snapshot,
+        differential_table_content_fingerprint,
     ]
     if engine == "pydeseq2":
         source_functions.append(_standalone_validate_pydeseq2_dds_snapshot)

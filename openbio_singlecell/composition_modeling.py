@@ -5,52 +5,10 @@ import textwrap
 import threading
 from typing import Any
 
-SCCODA_TABLE_COLUMNS = [
-    "contrast",
-    "condition_key",
-    "reference_condition",
-    "comparison_condition",
-    "cell_type",
-    "reference_cell_type",
-    "model_coefficient",
-    "hdi_lower",
-    "hdi_upper",
-    "posterior_sd",
-    "inclusion_probability",
-    "credible_effect",
-    "estimated_fdr",
-    "inclusion_probability_threshold",
-    "realized_expected_fdr",
-    "expected_count_reference",
-    "expected_count_comparison",
-    "compositional_log2_fold_change",
-    "reference_constraint",
-]
+from .composition_result import SCCODA_RESULT_COLUMNS, TASCCODA_RESULT_COLUMNS
 
-TASCCODA_TABLE_COLUMNS = [
-    "effect_scope",
-    "contrast",
-    "condition_key",
-    "reference_condition",
-    "comparison_condition",
-    "reference_cell_type",
-    "effect_name",
-    "hierarchy_level",
-    "descendant_leaf_count",
-    "descendant_leaves_json",
-    "model_effect",
-    "posterior_median",
-    "hdi_lower",
-    "hdi_upper",
-    "posterior_sd",
-    "selection_delta",
-    "credible_effect",
-    "selection_basis",
-    "expected_count_reference",
-    "expected_count_comparison",
-    "compositional_log2_fold_change",
-    "reference_constraint",
-]
+SCCODA_TABLE_COLUMNS = list(SCCODA_RESULT_COLUMNS)
+TASCCODA_TABLE_COLUMNS = list(TASCCODA_RESULT_COLUMNS)
 
 _COMPOSITION_RNG_LOCK = threading.RLock()
 
@@ -1194,6 +1152,14 @@ def _standalone_composition_model_impl(
         "divergences_available": False,
         "divergences": None,
     }
+    sample_stats = {
+        name: finite_array(
+            diagnostics_raw.get(name),
+            f"{name.replace('_', ' ')} trace",
+            shape=(num_samples,),
+        )
+        for name in ("potential_energy", "num_steps", "step_size")
+    }
 
     contrast = f"{comparison_condition} vs {reference_condition}"
     warnings = []
@@ -1358,6 +1324,10 @@ def _standalone_composition_model_impl(
             },
             columns=SCCODA_TABLE_COLUMNS,
         )
+        posterior = {
+            "intercept": posterior_intercepts,
+            "condition_effect": focal_samples,
+        }
         credible_records = table.loc[table["credible_effect"], ["cell_type", "model_coefficient"]].to_dict("records")
         selection = {
             "method": "posterior_expected_fdr",
@@ -1543,6 +1513,12 @@ def _standalone_composition_model_impl(
                 }
             )
         table = pd.DataFrame(rows, columns=TASCCODA_TABLE_COLUMNS)
+        posterior = {
+            "intercept": posterior_intercepts,
+            "hierarchy_node_effect": node_samples,
+            "derived_leaf_effect": raw_leaf_samples,
+            "theta": theta_samples,
+        }
         selection = {
             "method": "tree_adaptive_spike_and_slab_lasso",
             "lambda_0": 50.0,
@@ -1745,11 +1721,30 @@ def _standalone_composition_model_impl(
                 "The result depends on the declared hierarchy and the fixed tree-adaptive prior, including aggregation bias.",
             ]
         )
+    evidence = {
+        "method": method,
+        "posterior": posterior,
+        "sample_stats": sample_stats,
+        "cell_types": list(cell_types),
+        "hierarchy": summary.get("hierarchy"),
+        "model_metadata": {
+            "condition_key": condition_key,
+            "reference_condition": reference_condition,
+            "comparison_condition": comparison_condition,
+            "reference_cell_type": resolved_reference,
+            "annotation_key": annotation_key,
+            "annotation_status": annotation_status,
+            "model": summary["model"],
+            "diagnostics": summary["diagnostics"],
+            "selection": summary["selection"],
+            "software_versions": summary["software_versions"],
+        },
+    }
     json.dumps(summary, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True)
-    return table, summary
+    return table, summary, evidence
 
 
-def _run_composition_model_with_preserved_rng(*args: Any, **kwargs: Any) -> tuple[Any, dict[str, Any]]:
+def _run_composition_model_with_preserved_rng(*args: Any, **kwargs: Any) -> tuple[Any, dict[str, Any], dict[str, Any]]:
     import random
 
     import numpy as np

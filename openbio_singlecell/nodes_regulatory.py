@@ -10,6 +10,7 @@ from .expression_source import _COLLECTRI_SPEC
 from .files import input_file_fingerprint, resolve_input_path
 from .node_types import (
     AnnDataType,
+    PlotResultType,
     SCENICResultArtifactType,
     TableResultType,
     TFActivityArtifactType,
@@ -309,6 +310,141 @@ class OpenBioSingleCellSCENICTFModules(io.ComfyNode):
         )
 
 
+def _activity_plot_schema(*, node_id: str, display_name: str, artifact_input: Any) -> io.Schema:
+    return io.Schema(
+        node_id=node_id,
+        display_name=display_name,
+        category=CATEGORY,
+        inputs=[
+            AnnDataType.Input("adata"),
+            artifact_input,
+            io.DynamicCombo.Input(
+                "view",
+                options=[
+                    io.DynamicCombo.Option(
+                        "distributions",
+                        [io.Int.Input("max_activities", default=20, min=1, max=50)],
+                    ),
+                    io.DynamicCombo.Option(
+                        "grouped_heatmap",
+                        [
+                            io.String.Input("groupby", default="cell_type"),
+                            io.Int.Input("max_activities", default=30, min=1, max=50),
+                        ],
+                    ),
+                    io.DynamicCombo.Option(
+                        "embedding",
+                        [
+                            io.String.Input("embedding_key", default="X_umap"),
+                            io.String.Input("activity_name", default=""),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+        outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+    )
+
+
+class OpenBioSingleCellTFActivityPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return _activity_plot_schema(
+            node_id="OpenBioSingleCellTFActivityPlot",
+            display_name="TF Activity Plot",
+            artifact_input=TFActivityArtifactType.Input("activities"),
+        )
+
+
+class OpenBioSingleCellSCENICActivityPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return _activity_plot_schema(
+            node_id="OpenBioSingleCellSCENICActivityPlot",
+            display_name="SCENIC Activity Plot",
+            artifact_input=SCENICResultArtifactType.Input("scenic_result"),
+        )
+
+
+def _table_plot_schema(
+    *,
+    node_id: str,
+    display_name: str,
+    options: list[io.DynamicCombo.Option],
+) -> io.Schema:
+    return io.Schema(
+        node_id=node_id,
+        display_name=display_name,
+        category=CATEGORY,
+        inputs=[
+            TableResultType.Input("table"),
+            io.DynamicCombo.Input("view", options=options),
+        ],
+        outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+    )
+
+
+class OpenBioSingleCellTFActivityRankingPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return _table_plot_schema(
+            node_id="OpenBioSingleCellTFActivityRankingPlot",
+            display_name="TF Activity Ranking Plot",
+            options=[
+                io.DynamicCombo.Option(name, [io.Int.Input("max_per_group", default=10, min=1, max=100)])
+                for name in ("ranked_dot", "effect_significance")
+            ],
+        )
+
+
+class OpenBioSingleCellSCENICRegulonSpecificityPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return _table_plot_schema(
+            node_id="OpenBioSingleCellSCENICRegulonSpecificityPlot",
+            display_name="SCENIC Regulon Specificity Plot",
+            options=[
+                io.DynamicCombo.Option(name, [io.Int.Input("max_regulons", default=20, min=1, max=100)])
+                for name in ("rss_heatmap", "top_regulons")
+            ],
+        )
+
+
+class OpenBioSingleCellSCENICBinarizationPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return _table_plot_schema(
+            node_id="OpenBioSingleCellSCENICBinarizationPlot",
+            display_name="SCENIC Binarization Plot",
+            options=[
+                io.DynamicCombo.Option(name, [io.Int.Input("max_regulons", default=30, min=1, max=100)])
+                for name in ("thresholds", "active_fraction")
+            ],
+        )
+
+
+class OpenBioSingleCellSCENICRegulonMembershipPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return _table_plot_schema(
+            node_id="OpenBioSingleCellSCENICRegulonMembershipPlot",
+            display_name="SCENIC Regulon Membership Plot",
+            options=[
+                io.DynamicCombo.Option(
+                    "target_count",
+                    [io.Int.Input("max_regulons", default=30, min=1, max=100)],
+                ),
+                io.DynamicCombo.Option(
+                    "top_targets",
+                    [
+                        io.String.Input("regulon", default=""),
+                        io.Int.Input("max_targets", default=30, min=1, max=100),
+                    ],
+                ),
+            ],
+        )
+
+
 REGULATORY_NODE_CLASSES = [
     OpenBioSingleCellCollecTRIULM,
     OpenBioSingleCellRankTFActivities,
@@ -316,6 +452,12 @@ REGULATORY_NODE_CLASSES = [
     OpenBioSingleCellSCENICRegulonSpecificity,
     OpenBioSingleCellSCENICActivityBinarization,
     OpenBioSingleCellSCENICTFModules,
+    OpenBioSingleCellTFActivityPlot,
+    OpenBioSingleCellTFActivityRankingPlot,
+    OpenBioSingleCellSCENICActivityPlot,
+    OpenBioSingleCellSCENICRegulonSpecificityPlot,
+    OpenBioSingleCellSCENICBinarizationPlot,
+    OpenBioSingleCellSCENICRegulonMembershipPlot,
 ]
 
 
@@ -324,7 +466,13 @@ __all__ = [
     "OpenBioSingleCellCollecTRIULM",
     "OpenBioSingleCellImportPySCENICResults",
     "OpenBioSingleCellRankTFActivities",
+    "OpenBioSingleCellTFActivityPlot",
+    "OpenBioSingleCellTFActivityRankingPlot",
+    "OpenBioSingleCellSCENICActivityPlot",
     "OpenBioSingleCellSCENICActivityBinarization",
+    "OpenBioSingleCellSCENICBinarizationPlot",
+    "OpenBioSingleCellSCENICRegulonMembershipPlot",
     "OpenBioSingleCellSCENICRegulonSpecificity",
+    "OpenBioSingleCellSCENICRegulonSpecificityPlot",
     "OpenBioSingleCellSCENICTFModules",
 ]

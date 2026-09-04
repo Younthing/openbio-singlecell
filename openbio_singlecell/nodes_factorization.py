@@ -4,7 +4,7 @@ from comfy_api.latest import io
 
 from .cnmf_standalone import CNMF_LOCAL_NEIGHBORHOOD_SIZE
 from .expression_source import _CNMF_SPEC
-from .node_types import AnnDataType, CNMFRunType, TableResultType, analysis_outputs
+from .node_types import AnnDataType, CNMFRunType, PlotResultType, TableResultType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/factorization"
 
@@ -31,6 +31,28 @@ class OpenBioSingleCellCNMFRankSurvey(io.ComfyNode):
             outputs=analysis_outputs(
                 CNMFRunType.Output(display_name="run"), TableResultType.Output(display_name="k_metrics")
             ),
+        )
+
+
+class OpenBioSingleCellCNMFRankPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellCNMFRankPlot",
+            display_name="cNMF Rank Plot",
+            category=CATEGORY,
+            description="Read-only visualization of stored cNMF stability, prediction-error, and restart evidence.",
+            inputs=[
+                TableResultType.Input("k_metrics"),
+                io.DynamicCombo.Input(
+                    "view",
+                    options=[
+                        io.DynamicCombo.Option("stability_prediction_error", []),
+                        io.DynamicCombo.Option("restart_completion", []),
+                    ],
+                ),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
         )
 
 
@@ -61,11 +83,43 @@ class OpenBioSingleCellCNMF(io.ComfyNode):
         )
 
 
-FACTORIZATION_NODE_CLASSES = [OpenBioSingleCellCNMFRankSurvey, OpenBioSingleCellCNMF]
+class OpenBioSingleCellCNMFProgramsPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellCNMFProgramsPlot",
+            display_name="cNMF Programs Plot",
+            category=CATEGORY,
+            description="Read-only visualization of stored consensus-program usage and top-gene evidence.",
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.DynamicCombo.Input(
+                    "view",
+                    options=[
+                        io.DynamicCombo.Option("usage_distributions", []),
+                        io.DynamicCombo.Option(
+                            "top_genes",
+                            [io.Int.Input("genes_per_program", default=10, min=1, max=50)],
+                        ),
+                    ],
+                ),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
+FACTORIZATION_NODE_CLASSES = [
+    OpenBioSingleCellCNMFRankSurvey,
+    OpenBioSingleCellCNMFRankPlot,
+    OpenBioSingleCellCNMF,
+    OpenBioSingleCellCNMFProgramsPlot,
+]
 
 
 __all__ = [
     "FACTORIZATION_NODE_CLASSES",
     "OpenBioSingleCellCNMF",
+    "OpenBioSingleCellCNMFProgramsPlot",
+    "OpenBioSingleCellCNMFRankPlot",
     "OpenBioSingleCellCNMFRankSurvey",
 ]

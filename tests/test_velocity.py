@@ -615,6 +615,8 @@ def test_velocity_nodes_are_schema_only_and_operation_module_is_worker_pure():
         "OpenBioSingleCellVelocityGraph",
         "OpenBioSingleCellRecoverDynamics",
         "OpenBioSingleCellVelocityGeneRanking",
+        "OpenBioSingleCellVelocityDynamicsPlot",
+        "OpenBioSingleCellVelocityGeneRankingPlot",
         "OpenBioSingleCellVelocityStreamPlot",
     ]
     source = Path(__file__).parents[1] / "openbio_singlecell" / "operations_velocity.py"

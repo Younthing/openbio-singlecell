@@ -4,13 +4,22 @@ import time
 from typing import Any
 
 from . import PLUGIN_VERSION, dependencies
-from .analysis_utils import finish_adata, make_summary_result, make_table_result
+from .analysis_reporting import AnalysisReference, make_analysis_report
+from .analysis_utils import finish_adata, make_plot_result, make_summary_result, make_table_result
 from .artifact_envelope import table_from_metadata
 from .dgidb_artifact_codec import DGIDB_CODEC, read_dgidb_resource, write_dgidb_resource
 from .dgidb_resource import dgidb_resource_code, load_dgidb_resource, validate_dgidb_resource
 from .drug_enrichment import drug_gsea_code, drug_ora_code, run_drug_gsea, run_drug_ora
 from .drug_score import drug_score_code, run_drug_score
 from .enrichment_artifacts import validate_enrichment_artifact_pair
+from .enrichment_plotting import (
+    PLOT_EVIDENCE_SCHEMA,
+    enrichment_table_plot_code,
+    run_enrichment_table_plot,
+    run_score_activity_plot,
+    score_activity_plot_code,
+    table_evidence_fingerprint,
+)
 from .expression_source import _AUCELL_SPEC, _DRUG_SCORE_SPEC, _GENE_PANEL_SPEC, _GSVA_SPEC, DynamicExpressionSource
 from .gene_set_scoring import (
     gene_set_scoring_code,
@@ -28,6 +37,7 @@ from .operations_input import (
     require_input_names,
     require_parameters,
     write_anndata_output,
+    write_plot_output,
     write_table_output,
 )
 from .pathway_score_contrast import pathway_score_contrast_code, run_pathway_score_contrast
@@ -37,10 +47,26 @@ from .worker_protocol import JSONValue, OperationContext, ProtocolError, registe
 DGIDB_KIND = "OPENBIO_DGIDB_RESOURCE"
 TABLE_KIND = "OPENBIO_SINGLE_CELL_TABLE"
 TABLE_CODEC = "table-jsonl-v1"
+PLOT_KIND = "OPENBIO_SINGLE_CELL_PLOT"
 AUCELL_EXPRESSION_SOURCE = _AUCELL_SPEC
 GSVA_EXPRESSION_SOURCE = _GSVA_SPEC
 GENE_PANEL_EXPRESSION_SOURCE = _GENE_PANEL_SPEC
 DRUG_EXPRESSION_SOURCE = _DRUG_SCORE_SPEC
+
+MATPLOTLIB_REFERENCE = AnalysisReference(
+    citation="Hunter JD. Matplotlib: A 2D graphics environment. Computing in Science & Engineering. 2007;9:90-95.",
+    doi="10.1109/MCSE.2007.55",
+    url="https://doi.org/10.1109/MCSE.2007.55",
+    kind="software",
+)
+
+
+def _plot_evidence_parameters(parameters: dict[str, Any], table: Any, *, contract: str) -> dict[str, Any]:
+    return {
+        **parameters,
+        "plot_evidence_schema": PLOT_EVIDENCE_SCHEMA,
+        "plot_evidence_fingerprint_sha256": table_evidence_fingerprint(table, contract=contract),
+    }
 
 
 def _requested_path(provenance: dict[str, JSONValue], *, resource: str) -> str:
@@ -540,7 +566,9 @@ def pathway_score_ttest_owned(
     result = make_table_result(
         title=f"{condition_a} vs {condition_b} pathway scores in {population}",
         operation="pathway_score_sample_welch",
-        parameters=summary["parameters"],
+        parameters=_plot_evidence_parameters(
+            summary["parameters"], table, contract="pathway_score_contrast"
+        ),
         description=summary["results"],
         warnings=summary["warnings"],
         input_cells=cells,
@@ -678,7 +706,7 @@ def ranked_gsea_owned(
     result = make_table_result(
         title=f"Ranked GSEA: {provenance['comparison']}",
         operation="ranked_gsea",
-        parameters=parameters,
+        parameters=_plot_evidence_parameters(parameters, evidence, contract="ranked_gsea"),
         description=summary["results"],
         warnings=warnings,
         input_cells=table.input_cells,
@@ -812,7 +840,7 @@ def gene_set_overrepresentation_owned(
     result = make_table_result(
         title=f"Gene-set overrepresentation: {provenance['comparison']}",
         operation="gene_set_overrepresentation",
-        parameters=parameters,
+        parameters=_plot_evidence_parameters(parameters, evidence, contract="gene_set_ora"),
         description=summary["results"],
         warnings=warnings,
         input_cells=table.input_cells,
@@ -1007,7 +1035,7 @@ def drug_hypergeometric_owned(
     result = make_table_result(
         title=f"Drug target overrepresentation: {provenance['comparison']}",
         operation="drug_hypergeometric",
-        parameters=parameters,
+        parameters=_plot_evidence_parameters(parameters, evidence, contract="drug_ora"),
         description=summary["results"],
         warnings=warnings,
         input_cells=table.input_cells,
@@ -1125,7 +1153,7 @@ def drug_gsea_owned(
     result = make_table_result(
         title=f"Drug GSEA: {provenance['comparison']}",
         operation="drug_gsea",
-        parameters=parameters,
+        parameters=_plot_evidence_parameters(parameters, evidence, contract="drug_gsea"),
         description=summary["results"],
         warnings=warnings,
         input_cells=table.input_cells,
@@ -1190,6 +1218,256 @@ def drug_gsea_operation(
     )
 
 
+def score_activity_plot_owned(
+    adata: Any,
+    *,
+    score_key: str = "aucell_scores",
+    view: Any = None,
+) -> tuple[Any, Any, str]:
+    started_at = time.perf_counter()
+    png, details = run_score_activity_plot(adata, score_key=score_key, view=view)
+    parameters = {"score_key": score_key, "view": details["view_parameters"]}
+    code = score_activity_plot_code(score_key=score_key, view=details["view_parameters"])
+    description = (
+        f"Rendered {details['plotted_scores']:,} stored {details['method']} score columns across "
+        f"{details['plotted_cells']:,} cells; the figure performs descriptive aggregation only."
+    )
+    plotted = make_plot_result(
+        png=png,
+        title=details["title"],
+        operation="score_activity_plot",
+        parameters=parameters,
+        description=description,
+        warnings=[],
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellScoreActivityPlot",
+        title="Stored score/activity plot summary",
+        operation="score_activity_plot",
+        methods=(
+            "Validated the exact OpenBio score producer, storage identity, observation and score axes, and "
+            "current-content fingerprint before read-only Matplotlib rendering."
+        ),
+        results=description,
+        key_results={key: value for key, value in details.items() if key not in {"title", "view_parameters"}},
+        parameters=parameters,
+        references=[MATPLOTLIB_REFERENCE],
+        software_packages=["matplotlib", "numpy", "pandas"],
+        warnings=[],
+        limitations=(
+            "Cell-level score distributions and arithmetic group means are descriptive and are not replicate-aware Condition inference.",
+            "Score interpretation remains specific to the upstream method, resource, expression source, and included cell cohort.",
+        ),
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+        code=code,
+    )
+    return plotted, report, code
+
+
+def _enrichment_table_plot_owned(
+    result: Any,
+    *,
+    contract: str,
+    node_id: str,
+    operation: str,
+    function_name: str,
+    scientific_label: str,
+    view: Any,
+) -> tuple[Any, Any, str]:
+    from .contracts import TableResult
+
+    if not isinstance(result, TableResult):
+        raise TypeError(f"{scientific_label} requires its canonical TableResult input.")
+    source_parameters = result.source.get("parameters") if isinstance(result.source, dict) else None
+    if not isinstance(source_parameters, dict) or any(
+        result.parameters.get(key) != source_parameters.get(key)
+        for key in ("plot_evidence_schema", "plot_evidence_fingerprint_sha256")
+    ):
+        raise ValueError(f"{scientific_label} producer parameters are internally inconsistent.")
+    producer = {
+        "operation": result.source.get("operation"),
+        "parameters": result.parameters,
+        "input_cells": result.input_cells,
+        "input_genes": result.input_genes,
+    }
+    started_at = time.perf_counter()
+    png, details = run_enrichment_table_plot(
+        result.table,
+        producer=producer,
+        contract=contract,
+        view=view,
+    )
+    parameters = {"view": details["view_parameters"]}
+    code = enrichment_table_plot_code(
+        function_name=function_name,
+        producer=producer,
+        contract=contract,
+        view=details["view_parameters"],
+    )
+    description = (
+        f"Rendered {details['plotted_items']:,} of {details['total_items']:,} stored {scientific_label} rows "
+        f"using the {details['view'].replace('_', ' ')} view."
+    )
+    warnings = list(result.warnings)
+    plotted = make_plot_result(
+        png=png,
+        title=details["title"],
+        operation=operation,
+        parameters=parameters,
+        description=description,
+        warnings=warnings,
+        input_cells=result.input_cells,
+        input_genes=result.input_genes,
+        started_at=started_at,
+        random_seed=result.random_seed,
+    )
+    report, code = make_analysis_report(
+        node_id=node_id,
+        title=f"{scientific_label} plot summary",
+        operation=operation,
+        methods=(
+            "Validated exact producer identity, canonical table schema, scientific invariants, row ordering, "
+            "and the current-content fingerprint before read-only Matplotlib rendering."
+        ),
+        results=description,
+        key_results={key: value for key, value in details.items() if key not in {"title", "view_parameters"}},
+        parameters=parameters,
+        references=[MATPLOTLIB_REFERENCE],
+        software_packages=["matplotlib", "numpy", "pandas"],
+        warnings=warnings,
+        limitations=(
+            "The figure displays upstream evidence and does not rerun scoring, statistical testing, or multiple-testing correction.",
+            "Biological interpretation inherits the upstream result's population, Sample, Condition, resource, and Technical-batch limitations.",
+        ),
+        input_cells=result.input_cells,
+        input_genes=result.input_genes,
+        started_at=started_at,
+        code=code,
+        random_seed=result.random_seed,
+    )
+    return plotted, report, code
+
+
+def pathway_score_contrast_plot_owned(result: Any, *, view: Any = None) -> tuple[Any, Any, str]:
+    return _enrichment_table_plot_owned(
+        result,
+        contract="pathway_score_contrast",
+        node_id="OpenBioSingleCellPathwayScoreContrastPlot",
+        operation="pathway_score_contrast_plot",
+        function_name="plot_pathway_score_contrast",
+        scientific_label="Pathway score Condition contrast",
+        view=view,
+    )
+
+
+def ranked_gsea_plot_owned(result: Any, *, view: Any = None) -> tuple[Any, Any, str]:
+    return _enrichment_table_plot_owned(
+        result,
+        contract="ranked_gsea",
+        node_id="OpenBioSingleCellRankedGSEAPlot",
+        operation="ranked_gsea_plot",
+        function_name="plot_ranked_gsea",
+        scientific_label="ranked GSEA evidence",
+        view=view,
+    )
+
+
+def gene_set_ora_plot_owned(result: Any, *, view: Any = None) -> tuple[Any, Any, str]:
+    return _enrichment_table_plot_owned(
+        result,
+        contract="gene_set_ora",
+        node_id="OpenBioSingleCellORAEvidencePlot",
+        operation="gene_set_ora_plot",
+        function_name="plot_ora_evidence",
+        scientific_label="gene-set overrepresentation evidence",
+        view=view,
+    )
+
+
+def drug_hypergeometric_plot_owned(result: Any, *, view: Any = None) -> tuple[Any, Any, str]:
+    return _enrichment_table_plot_owned(
+        result,
+        contract="drug_ora",
+        node_id="OpenBioSingleCellDrugHypergeometricPlot",
+        operation="drug_hypergeometric_plot",
+        function_name="plot_drug_hypergeometric",
+        scientific_label="drug target overrepresentation evidence",
+        view=view,
+    )
+
+
+def drug_gsea_plot_owned(result: Any, *, view: Any = None) -> tuple[Any, Any, str]:
+    return _enrichment_table_plot_owned(
+        result,
+        contract="drug_gsea",
+        node_id="OpenBioSingleCellDrugGSEAPlot",
+        operation="drug_gsea_plot",
+        function_name="plot_drug_gsea",
+        scientific_label="drug GSEA evidence",
+        view=view,
+    )
+
+
+@register_operation("openbio.node.scoreactivityplot")
+def score_activity_plot_operation(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    require_input_names(inputs, {"adata"}, operation="Score / Activity Plot")
+    require_parameters(parameters, {"score_key", "view"}, operation="Score / Activity Plot")
+    plotted, report, code = score_activity_plot_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
+
+
+def _table_plot_operation(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+    *,
+    label: str,
+    owned: Any,
+) -> list[JSONValue]:
+    require_input_names(inputs, {"table"}, operation=label)
+    require_parameters(parameters, {"view"}, operation=label)
+    plotted, report, code = owned(_table_input(inputs, "table"), **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
+
+
+@register_operation("openbio.node.pathwayscorecontrastplot")
+def pathway_score_contrast_plot_operation(context, inputs, parameters):
+    return _table_plot_operation(
+        context, inputs, parameters, label="Pathway Score Contrast Plot", owned=pathway_score_contrast_plot_owned
+    )
+
+
+@register_operation("openbio.node.rankedgseaplot")
+def ranked_gsea_plot_operation(context, inputs, parameters):
+    return _table_plot_operation(context, inputs, parameters, label="Ranked GSEA Plot", owned=ranked_gsea_plot_owned)
+
+
+@register_operation("openbio.node.oraevidenceplot")
+def gene_set_ora_plot_operation(context, inputs, parameters):
+    return _table_plot_operation(context, inputs, parameters, label="ORA Evidence Plot", owned=gene_set_ora_plot_owned)
+
+
+@register_operation("openbio.node.drughypergeometricplot")
+def drug_hypergeometric_plot_operation(context, inputs, parameters):
+    return _table_plot_operation(
+        context, inputs, parameters, label="Drug Hypergeometric Plot", owned=drug_hypergeometric_plot_owned
+    )
+
+
+@register_operation("openbio.node.druggseaplot")
+def drug_gsea_plot_operation(context, inputs, parameters):
+    return _table_plot_operation(context, inputs, parameters, label="Drug GSEA Plot", owned=drug_gsea_plot_owned)
+
+
 __all__ = [
     "AUCELL_EXPRESSION_SOURCE",
     "DGIDB_KIND",
@@ -1200,14 +1478,20 @@ __all__ = [
     "TABLE_KIND",
     "aucell_scores_operation",
     "aucell_scores_owned",
+    "drug_gsea_plot_operation",
+    "drug_gsea_plot_owned",
     "drug_gsea_operation",
     "drug_gsea_owned",
+    "drug_hypergeometric_plot_operation",
+    "drug_hypergeometric_plot_owned",
     "drug_hypergeometric_operation",
     "drug_hypergeometric_owned",
     "drug_scores_operation",
     "drug_scores_owned",
     "gene_set_overrepresentation_operation",
     "gene_set_overrepresentation_owned",
+    "gene_set_ora_plot_operation",
+    "gene_set_ora_plot_owned",
     "gene_panel_scores_operation",
     "gene_panel_scores_owned",
     "gsva_scores_operation",
@@ -1216,6 +1500,12 @@ __all__ = [
     "load_dgidb_resource_owned",
     "pathway_score_ttest_operation",
     "pathway_score_ttest_owned",
+    "pathway_score_contrast_plot_operation",
+    "pathway_score_contrast_plot_owned",
+    "ranked_gsea_plot_operation",
+    "ranked_gsea_plot_owned",
     "ranked_gsea_operation",
     "ranked_gsea_owned",
+    "score_activity_plot_operation",
+    "score_activity_plot_owned",
 ]

@@ -892,6 +892,12 @@ def _update_hash_names(digest: Any, names: Any) -> None:
         digest.update(encoded)
 
 
+def _axis_fingerprint(names: Any) -> str:
+    digest = hashlib.sha256()
+    _update_hash_names(digest, names)
+    return f"sha256:{digest.hexdigest()}"
+
+
 def _matrix_fingerprint(matrix: Any, obs_names: Any, var_names: Any) -> str:
     digest = hashlib.sha256()
     digest.update(str(tuple(int(value) for value in matrix.shape)).encode("ascii"))
@@ -2180,7 +2186,7 @@ def cnmf_consensus_programs(
     filtered = components_before - components_after
     cluster_counts = {f"cNMF_{number}": int((labels.to_numpy() == number).sum()) for number in range(1, selected_k + 1)}
     output.uns["cnmf"] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "adapter_version": CNMF_ADAPTER_VERSION,
         "selected_k": selected_k,
         "candidate_ks": list(run.metadata.candidate_ks),
@@ -2196,6 +2202,13 @@ def cnmf_consensus_programs(
         "cluster_component_counts": cluster_counts,
         "program_names": program_names,
         "top_genes": top_records,
+        "observation_axis_fingerprint_sha256": _axis_fingerprint(output.obs_names),
+        "feature_axis_fingerprint_sha256": _axis_fingerprint(output.var_names),
+        "usage_fingerprint_sha256": _matrix_fingerprint(usage_values, output.obs_names, program_names),
+        "gep_scores_fingerprint_sha256": _matrix_fingerprint(
+            scores.to_numpy(dtype=float), output.var_names, program_names
+        ),
+        "top_genes_fingerprint_sha256": _json_fingerprint(top_records),
         "storage_keys": {
             "usage": "obsm:X_cnmf_usage",
             "gep_scores": "varm:cnmf_gep_scores",

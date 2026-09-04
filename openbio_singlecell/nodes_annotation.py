@@ -8,7 +8,7 @@ from comfy_api.latest import io
 from .annotation_core import celltypist_model_fingerprint
 from .expression_source import _CELLTYPIST_SPEC
 from .files import input_file_fingerprint, resolve_input_path
-from .node_types import AnnDataType, TableResultType, analysis_outputs
+from .node_types import AnnDataType, PlotResultType, TableResultType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/annotation"
 
@@ -90,6 +90,72 @@ class OpenBioSingleCellMarkerORAEvidence(io.ComfyNode):
         return ("openbio-marker-ora-resource-v1", *identity, digest.hexdigest())
 
 
+class OpenBioSingleCellMarkerORAEvidencePlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellMarkerORAEvidencePlot",
+            display_name="Marker ORA Evidence Plot",
+            category=CATEGORY,
+            description=(
+                "Render stored Marker ORA enrichment or overlap evidence without loading a resource, retesting, "
+                "or assigning annotation labels."
+            ),
+            inputs=[
+                TableResultType.Input("table"),
+                io.DynamicCombo.Input(
+                    "view",
+                    options=[
+                        io.DynamicCombo.Option(
+                            "enrichment_dot",
+                            [io.Int.Input("max_terms_per_group", default=10, min=1, max=30)],
+                        ),
+                        io.DynamicCombo.Option(
+                            "overlap_bar",
+                            [io.Int.Input("max_terms_per_group", default=10, min=1, max=30)],
+                        ),
+                    ],
+                ),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
+class OpenBioSingleCellCellTypistDiagnosticsPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellCellTypistDiagnosticsPlot",
+            display_name="CellTypist Diagnostics Plot",
+            category=CATEGORY,
+            description=(
+                "Render confidence or class-score diagnostics from stored CellTypist Provisional annotation "
+                "without rerunning the classifier."
+            ),
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input("metadata_key", default="celltypist"),
+                io.DynamicCombo.Input(
+                    "view",
+                    options=[
+                        io.DynamicCombo.Option(
+                            "confidence_distributions",
+                            [io.Int.Input("max_labels", default=30, min=1, max=100)],
+                        ),
+                        io.DynamicCombo.Option(
+                            "probability_heatmap",
+                            [
+                                io.String.Input("groupby", default="leiden"),
+                                io.Int.Input("max_classes", default=30, min=1, max=100),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
 class OpenBioSingleCellMapClusterAnnotations(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -120,7 +186,9 @@ class OpenBioSingleCellMapClusterAnnotations(io.ComfyNode):
 
 ANNOTATION_NODE_CLASSES = [
     OpenBioSingleCellCellTypistAnnotation,
+    OpenBioSingleCellCellTypistDiagnosticsPlot,
     OpenBioSingleCellMarkerORAEvidence,
+    OpenBioSingleCellMarkerORAEvidencePlot,
     OpenBioSingleCellMapClusterAnnotations,
 ]
 
@@ -128,6 +196,8 @@ ANNOTATION_NODE_CLASSES = [
 __all__ = [
     "ANNOTATION_NODE_CLASSES",
     "OpenBioSingleCellCellTypistAnnotation",
+    "OpenBioSingleCellCellTypistDiagnosticsPlot",
     "OpenBioSingleCellMapClusterAnnotations",
     "OpenBioSingleCellMarkerORAEvidence",
+    "OpenBioSingleCellMarkerORAEvidencePlot",
 ]

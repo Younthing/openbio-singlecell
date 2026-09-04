@@ -9,7 +9,7 @@ from .dgidb_resource import DGIDB_RESOURCE_EXTENSIONS, dgidb_resource_cache_fing
 from .expression_source import _AUCELL_SPEC, _DRUG_SCORE_SPEC, _GENE_PANEL_SPEC, _GSVA_SPEC
 from .files import input_file_fingerprint, resolve_input_path
 from .gene_set_scoring import gene_set_resource_cache_fingerprint
-from .node_types import AnnDataType, DGIdbResourceType, TableResultType, analysis_outputs
+from .node_types import AnnDataType, DGIdbResourceType, PlotResultType, TableResultType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/enrichment"
 GENE_SET_EXTENSIONS = (".csv", ".tsv", ".gmt")
@@ -254,6 +254,44 @@ class OpenBioSingleCellGeneSetOverrepresentation(io.ComfyNode):
         return ("openbio-generic-ora-resource-v1", *identity, digest.hexdigest())
 
 
+class OpenBioSingleCellScoreActivityPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellScoreActivityPlot",
+            display_name="Score / Activity Plot",
+            category=CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input("score_key", default="aucell_scores"),
+                io.DynamicCombo.Input(
+                    "view",
+                    options=[
+                        io.DynamicCombo.Option(
+                            "distributions",
+                            [io.Int.Input("max_scores", default=20, min=1, max=50)],
+                        ),
+                        io.DynamicCombo.Option(
+                            "grouped_heatmap",
+                            [
+                                io.String.Input("groupby", default="cell_type"),
+                                io.Int.Input("max_scores", default=30, min=1, max=50),
+                            ],
+                        ),
+                        io.DynamicCombo.Option(
+                            "embedding",
+                            [
+                                io.String.Input("embedding_key", default="X_umap"),
+                                io.String.Input("score_name", default=""),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
 class OpenBioSingleCellDGIdbAnnotation(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -365,6 +403,90 @@ class OpenBioSingleCellDrugGSEA(io.ComfyNode):
         )
 
 
+def _table_plot_schema(
+    *,
+    node_id: str,
+    display_name: str,
+    views: tuple[str, str],
+    limit_name: str,
+    limit_default: int = 30,
+) -> io.Schema:
+    return io.Schema(
+        node_id=node_id,
+        display_name=display_name,
+        category=CATEGORY,
+        inputs=[
+            TableResultType.Input("table"),
+            io.DynamicCombo.Input(
+                "view",
+                options=[
+                    io.DynamicCombo.Option(
+                        name,
+                        [io.Int.Input(limit_name, default=limit_default, min=1, max=100)],
+                    )
+                    for name in views
+                ],
+            ),
+        ],
+        outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+    )
+
+
+class OpenBioSingleCellPathwayScoreContrastPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return _table_plot_schema(
+            node_id="OpenBioSingleCellPathwayScoreContrastPlot",
+            display_name="Pathway Score Contrast Plot",
+            views=("forest", "effect_significance"),
+            limit_name="max_pathways",
+        )
+
+
+class OpenBioSingleCellRankedGSEAPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return _table_plot_schema(
+            node_id="OpenBioSingleCellRankedGSEAPlot",
+            display_name="Ranked GSEA Plot",
+            views=("nes_lollipop", "significance_dot"),
+            limit_name="max_gene_sets",
+        )
+
+
+class OpenBioSingleCellORAEvidencePlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return _table_plot_schema(
+            node_id="OpenBioSingleCellORAEvidencePlot",
+            display_name="ORA Evidence Plot",
+            views=("odds_ratio_dot", "overlap_bar"),
+            limit_name="max_gene_sets",
+        )
+
+
+class OpenBioSingleCellDrugHypergeometricPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return _table_plot_schema(
+            node_id="OpenBioSingleCellDrugHypergeometricPlot",
+            display_name="Drug Hypergeometric Plot",
+            views=("odds_ratio_dot", "overlap_bar"),
+            limit_name="max_drugs",
+        )
+
+
+class OpenBioSingleCellDrugGSEAPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return _table_plot_schema(
+            node_id="OpenBioSingleCellDrugGSEAPlot",
+            display_name="Drug GSEA Plot",
+            views=("nes_lollipop", "significance_dot"),
+            limit_name="max_drugs",
+        )
+
+
 ENRICHMENT_NODE_CLASSES = [
     OpenBioSingleCellAUCellScores,
     OpenBioSingleCellGSVAScores,
@@ -376,6 +498,12 @@ ENRICHMENT_NODE_CLASSES = [
     OpenBioSingleCellDrugScores,
     OpenBioSingleCellDrugHypergeometric,
     OpenBioSingleCellDrugGSEA,
+    OpenBioSingleCellScoreActivityPlot,
+    OpenBioSingleCellPathwayScoreContrastPlot,
+    OpenBioSingleCellRankedGSEAPlot,
+    OpenBioSingleCellORAEvidencePlot,
+    OpenBioSingleCellDrugHypergeometricPlot,
+    OpenBioSingleCellDrugGSEAPlot,
 ]
 
 
@@ -384,11 +512,17 @@ __all__ = [
     "OpenBioSingleCellAUCellScores",
     "OpenBioSingleCellDGIdbAnnotation",
     "OpenBioSingleCellDrugGSEA",
+    "OpenBioSingleCellDrugGSEAPlot",
     "OpenBioSingleCellDrugHypergeometric",
+    "OpenBioSingleCellDrugHypergeometricPlot",
     "OpenBioSingleCellDrugScores",
     "OpenBioSingleCellGenePanelScores",
     "OpenBioSingleCellGeneSetOverrepresentation",
     "OpenBioSingleCellGSVAScores",
     "OpenBioSingleCellPathwayScoreTTest",
+    "OpenBioSingleCellPathwayScoreContrastPlot",
+    "OpenBioSingleCellORAEvidencePlot",
     "OpenBioSingleCellRankedGSEA",
+    "OpenBioSingleCellRankedGSEAPlot",
+    "OpenBioSingleCellScoreActivityPlot",
 ]

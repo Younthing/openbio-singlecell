@@ -25,6 +25,7 @@ from .marker_evidence import (
     rank_marker_evidence,
     validate_marker_artifact_pair,
 )
+from .marker_evidence_plotting import _standalone_marker_evidence_plot, marker_evidence_plot_code
 from .operations_input import (
     analysis_outputs,
     read_anndata_input,
@@ -33,6 +34,11 @@ from .operations_input import (
     require_parameters,
     write_plot_output,
     write_table_output,
+)
+from .pca_metadata_plotting import (
+    _standalone_pca_metadata_associations_plot,
+    pca_metadata_associations_plot_code,
+    pca_metadata_table_fingerprint,
 )
 from .result_plotting import (
     MARKER_PLOT_RNG_LOCK,
@@ -927,6 +933,109 @@ def marker_expression_plot_owned(
     return plotted, report, code
 
 
+def marker_evidence_plot_owned(
+    adata: Any,
+    table: TableResult,
+    universe: TableResult,
+    *,
+    top_genes_per_group: int = 5,
+    source: DynamicExpressionSource | None = None,
+) -> tuple[Any, Any, str]:
+    science = dependencies.require_scientific_dependencies()
+    expression = MARKER_EXPRESSION_SOURCE.resolve(adata, source)
+    started_at = time.perf_counter()
+    provenance = validate_marker_artifact_pair(table, universe, np=science.np, pd=science.pd)
+    if int(table.input_cells) != int(universe.input_cells) or int(table.input_genes) != int(universe.input_genes):
+        raise ValueError("Marker Evidence Plot table and universe input axes do not match.")
+    producer = {
+        "table_operation": provenance["table_operation"],
+        "universe_operation": universe.source.get("operation"),
+        "table_parameters": dict(table.parameters),
+        "universe_parameters": dict(universe.parameters),
+        "input_cells": int(table.input_cells),
+        "input_genes": int(table.input_genes),
+    }
+    png, details = _standalone_marker_evidence_plot(
+        adata,
+        table.table,
+        universe.table,
+        producer=producer,
+        source_kind=expression.kind,
+        layer_name=expression.layer_name,
+        top_genes_per_group=top_genes_per_group,
+        _return_details=True,
+    )
+    details["status"] = "cluster_marker_evidence_plot"
+    parameters = {
+        "top_genes_per_group": details["top_genes_per_group"],
+        **expression.parameters(),
+    }
+    warnings = []
+    groups_without_selected_rows = [
+        group for group, rows in details["selected_upstream_ranks"].items() if not rows
+    ]
+    if groups_without_selected_rows:
+        warnings.append(
+            "No marker rows remained for some upstream groups after filtering: "
+            f"{groups_without_selected_rows!r}. Their expression is still shown for the shared selected panel."
+        )
+    code = marker_evidence_plot_code(
+        producer=producer,
+        source_kind=expression.kind,
+        layer_name=expression.layer_name,
+        top_genes_per_group=details["top_genes_per_group"],
+    )
+    title = "Upstream-ranked Cluster marker evidence"
+    plotted = make_plot_result(
+        png=png,
+        title=title,
+        operation="marker_evidence_plot",
+        parameters=parameters,
+        description=(
+            f"Read-only dot plot of {details['plotted_genes']:,} upstream-ranked genes across "
+            f"{details['plotted_groups']:,} groups."
+        ),
+        warnings=warnings,
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellMarkerEvidencePlot",
+        title=title,
+        operation="marker_evidence_plot",
+        methods=(
+            "Validated the exact Marker Genes or Filter Marker Genes table, its bound tested-gene universe, "
+            "producer fingerprints, current AnnData axes, grouping, and explicit expression source. For each "
+            "upstream group, retained the first requested rows in the stored increasing rank order, formed a "
+            "stable union without reranking, and rendered mean expression as color and the fraction above zero "
+            "as point size."
+        ),
+        results=(
+            f"Displayed {details['plotted_genes']:,} unique upstream-ranked genes across "
+            f"{details['plotted_groups']:,} groups and {details['plotted_cells']:,} cells as descriptive "
+            "Cluster marker evidence. This is not a Condition contrast and does not assign a Curated annotation."
+        ),
+        key_results=details,
+        parameters=parameters,
+        references=[SCANPY_REFERENCE, MATPLOTLIB_REFERENCE, ANNDATA_REFERENCE],
+        software_packages=["anndata", "matplotlib", "numpy", "pandas", "scipy"],
+        warnings=warnings,
+        limitations=[
+            "This plot is descriptive Cluster marker evidence; it is not a replicate-aware Condition contrast "
+            "and does not establish a Curated annotation or cell-type truth.",
+            "Cells from the same Sample are not independent biological replicates.",
+            "The upstream ranking method, selected expression source, per-group panel depth, and zero threshold "
+            "determine the visible pattern.",
+        ],
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+        code=code,
+    )
+    return plotted, report, code
+
+
 def _pca_metadata_associations_impl(
     adata,
     use_rep="X_pca",
@@ -1391,6 +1500,7 @@ def pca_metadata_associations_owned(
         "p_adjust_method": "benjamini_hochberg",
         "p_adjust_scope": "all_valid_pc_metadata_pairs",
     }
+    parameters["table_content_fingerprint_sha256"] = pca_metadata_table_fingerprint(table)
     result = make_table_result(
         title=f"Sample-level metadata diagnostics for {use_rep}",
         operation="pca_metadata_associations",
@@ -1478,6 +1588,96 @@ def pca_metadata_associations_owned(
         code=code,
     )
     return result, report, code
+
+
+def pca_metadata_associations_plot_owned(
+    table: TableResult,
+    *,
+    view: dict[str, object] | None = None,
+) -> tuple[Any, Any, str]:
+    if not isinstance(table, TableResult):
+        raise TypeError("PCA Metadata Associations Plot requires a TableResult input.")
+    if not isinstance(table.source, Mapping) or table.source.get("operation") != "pca_metadata_associations":
+        raise ValueError("PCA Metadata Associations Plot requires its exact producer TableResult.")
+    source_parameters = table.source.get("parameters")
+    if not isinstance(source_parameters, Mapping) or dict(source_parameters) != table.parameters:
+        raise ValueError("PCA Metadata Associations Plot producer parameters are inconsistent.")
+    producer = {
+        "operation": table.source["operation"],
+        "parameters": dict(table.parameters),
+        "input_cells": int(table.input_cells),
+        "input_genes": int(table.input_genes),
+    }
+    started_at = time.perf_counter()
+    png, details = _standalone_pca_metadata_associations_plot(
+        table.table,
+        producer=producer,
+        view=view,
+        _return_details=True,
+    )
+    parameters = {"view": details["view_parameters"]}
+    warnings = []
+    if details["view"] == "association_heatmap" and details["missing_component_metadata_pairs"]:
+        warnings.append(
+            f"The heatmap contains {details['missing_component_metadata_pairs']:,} missing PC-by-metadata "
+            "pair(s) because the producer omitted degenerate hypotheses."
+        )
+    if details["plotted_associations"] < details["available_associations"]:
+        warnings.append(
+            f"Displayed {details['plotted_associations']:,} of {details['available_associations']:,} stored "
+            "associations in canonical producer order."
+        )
+    code = pca_metadata_associations_plot_code(producer=producer, view=details["view_parameters"])
+    plotted = make_plot_result(
+        png=png,
+        title=details["title"],
+        operation="pca_metadata_associations_plot",
+        parameters=parameters,
+        description=(
+            f"Read-only {details['view'].replace('_', ' ')} of {details['plotted_associations']:,} stored "
+            "Sample-level PCA metadata associations."
+        ),
+        warnings=warnings,
+        input_cells=int(table.input_cells),
+        input_genes=int(table.input_genes),
+        started_at=started_at,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellPCAMetadataAssociationsPlot",
+        title=details["title"],
+        operation="pca_metadata_associations_plot",
+        methods=(
+            "Validated the exact canonical PCA Metadata Associations table, producer operation and scientific "
+            "policy, current-content fingerprint, Sample counts, test-specific effect semantics, BH-adjusted "
+            "p-values, significance flags, and canonical row order. Rendered the selected view from stored "
+            "evidence without recomputing an association or p-value."
+        ),
+        results=(
+            f"Displayed {details['plotted_associations']:,} of {details['available_associations']:,} stored "
+            f"Sample-level associations; {details['significant_associations']:,} stored hypotheses met the "
+            f"producer's BH-adjusted p <= {details['alpha']:.6g} threshold. These diagnostics are exploratory "
+            "and not causal findings or formal Condition inference."
+        ),
+        key_results=details,
+        parameters=parameters,
+        references=[SPEARMAN_REFERENCE, EFFECT_SIZE_REFERENCE, BH_REFERENCE, MATPLOTLIB_REFERENCE],
+        software_packages=["matplotlib", "numpy", "pandas"],
+        warnings=warnings,
+        limitations=[
+            "Stored associations are exploratory PCA diagnostics; they do not establish causality or formal "
+            "Condition inference.",
+            "Categorical eta squared and continuous rho squared share a 0–1 display scale but have different "
+            "statistical meanings.",
+            "The producer used one unweighted mean per Sample; cell count is not replicate weight.",
+            "Multiple-testing correction, metadata selection, missingness, and the PCA representation determine "
+            "the stored evidence shown here.",
+        ],
+        input_cells=int(table.input_cells),
+        input_genes=int(table.input_genes),
+        started_at=started_at,
+        code=code,
+    )
+    return plotted, report, code
 
 
 @register_operation("openbio.node.markergenes")
@@ -1582,6 +1782,23 @@ def marker_expression_plot(
     return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
 
 
+@register_operation("openbio.node.markerevidenceplot")
+def marker_evidence_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    require_input_names(inputs, {"adata", "table", "universe"}, operation="Marker Evidence Plot")
+    require_parameters(parameters, {"top_genes_per_group", "source"}, operation="Marker Evidence Plot")
+    plotted, report, code = marker_evidence_plot_owned(
+        read_anndata_input(inputs),
+        _table_input(inputs, "table"),
+        _table_input(inputs, "universe"),
+        **parameters,
+    )
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
+
+
 @register_operation("openbio.node.pcametadataassociations")
 def pca_metadata_associations(
     context: OperationContext,
@@ -1598,6 +1815,18 @@ def pca_metadata_associations(
     return analysis_outputs(report, code, write_table_output(context, table, kind=TABLE_KIND))
 
 
+@register_operation("openbio.node.pcametadataassociationsplot")
+def pca_metadata_associations_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    require_input_names(inputs, {"table"}, operation="PCA Metadata Associations Plot")
+    require_parameters(parameters, {"view"}, operation="PCA Metadata Associations Plot")
+    plotted, report, code = pca_metadata_associations_plot_owned(_table_input(inputs, "table"), **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
+
+
 __all__ = [
     "EMBEDDING_PLOT_EXPRESSION_SOURCE",
     "MARKER_EXPRESSION_SOURCE",
@@ -1609,8 +1838,12 @@ __all__ = [
     "filter_marker_genes_owned",
     "marker_genes",
     "marker_genes_owned",
+    "marker_evidence_plot",
+    "marker_evidence_plot_owned",
     "marker_expression_plot",
     "marker_expression_plot_owned",
     "pca_metadata_associations",
     "pca_metadata_associations_owned",
+    "pca_metadata_associations_plot",
+    "pca_metadata_associations_plot_owned",
 ]

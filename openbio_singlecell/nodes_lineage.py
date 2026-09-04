@@ -11,6 +11,7 @@ from .node_types import (
     AnnDataType,
     CassiopeiaCharactersType,
     CassiopeiaTreeType,
+    PlotResultType,
     TableResultType,
     analysis_outputs,
 )
@@ -150,11 +151,82 @@ class OpenBioSingleCellCassiopeiaPlasticity(io.ComfyNode):
         )
 
 
+class OpenBioSingleCellCassiopeiaLineageQCPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellCassiopeiaLineageQCPlot",
+            display_name="Cassiopeia Lineage QC Plot",
+            category=CATEGORY,
+            description="Plot retained cells, character quality, and status from one validated Cassiopeia QC result.",
+            inputs=[
+                CassiopeiaCharactersType.Input("characters"),
+                TableResultType.Input("table"),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
+class OpenBioSingleCellCassiopeiaTreePlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellCassiopeiaTreePlot",
+            display_name="Cassiopeia Tree Plot",
+            category=CATEGORY,
+            description="Plot one validated Cassiopeia topology with exactly aligned AnnData leaf annotations.",
+            inputs=[
+                CassiopeiaTreeType.Input("tree"),
+                AnnDataType.Input("adata"),
+                io.String.Input("annotation_key", default="cell_type"),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
+class OpenBioSingleCellCassiopeiaExpansionPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellCassiopeiaExpansionPlot",
+            display_name="Cassiopeia Expansion Plot",
+            category=CATEGORY,
+            description="Plot clade expansion evidence bound to the exact tested Cassiopeia topology.",
+            inputs=[
+                CassiopeiaTreeType.Input("tree"),
+                TableResultType.Input("table"),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
+class OpenBioSingleCellCassiopeiaPlasticityPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellCassiopeiaPlasticityPlot",
+            display_name="Cassiopeia Plasticity Plot",
+            category=CATEGORY,
+            description="Plot stored EffectivePlasticity scores and annotations for one validated lineage tree.",
+            inputs=[
+                AnnDataType.Input("adata"),
+                CassiopeiaTreeType.Input("tree"),
+                TableResultType.Input("table"),
+                io.String.Input("output_key", default="sc_effective_plasticity"),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
 LINEAGE_NODE_CLASSES = [
     OpenBioSingleCellCassiopeiaLineageQC,
     OpenBioSingleCellReconstructCassiopeiaTree,
     OpenBioSingleCellCassiopeiaExpansionTest,
     OpenBioSingleCellCassiopeiaPlasticity,
+    OpenBioSingleCellCassiopeiaLineageQCPlot,
+    OpenBioSingleCellCassiopeiaTreePlot,
+    OpenBioSingleCellCassiopeiaExpansionPlot,
+    OpenBioSingleCellCassiopeiaPlasticityPlot,
 ]
 
 __all__ = ["LINEAGE_NODE_CLASSES"]

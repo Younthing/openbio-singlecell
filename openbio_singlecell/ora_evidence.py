@@ -33,6 +33,55 @@ ORA_EVIDENCE_COLUMNS = [
 ]
 
 
+def marker_ora_table_fingerprint(table: Any) -> str:
+    import hashlib
+    import json
+
+    import pandas as pd
+
+    if not isinstance(table, pd.DataFrame) or list(table.columns) != ORA_EVIDENCE_COLUMNS:
+        raise ValueError("Marker ORA table fingerprint requires the exact canonical columns.")
+    integer_columns = {
+        "selected_count",
+        "universe_count",
+        "set_size_before_universe",
+        "set_size_in_universe",
+        "overlap_count",
+        "a",
+        "b",
+        "c",
+        "d",
+        "rank_within_group",
+    }
+    float_columns = {"log_odds_ratio", "p_value", "p_adj_within_group", "p_adj_global"}
+    boolean_columns = {
+        "positive_enrichment",
+        "passes_min_overlap",
+        "significant_within_group",
+    }
+    rows = []
+    for row in table.itertuples(index=False, name=None):
+        normalized = []
+        for column, value in zip(table.columns, row, strict=True):
+            if column in boolean_columns:
+                normalized.append(bool(value))
+            elif column in integer_columns:
+                normalized.append(int(value))
+            elif column in float_columns:
+                normalized.append(float(value).hex())
+            else:
+                normalized.append(str(value))
+        rows.append(normalized)
+    payload = json.dumps(
+        {"schema": "openbio-singlecell/marker-ora-evidence/v1", "rows": rows},
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _standalone_marker_ora_software_versions(
     *,
     openbio_version,
@@ -1144,6 +1193,7 @@ def _standalone_marker_ora_evidence(
         "ha_corr": 0.5,
         "within_group_correction": "benjamini-hochberg",
         "global_correction": "benjamini-hochberg",
+        "table_content_fingerprint_sha256": marker_ora_table_fingerprint(evidence),
     }
     warnings = [
         "Marker ORA results are exploratory Cluster marker evidence for annotation review, not cell-type probabilities or Curated annotation.",
@@ -1257,12 +1307,15 @@ def marker_ora_evidence_code(
     implementations = "\n\n".join(
         textwrap.dedent(inspect.getsource(function)).strip()
         for function in (
+            marker_ora_table_fingerprint,
             _standalone_marker_ora_software_versions,
             _standalone_marker_ora_summary,
             _standalone_marker_ora_evidence,
         )
     )
     return f"""from __future__ import annotations
+
+ORA_EVIDENCE_COLUMNS = {ORA_EVIDENCE_COLUMNS!r}
 
 {implementations}
 
@@ -1296,6 +1349,7 @@ def run_marker_ora_evidence(marker_table, universe):
 __all__ = [
     "ORA_EVIDENCE_COLUMNS",
     "build_marker_ora_summary",
+    "marker_ora_table_fingerprint",
     "marker_ora_evidence_code",
     "run_marker_ora_evidence",
 ]

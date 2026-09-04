@@ -3,7 +3,7 @@ from __future__ import annotations
 from comfy_api.latest import io
 
 from .expression_source import _SCVI_SPEC
-from .node_types import AnnDataType, SCVIModelType, TableResultType, analysis_outputs
+from .node_types import AnnDataType, PlotResultType, SCVIModelType, TableResultType, analysis_outputs
 
 INTEGRATION_CATEGORY = "openbio/single-cell/batch-integration"
 CLUSTERING_CATEGORY = "openbio/single-cell/clustering"
@@ -86,6 +86,37 @@ class OpenBioSingleCellSCVIIntegration(io.ComfyNode):
         )
 
 
+class OpenBioSingleCellHarmonyConvergencePlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellHarmonyConvergencePlot",
+            display_name="Harmony Convergence Plot",
+            category=INTEGRATION_CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input("adjusted_basis", default="X_pca_harmony"),
+                io.Int.Input("max_image_pixels", default=40_000_000, min=1, advanced=True),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
+class OpenBioSingleCellSCVITrainingPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellSCVITrainingPlot",
+            display_name="scVI Training Plot",
+            category=INTEGRATION_CATEGORY,
+            inputs=[
+                SCVIModelType.Input("model"),
+                io.Int.Input("max_image_pixels", default=40_000_000, min=1, advanced=True),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
 class OpenBioSingleCellLeidenResolutionSweep(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -111,15 +142,43 @@ class OpenBioSingleCellLeidenResolutionSweep(io.ComfyNode):
         )
 
 
+class OpenBioSingleCellLeidenResolutionSweepPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellLeidenResolutionSweepPlot",
+            display_name="Leiden Resolution Sweep Plot",
+            category=CLUSTERING_CATEGORY,
+            description="Read-only quality and cluster-size diagnostics across stored Leiden resolutions.",
+            inputs=[
+                TableResultType.Input("resolution_metrics"),
+                io.DynamicCombo.Input(
+                    "view",
+                    options=[
+                        io.DynamicCombo.Option("quality_curves", []),
+                        io.DynamicCombo.Option("cluster_sizes", []),
+                    ],
+                ),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
 INTEGRATION_NODE_CLASSES = [
     OpenBioSingleCellHarmonyIntegration,
+    OpenBioSingleCellHarmonyConvergencePlot,
     OpenBioSingleCellSCVIIntegration,
+    OpenBioSingleCellSCVITrainingPlot,
     OpenBioSingleCellLeidenResolutionSweep,
+    OpenBioSingleCellLeidenResolutionSweepPlot,
 ]
 
 __all__ = [
     "INTEGRATION_NODE_CLASSES",
+    "OpenBioSingleCellHarmonyConvergencePlot",
     "OpenBioSingleCellHarmonyIntegration",
     "OpenBioSingleCellLeidenResolutionSweep",
+    "OpenBioSingleCellLeidenResolutionSweepPlot",
     "OpenBioSingleCellSCVIIntegration",
+    "OpenBioSingleCellSCVITrainingPlot",
 ]

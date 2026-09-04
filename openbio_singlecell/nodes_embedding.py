@@ -48,6 +48,22 @@ class OpenBioSingleCellPCAVariancePlot(io.ComfyNode):
         )
 
 
+class OpenBioSingleCellPCALoadingsPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellPCALoadingsPlot",
+            display_name="PCA Loadings Plot",
+            category=CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.Int.Input("component", default=1, min=1),
+                io.Int.Input("n_genes", default=20, min=1, max=50),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
 class OpenBioSingleCellNeighbors(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -69,6 +85,22 @@ class OpenBioSingleCellNeighbors(io.ComfyNode):
                 io.Int.Input("random_seed", default=0, min=0, max=MAX_RANDOM_SEED, advanced=True),
             ],
             outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
+        )
+
+
+class OpenBioSingleCellNeighborGraphDiagnosticsPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellNeighborGraphDiagnosticsPlot",
+            display_name="Neighbor Graph Diagnostics Plot",
+            category=CATEGORY,
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input("neighbors_key", default="neighbors"),
+                io.Float.Input("max_working_memory_gib", default=4.0, min=0.001, step=0.5, advanced=True),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
         )
 
 
@@ -166,7 +198,9 @@ class OpenBioSingleCellLeiden(io.ComfyNode):
 EMBEDDING_NODE_CLASSES = [
     OpenBioSingleCellPCA,
     OpenBioSingleCellPCAVariancePlot,
+    OpenBioSingleCellPCALoadingsPlot,
     OpenBioSingleCellNeighbors,
+    OpenBioSingleCellNeighborGraphDiagnosticsPlot,
     OpenBioSingleCellUMAP,
     OpenBioSingleCellTSNE,
     OpenBioSingleCellForceDirectedGraph,
@@ -178,7 +212,9 @@ __all__ = [
     "OpenBioSingleCellForceDirectedGraph",
     "OpenBioSingleCellLeiden",
     "OpenBioSingleCellNeighbors",
+    "OpenBioSingleCellNeighborGraphDiagnosticsPlot",
     "OpenBioSingleCellPCA",
+    "OpenBioSingleCellPCALoadingsPlot",
     "OpenBioSingleCellPCAVariancePlot",
     "OpenBioSingleCellTSNE",
     "OpenBioSingleCellUMAP",

@@ -18,7 +18,20 @@ if TYPE_CHECKING:
     from pandas import DataFrame
 
 
-SCVI_MODEL_ARTIFACT_SCHEMA = "openbio-singlecell/scvi-model/v3"
+SCVI_MODEL_ARTIFACT_SCHEMA = "openbio-singlecell/scvi-model/v4"
+SCVI_TRAINING_DIAGNOSTIC_SCHEMA = "openbio-singlecell/scvi-training-diagnostics/v1"
+SCVI_NATIVE_DIAGNOSTIC_SCHEMA = "openbio-singlecell/scvi-native-diagnostics/v1"
+SCVI_TRAINING_DIAGNOSTIC_FILENAME = "openbio-training-diagnostics.json"
+SCVI_EPOCH_METRICS = (
+    "elbo_train",
+    "elbo_validation",
+    "reconstruction_loss_train",
+    "reconstruction_loss_validation",
+    "kl_local_train",
+    "kl_local_validation",
+    "kl_global_train",
+    "kl_global_validation",
+)
 SCVI_GLOBAL_RNG_LOCK = threading.RLock()
 
 
@@ -53,6 +66,306 @@ def _json_safe(value: Any) -> Any:
 def _fingerprint_json(value: Any) -> str:
     payload = json.dumps(_json_safe(value), allow_nan=False, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def validate_scvi_training_diagnostics(diagnostics: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(diagnostics, Mapping):
+        raise TypeError("scVI training diagnostics must be a mapping.")
+    expected = {
+        "schema_version",
+        "actual_epochs",
+        "metrics",
+        "train_cells",
+        "validation_cells",
+        "test_cells",
+        "training_observations",
+        "fitted_features",
+        "device",
+    }
+    if set(diagnostics) != expected:
+        raise ValueError(f"scVI training diagnostics fields must be exactly {sorted(expected)!r}.")
+    if diagnostics["schema_version"] != SCVI_TRAINING_DIAGNOSTIC_SCHEMA:
+        raise ValueError("scVI training diagnostic schema version is unsupported.")
+    integer_fields = (
+        "actual_epochs",
+        "train_cells",
+        "validation_cells",
+        "test_cells",
+        "training_observations",
+        "fitted_features",
+    )
+    integers: dict[str, int] = {}
+    for field in integer_fields:
+        value = diagnostics[field]
+        if hasattr(value, "item"):
+            value = value.item()
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"scVI training diagnostic {field} must be an integer.")
+        if value < (
+            1
+            if field in {"actual_epochs", "train_cells", "training_observations", "fitted_features"}
+            else 0
+        ):
+            raise ValueError(f"scVI training diagnostic {field} is outside its valid range.")
+        integers[field] = value
+    if integers["train_cells"] + integers["validation_cells"] + integers["test_cells"] != integers[
+        "training_observations"
+    ]:
+        raise ValueError("scVI training split counts must cover every training observation exactly once.")
+    device = diagnostics["device"]
+    if not isinstance(device, str) or not device or device != device.strip():
+        raise ValueError("scVI training diagnostic device must be a canonical non-empty string.")
+    metrics = diagnostics["metrics"]
+    if not isinstance(metrics, Mapping):
+        raise TypeError("scVI training diagnostic metrics must be a mapping.")
+    required = {"elbo_train", "reconstruction_loss_train", "kl_local_train"}
+    allowed = {*required, "kl_global_train"}
+    if integers["validation_cells"]:
+        required.update({"elbo_validation", "reconstruction_loss_validation", "kl_local_validation"})
+        allowed.update({*required, "kl_global_validation"})
+    missing = sorted(required.difference(metrics))
+    unexpected = sorted(set(metrics).difference(allowed))
+    if missing or unexpected:
+        raise ValueError(
+            "scVI training diagnostic metrics must contain every required sequence and only supported optional "
+            f"sequences; missing={missing!r}, unexpected={unexpected!r}."
+        )
+
+    normalized_metrics: dict[str, dict[str, list[dict[str, int | float]]]] = {}
+    epoch_axes: dict[str, list[int]] = {}
+    for metric in SCVI_EPOCH_METRICS:
+        if metric not in metrics:
+            continue
+        metric_payload = metrics[metric]
+        if not isinstance(metric_payload, Mapping) or set(metric_payload) != {"records"}:
+            raise ValueError(f"scVI training metric {metric!r} must contain exactly one records field.")
+        records = metric_payload["records"]
+        if not isinstance(records, Sequence) or isinstance(records, (str, bytes, bytearray)) or not records:
+            raise ValueError(f"scVI training metric {metric!r} records must be a non-empty sequence.")
+        normalized_records: list[dict[str, int | float]] = []
+        epochs: list[int] = []
+        for record in records:
+            if not isinstance(record, Mapping) or set(record) != {"epoch", "value"}:
+                raise ValueError(f"scVI training metric {metric!r} record schema is invalid.")
+            epoch = record["epoch"]
+            value = record["value"]
+            if hasattr(epoch, "item"):
+                epoch = epoch.item()
+            if hasattr(value, "item"):
+                value = value.item()
+            if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
+                raise ValueError(f"scVI training metric {metric!r} epochs must be non-negative integers.")
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                raise ValueError(f"scVI training metric {metric!r} values must be finite real numbers.")
+            epochs.append(epoch)
+            normalized_records.append({"epoch": epoch, "value": float(value)})
+        if epochs != list(range(len(epochs))):
+            raise ValueError(f"scVI training metric {metric!r} must retain every zero-based epoch exactly once.")
+        epoch_axes[metric] = epochs
+        normalized_metrics[metric] = {"records": normalized_records}
+    train_axes = [
+        epoch_axes[metric]
+        for metric in SCVI_EPOCH_METRICS
+        if metric.endswith("_train") and metric in epoch_axes
+    ]
+    if any(axis != train_axes[0] for axis in train_axes[1:]):
+        raise ValueError("scVI training metric epoch axes must match.")
+    validation_axes = [
+        epoch_axes[metric]
+        for metric in SCVI_EPOCH_METRICS
+        if metric.endswith("_validation") and metric in epoch_axes
+    ]
+    if validation_axes and any(axis != train_axes[0] for axis in validation_axes):
+        raise ValueError("scVI validation metric epoch axes must match the training epoch axis.")
+    if integers["actual_epochs"] != len(train_axes[0]):
+        raise ValueError("scVI actual_epochs must equal the complete retained training epoch count.")
+    return {
+        "schema_version": SCVI_TRAINING_DIAGNOSTIC_SCHEMA,
+        "actual_epochs": integers["actual_epochs"],
+        "metrics": normalized_metrics,
+        "train_cells": integers["train_cells"],
+        "validation_cells": integers["validation_cells"],
+        "test_cells": integers["test_cells"],
+        "training_observations": integers["training_observations"],
+        "fitted_features": integers["fitted_features"],
+        "device": device,
+    }
+
+
+def build_scvi_training_diagnostics(model: Any) -> dict[str, Any]:
+    import numpy as np
+    import pandas as pd
+
+    history = getattr(model, "history", None)
+    if not isinstance(history, Mapping):
+        raise RuntimeError("scVI did not expose its required training-history mapping.")
+    validation_cells = len(model.validation_indices)
+    required = {"elbo_train", "reconstruction_loss_train", "kl_local_train"}
+    if validation_cells:
+        required.update({"elbo_validation", "reconstruction_loss_validation", "kl_local_validation"})
+    elif any(metric.endswith("_validation") and metric in history for metric in SCVI_EPOCH_METRICS):
+        raise RuntimeError("scVI training history contains validation metrics without validation observations.")
+    missing = sorted(required.difference(history))
+    if missing:
+        raise RuntimeError(f"scVI training history is missing supported epoch metrics: {missing}.")
+    retained = required | {metric for metric in ("kl_global_train", "kl_global_validation") if metric in history}
+    metrics = {}
+    for metric in SCVI_EPOCH_METRICS:
+        if metric not in retained:
+            continue
+        frame = history[metric]
+        if not isinstance(frame, pd.DataFrame) or frame.columns.tolist() != [metric]:
+            raise RuntimeError(f"scVI training history {metric!r} must be a one-column pandas DataFrame.")
+        if frame.index.name != "epoch":
+            raise RuntimeError(f"scVI training history {metric!r} must use its native epoch index.")
+        records = []
+        for raw_epoch, raw_value in zip(frame.index.tolist(), frame[metric].tolist(), strict=True):
+            epoch = raw_epoch.item() if hasattr(raw_epoch, "item") else raw_epoch
+            value = raw_value.item() if hasattr(raw_value, "item") else raw_value
+            if isinstance(epoch, bool) or not isinstance(epoch, int):
+                raise RuntimeError(f"scVI training history {metric!r} contains a non-integer epoch identity.")
+            if isinstance(value, bool) or not isinstance(value, (int, float, np.number)):
+                raise RuntimeError(f"scVI training history {metric!r} contains a non-numeric value.")
+            records.append({"epoch": epoch, "value": float(value)})
+        metrics[metric] = {"records": records}
+    train_epochs = [record["epoch"] for record in metrics["elbo_train"]["records"]]
+    diagnostics = {
+        "schema_version": SCVI_TRAINING_DIAGNOSTIC_SCHEMA,
+        "actual_epochs": len(train_epochs),
+        "metrics": metrics,
+        "train_cells": len(model.train_indices),
+        "validation_cells": validation_cells,
+        "test_cells": len(model.test_indices),
+        "training_observations": int(model.adata.n_obs),
+        "fitted_features": int(model.adata.n_vars),
+        "device": str(model.device),
+    }
+    try:
+        return validate_scvi_training_diagnostics(diagnostics)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(f"scVI exposed invalid training diagnostics: {error}") from error
+
+
+def _file_sha256(path: Any) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while block := handle.read(1024 * 1024):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def write_scvi_training_diagnostics(
+    root: Any,
+    diagnostics: Mapping[str, Any],
+    *,
+    training_parameters: Mapping[str, Any],
+    software_versions: Mapping[str, Any],
+) -> dict[str, Any]:
+    from pathlib import Path
+
+    root = Path(root).resolve(strict=True)
+    if not root.is_dir():
+        raise NotADirectoryError("scVI native artifact root must be a directory.")
+    model_path = root / "model.pt"
+    if not model_path.is_file() or model_path.is_symlink():
+        raise ValueError("scVI native artifact requires a regular model.pt file before diagnostics are written.")
+    sidecar = root / SCVI_TRAINING_DIAGNOSTIC_FILENAME
+    if sidecar.exists() or sidecar.is_symlink():
+        raise FileExistsError(f"scVI native diagnostics already exist: {sidecar.name}.")
+    if not isinstance(training_parameters, Mapping) or not isinstance(software_versions, Mapping):
+        raise TypeError("scVI native diagnostic provenance must use mappings.")
+    normalized_diagnostics = validate_scvi_training_diagnostics(diagnostics)
+    normalized_parameters = _json_safe(dict(training_parameters))
+    normalized_versions = _json_safe(dict(software_versions))
+    if not isinstance(normalized_parameters, dict) or not isinstance(normalized_versions, dict):
+        raise TypeError("scVI native diagnostic provenance must remain JSON mappings.")
+    if not all(isinstance(key, str) and isinstance(value, str) for key, value in normalized_versions.items()):
+        raise ValueError("scVI native diagnostic software versions must map package names to version strings.")
+    payload = {
+        "training_diagnostics": normalized_diagnostics,
+        "training_parameters": normalized_parameters,
+        "software_versions": normalized_versions,
+        "model_identity": {
+            "path": "model.pt",
+            "size": model_path.stat().st_size,
+            "sha256": _file_sha256(model_path),
+        },
+    }
+    envelope = {
+        "schema_version": SCVI_NATIVE_DIAGNOSTIC_SCHEMA,
+        "payload": payload,
+        "payload_sha256": _fingerprint_json(payload),
+    }
+    sidecar.write_text(
+        json.dumps(envelope, allow_nan=False, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return copy.deepcopy(payload)
+
+
+def read_scvi_training_diagnostics(root: Any) -> dict[str, Any]:
+    from pathlib import Path
+
+    root = Path(root).resolve(strict=True)
+    if not root.is_dir():
+        raise NotADirectoryError("scVI native artifact root must be a directory.")
+    sidecar = root / SCVI_TRAINING_DIAGNOSTIC_FILENAME
+    if not sidecar.is_file() or sidecar.is_symlink():
+        raise ValueError("scVI native artifact is missing its regular OpenBio training-diagnostic sidecar.")
+
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"scVI native diagnostics contain invalid JSON constant {value!r}.")
+
+    try:
+        envelope = json.loads(sidecar.read_text(encoding="utf-8"), parse_constant=reject_constant)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("scVI native training diagnostics are unreadable.") from error
+    if not isinstance(envelope, Mapping) or set(envelope) != {"schema_version", "payload", "payload_sha256"}:
+        raise ValueError("scVI native training diagnostic envelope schema is invalid.")
+    if envelope["schema_version"] != SCVI_NATIVE_DIAGNOSTIC_SCHEMA:
+        raise ValueError("scVI native training diagnostic envelope version is unsupported.")
+    payload = envelope["payload"]
+    if not isinstance(payload, Mapping) or set(payload) != {
+        "training_diagnostics",
+        "training_parameters",
+        "software_versions",
+        "model_identity",
+    }:
+        raise ValueError("scVI native training diagnostic payload schema is invalid.")
+    if envelope["payload_sha256"] != _fingerprint_json(payload):
+        raise ValueError("scVI native training diagnostic payload fingerprint does not match its contents.")
+    diagnostics = validate_scvi_training_diagnostics(payload["training_diagnostics"])
+    parameters = payload["training_parameters"]
+    versions = payload["software_versions"]
+    identity = payload["model_identity"]
+    if not isinstance(parameters, Mapping):
+        raise TypeError("scVI native training parameters must be a mapping.")
+    if not isinstance(versions, Mapping) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in versions.items()
+    ):
+        raise TypeError("scVI native software versions must map package names to version strings.")
+    if not isinstance(identity, Mapping) or set(identity) != {"path", "size", "sha256"}:
+        raise ValueError("scVI native model identity schema is invalid.")
+    if identity["path"] != "model.pt" or isinstance(identity["size"], bool) or not isinstance(identity["size"], int):
+        raise ValueError("scVI native model identity fields are invalid.")
+    if (
+        not isinstance(identity["sha256"], str)
+        or len(identity["sha256"]) != 64
+        or any(character not in "0123456789abcdef" for character in identity["sha256"])
+    ):
+        raise ValueError("scVI native model identity SHA-256 is invalid.")
+    model_path = root / "model.pt"
+    if not model_path.is_file() or model_path.is_symlink():
+        raise ValueError("scVI native artifact model.pt is missing or invalid.")
+    if model_path.stat().st_size != identity["size"] or _file_sha256(model_path) != identity["sha256"]:
+        raise ValueError("scVI native model identity does not match its retained training diagnostics.")
+    return {
+        "training_diagnostics": diagnostics,
+        "training_parameters": copy.deepcopy(dict(parameters)),
+        "software_versions": copy.deepcopy(dict(versions)),
+        "model_identity": copy.deepcopy(dict(identity)),
+    }
 
 
 def _matrix_fingerprint(matrix: Any) -> str:
@@ -317,7 +630,9 @@ class SCVIModel:
         self._model = model
         self._registered_adata = registered_adata
         self._training_parameters = copy.deepcopy(dict(training_parameters))
-        self._diagnostics = copy.deepcopy(dict(diagnostics or {}))
+        self._diagnostics = (
+            validate_scvi_training_diagnostics(diagnostics) if diagnostics else {}
+        )
         _json_safe(self._training_parameters)
         _json_safe(self._diagnostics)
         self._lock = threading.RLock()
@@ -364,7 +679,9 @@ class SCVIModel:
 
     @property
     def diagnostics(self) -> Mapping[str, Any]:
-        return MappingProxyType(copy.deepcopy(self._diagnostics))
+        with self._lock:
+            self._validate_registered_state()
+            return MappingProxyType(copy.deepcopy(self._diagnostics))
 
     @property
     def obs_names(self) -> tuple[str, ...]:
@@ -880,8 +1197,16 @@ class SCVIModel:
 
 
 __all__ = [
+    "SCVI_EPOCH_METRICS",
     "SCVI_GLOBAL_RNG_LOCK",
     "SCVI_MODEL_ARTIFACT_SCHEMA",
+    "SCVI_NATIVE_DIAGNOSTIC_SCHEMA",
+    "SCVI_TRAINING_DIAGNOSTIC_FILENAME",
+    "SCVI_TRAINING_DIAGNOSTIC_SCHEMA",
     "SCVIDifferentialRun",
     "SCVIModel",
+    "build_scvi_training_diagnostics",
+    "read_scvi_training_diagnostics",
+    "validate_scvi_training_diagnostics",
+    "write_scvi_training_diagnostics",
 ]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from importlib import metadata as importlib_metadata
 from importlib.util import find_spec
 
@@ -10,6 +11,11 @@ import pytest
 from anndata import AnnData, concat
 
 from openbio_singlecell import composition_modeling
+from openbio_singlecell.abundance_artifact_codecs import (
+    COMPOSITION_MODEL_CODEC,
+    read_composition_model_result,
+)
+from openbio_singlecell.artifact_codecs import ANNDATA_PAYLOAD, read_table, write_anndata
 from openbio_singlecell.composition_modeling import (
     SCCODA_TABLE_COLUMNS,
     TASCCODA_TABLE_COLUMNS,
@@ -18,12 +24,20 @@ from openbio_singlecell.composition_modeling import (
     sccoda_differential_composition_code,
     tasccoda_differential_composition_code,
 )
-from openbio_singlecell.node_types import SummaryResultType, TableResultType
+from openbio_singlecell.composition_result import validate_composition_model_result
+from openbio_singlecell.node_types import CompositionModelResultType, SummaryResultType, TableResultType
 from openbio_singlecell.nodes_abundance import (
     OpenBioSingleCellSccodaDifferentialComposition,
     OpenBioSingleCellTasccodaDifferentialComposition,
 )
-from openbio_singlecell.operations_abundance import sccoda_owned, tasccoda_owned
+from openbio_singlecell.operations_abundance import (
+    sccoda_differential_composition,
+    sccoda_owned,
+    tasccoda_differential_composition,
+    tasccoda_differential_composition_plot_owned,
+    tasccoda_owned,
+)
+from openbio_singlecell.worker_protocol import OperationContext, WorkerResponse
 
 
 def test_composition_node_schemas_are_atomic_and_method_specific():
@@ -90,14 +104,16 @@ def test_composition_node_schemas_are_atomic_and_method_specific():
         1000,
         0,
     ]
-    assert [item.display_name for item in sccoda.outputs] == ["table", "summary", "code"]
-    assert [item.display_name for item in tasccoda.outputs] == ["table", "summary", "code"]
+    assert [item.display_name for item in sccoda.outputs] == ["result", "table", "summary", "code"]
+    assert [item.display_name for item in tasccoda.outputs] == ["result", "table", "summary", "code"]
     assert [item.io_type for item in sccoda.outputs] == [
+        CompositionModelResultType.io_type,
         TableResultType.io_type,
         SummaryResultType.io_type,
         "STRING",
     ]
     assert [item.io_type for item in tasccoda.outputs] == [
+        CompositionModelResultType.io_type,
         TableResultType.io_type,
         SummaryResultType.io_type,
         "STRING",
@@ -195,9 +211,9 @@ class _FlatFakeBackend:
                 "ess_bulk": [600.0, 550.0],
                 "ess_tail": [500.0, 480.0],
                 "mcse_mean": [0.01, 0.02],
-                "potential_energy": [10.0, 10.5, 9.8],
-                "num_steps": [7.0, 8.0, 7.0],
-                "step_size": [0.1, 0.1, 0.1],
+                "potential_energy": np.linspace(9.8, 10.5, draws),
+                "num_steps": np.resize([7.0, 8.0], draws),
+                "step_size": np.full(draws, 0.1),
                 "rhat_available": False,
                 "divergences_available": False,
             },
@@ -252,7 +268,7 @@ def test_sccoda_uses_the_worker_owned_anndata_without_a_full_defensive_copy(monk
         raise AssertionError("worker-owned AnnData must not be defensively copied")
 
     monkeypatch.setattr(AnnData, "copy", reject_full_copy)
-    table, _ = _run_flat(adata, _FlatFakeBackend())
+    table, _, _ = _run_flat(adata, _FlatFakeBackend())
 
     assert table["cell_type"].tolist() == ["B", "T"]
 
@@ -263,7 +279,12 @@ def test_sccoda_fake_backend_has_focal_only_expected_fdr_table_and_code_parity()
     obs_before = adata.obs.copy(deep=True)
     uns_before = dict(adata.uns)
 
-    table, summary = _run_flat(adata, _FlatFakeBackend())
+    table, summary, evidence = _run_flat(adata, _FlatFakeBackend())
+
+    assert evidence["posterior"]["condition_effect"].shape == (100, 2)
+    assert evidence["sample_stats"]["potential_energy"].shape == (100,)
+    assert evidence["model_metadata"]["annotation_status"] == "curated"
+    assert evidence["model_metadata"]["software_versions"]["pertpy"] == "1.3.0"
 
     assert list(table.columns) == SCCODA_TABLE_COLUMNS
     assert table["cell_type"].tolist() == ["B", "T"]
@@ -308,12 +329,16 @@ def test_sccoda_fake_backend_has_focal_only_expected_fdr_table_and_code_parity()
     compile(code, "<sccoda-code>", "exec")
     namespace: dict[str, object] = {}
     exec(code, namespace)
-    generated_table, generated_summary = namespace["run_sccoda_differential_composition"](
+    generated_table, generated_summary, generated_evidence = namespace["run_sccoda_differential_composition"](
         reproduction_input,
         _backend=_FlatFakeBackend(),
     )
     pd.testing.assert_frame_equal(generated_table, table)
     assert generated_summary == summary
+    np.testing.assert_array_equal(
+        generated_evidence["posterior"]["condition_effect"],
+        evidence["posterior"]["condition_effect"],
+    )
 
 
 def _hierarchy_adata() -> AnnData:
@@ -393,9 +418,9 @@ class _TreeFakeBackend:
                 "ess_bulk": [500.0, 510.0],
                 "ess_tail": [450.0, 440.0],
                 "mcse_mean": [0.01, 0.02],
-                "potential_energy": [9.0, 9.5, 9.2],
-                "num_steps": [7.0, 8.0, 7.0],
-                "step_size": [0.1, 0.1, 0.1],
+                "potential_energy": np.linspace(9.0, 9.5, draws),
+                "num_steps": np.resize([7.0, 8.0], draws),
+                "step_size": np.full(draws, 0.1),
                 "rhat_available": False,
                 "divergences_available": False,
             },
@@ -451,7 +476,10 @@ def test_tasccoda_fake_backend_separates_direct_nodes_and_derived_leaves_with_co
     reproduction_input = adata.copy()
     obs_before = adata.obs.copy(deep=True)
 
-    table, summary = _run_tree(adata, _TreeFakeBackend())
+    table, summary, evidence = _run_tree(adata, _TreeFakeBackend())
+
+    assert evidence["posterior"]["hierarchy_node_effect"].shape[0] == 100
+    assert evidence["posterior"]["derived_leaf_effect"].shape == (100, 4)
 
     assert list(table.columns) == TASCCODA_TABLE_COLUMNS
     direct = table.loc[table["effect_scope"] == "hierarchy_node"].set_index("effect_name")
@@ -502,12 +530,16 @@ def test_tasccoda_fake_backend_separates_direct_nodes_and_derived_leaves_with_co
     compile(code, "<tasccoda-code>", "exec")
     namespace: dict[str, object] = {}
     exec(code, namespace)
-    generated_table, generated_summary = namespace["run_tasccoda_differential_composition"](
+    generated_table, generated_summary, generated_evidence = namespace["run_tasccoda_differential_composition"](
         reproduction_input,
         _backend=_TreeFakeBackend(),
     )
     pd.testing.assert_frame_equal(generated_table, table)
     assert generated_summary == summary
+    np.testing.assert_array_equal(
+        generated_evidence["posterior"]["hierarchy_node_effect"],
+        evidence["posterior"]["hierarchy_node_effect"],
+    )
 
 
 @pytest.mark.parametrize(
@@ -591,7 +623,7 @@ def test_expected_fdr_uses_strict_inequality_and_official_fallback():
             result["posterior_focal_effect_samples"] = effects
             return result
 
-    table, summary = _run_flat(_composition_adata(), BoundaryBackend())
+    table, summary, _ = _run_flat(_composition_adata(), BoundaryBackend())
 
     assert not table["credible_effect"].any()
     assert table["inclusion_probability_threshold"].tolist() == [1.0, 1.0]
@@ -624,6 +656,17 @@ def test_backend_corruption_fails_atomically_and_generated_function_matches(corr
     exec(code, namespace)
     with pytest.raises(RuntimeError):
         namespace["run_sccoda_differential_composition"](_composition_adata(), _backend=CorruptBackend())
+
+
+def test_composition_rejects_truncated_sampler_trace():
+    class TruncatedTraceBackend(_FlatFakeBackend):
+        def fit_sccoda(self, context):
+            result = super().fit_sccoda(context)
+            result["diagnostics"]["potential_energy"] = result["diagnostics"]["potential_energy"][:-1]
+            return result
+
+    with pytest.raises(RuntimeError, match="potential energy trace.*shape"):
+        _run_flat(_composition_adata(), TruncatedTraceBackend())
 
 
 @pytest.mark.parametrize("malformation", ["multiple_roots", "multiple_leaf_paths", "unused_category"])
@@ -666,7 +709,7 @@ def test_numeric_sample_identifiers_are_collision_safe_for_pertpy_loading():
     mapping = {"A1": 1, "A2": 2, "B1": 3, "B2": 4}
     adata.obs["sample"] = adata.obs["sample"].map(mapping)
 
-    table, summary = _run_flat(adata, _FlatFakeBackend())
+    table, summary, _ = _run_flat(adata, _FlatFakeBackend())
 
     assert len(table) == 2
     assert [row["sample"] for row in summary["input"]["complete_sample_cell_type_counts"][::2]] == [1, 2, 3, 4]
@@ -680,23 +723,106 @@ def test_public_nodes_wrap_table_summary_and_specialized_code_atomically(monkeyp
     )
     flat_parameters = _flat_parameters()
     flat_parameters.pop("openbio_version")
-    flat_table, flat_report, flat_code = sccoda_owned(
+    flat_artifact, flat_table, flat_report, flat_code = sccoda_owned(
         _composition_adata(),
         **flat_parameters,
     )
     tree_parameters = _tree_parameters()
     tree_parameters.pop("openbio_version")
-    tree_table, tree_report, tree_code = tasccoda_owned(
+    tree_artifact, tree_table, tree_report, tree_code = tasccoda_owned(
         _hierarchy_adata(),
         **tree_parameters,
     )
 
     assert list(flat_table.table.columns) == SCCODA_TABLE_COLUMNS
+    assert validate_composition_model_result(flat_artifact)[1]["condition_effect"].shape == (1, 100, 2)
     assert flat_report.summary["node_id"] == "OpenBioSingleCellSccodaDifferentialComposition"
     assert "def run_sccoda_differential_composition(adata" in flat_code
     assert list(tree_table.table.columns) == TASCCODA_TABLE_COLUMNS
+    assert validate_composition_model_result(tree_artifact)[1]["derived_leaf_effect"].shape == (1, 100, 4)
     assert tree_report.summary["node_id"] == "OpenBioSingleCellTasccodaDifferentialComposition"
     assert "def run_tasccoda_differential_composition(adata" in tree_code
+    for view in (
+        {"view": "hierarchy_effect_forest"},
+        {"view": "derived_leaf_effects"},
+        {"view": "posterior_distribution", "effect_scope": "derived_leaf", "effect_name": "B"},
+        {"view": "sampler_diagnostics"},
+    ):
+        plotted, _, _ = tasccoda_differential_composition_plot_owned(tree_artifact, view=view)
+        assert plotted.png.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_sccoda_worker_publishes_portable_inference_data_and_retained_table_without_rewriting_input(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(composition_modeling, "_PinnedPertpyBackend", lambda _method, _version: _FlatFakeBackend())
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    write_anndata(input_root, _composition_adata())
+    input_path = input_root / ANNDATA_PAYLOAD
+    before = input_path.read_bytes()
+    staging = tmp_path / "run.partial"
+    staging.mkdir()
+    context = OperationContext.from_request_path(staging / "request.json", str(uuid.uuid4()))
+    parameters = _flat_parameters()
+    parameters.pop("openbio_version")
+
+    records = sccoda_differential_composition(
+        context,
+        {
+            "adata": {
+                "type": "artifact",
+                "kind": "OPENBIO_ANNDATA",
+                "codec": "anndata-h5ad-v1",
+                "path": str(input_root.resolve()),
+            }
+        },
+        parameters,
+    )
+    WorkerResponse.success(context.request_id, records)
+
+    assert [record["name"] for record in records] == ["result", "table", "summary", "code"]
+    assert records[0]["codec"] == COMPOSITION_MODEL_CODEC
+    artifact = read_composition_model_result(staging / records[0]["payload"])
+    table, _ = read_table(staging / records[1]["payload"])
+    pd.testing.assert_frame_equal(artifact.table, table)
+    assert artifact.posterior["condition_effect"].shape == (1, 100, 2)
+    assert input_path.read_bytes() == before
+
+
+def test_tasccoda_worker_publishes_hierarchy_aligned_posterior(tmp_path, monkeypatch):
+    monkeypatch.setattr(composition_modeling, "_PinnedPertpyBackend", lambda _method, _version: _TreeFakeBackend())
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    write_anndata(input_root, _hierarchy_adata())
+    staging = tmp_path / "run.partial"
+    staging.mkdir()
+    context = OperationContext.from_request_path(staging / "request.json", str(uuid.uuid4()))
+    parameters = _tree_parameters()
+    parameters.pop("openbio_version")
+
+    records = tasccoda_differential_composition(
+        context,
+        {
+            "adata": {
+                "type": "artifact",
+                "kind": "OPENBIO_ANNDATA",
+                "codec": "anndata-h5ad-v1",
+                "path": str(input_root.resolve()),
+            }
+        },
+        parameters,
+    )
+
+    artifact = read_composition_model_result(staging / records[0]["payload"])
+    table, _ = read_table(staging / records[1]["payload"])
+    assert [record["name"] for record in records] == ["result", "table", "summary", "code"]
+    assert artifact.method == "tasccoda"
+    pd.testing.assert_frame_equal(artifact.table, table)
+    assert artifact.hierarchy["node_names"] == artifact.table.loc[
+        artifact.table["effect_scope"] == "hierarchy_node", "effect_name"
+    ].tolist()
+    assert artifact.posterior["hierarchy_node_effect"].shape[0:2] == (1, 100)
 
 
 def test_real_adapter_rejects_any_nonexact_pertpy_version_before_backend_work(monkeypatch):
@@ -726,7 +852,7 @@ _REAL_SCCODA_SMOKE_AVAILABLE = (
     reason="set OPENBIO_RUN_PERTPY_COMPOSITION_SMOKE=1 in an isolated Pertpy 1.3.0 CPU environment",
 )
 def test_optional_real_pinned_sccoda_cpu_smoke():
-    table, summary = run_sccoda_differential_composition(
+    table, summary, evidence = run_sccoda_differential_composition(
         _composition_adata(),
         **{
             **_flat_parameters(),
@@ -739,3 +865,4 @@ def test_optional_real_pinned_sccoda_cpu_smoke():
     assert list(table.columns) == SCCODA_TABLE_COLUMNS
     assert summary["software_versions"]["pertpy"] == "1.3.0"
     assert summary["diagnostics"]["chain_count"] == 1
+    assert evidence["posterior"]["condition_effect"].shape == (40, 2)

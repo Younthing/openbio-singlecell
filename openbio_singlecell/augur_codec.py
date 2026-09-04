@@ -9,7 +9,7 @@ from .artifact_envelope import write_strict_json
 from .augur import AUGUR_VIEWS, validate_augur_portable
 from .worker_protocol import read_json
 
-AUGUR_CODEC = "augur-jsonl-v1"
+AUGUR_CODEC = "augur-jsonl-v2"
 AUGUR_SCHEMA = "schema.json"
 AUGUR_RESULT = "result.json"
 _FORMAT = "openbio-augur-jsonl"
@@ -38,7 +38,7 @@ def write_augur(
         write_table(view_root, owned_tables[view], {"view": view})
     write_strict_json(
         artifact_root / AUGUR_SCHEMA,
-        {"version": 1, "format": _FORMAT, "views": list(AUGUR_VIEWS)},
+        {"version": 2, "format": _FORMAT, "views": list(AUGUR_VIEWS)},
     )
     write_strict_json(
         artifact_root / AUGUR_RESULT,
@@ -49,7 +49,7 @@ def write_augur(
 def read_augur(root: str | Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     artifact_root = _root(root)
     schema = read_json(artifact_root / AUGUR_SCHEMA)
-    expected_schema = {"version": 1, "format": _FORMAT, "views": list(AUGUR_VIEWS)}
+    expected_schema = {"version": 2, "format": _FORMAT, "views": list(AUGUR_VIEWS)}
     if schema != expected_schema:
         raise ValueError("Augur artifact codec schema is invalid.")
     result = read_json(artifact_root / AUGUR_RESULT)

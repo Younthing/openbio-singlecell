@@ -3,7 +3,7 @@ from __future__ import annotations
 from comfy_api.latest import io
 
 from .expression_source import _CNV_SPEC
-from .node_types import AnnDataType, CNVStateType, TableResultType, analysis_outputs
+from .node_types import AnnDataType, CNVStateType, PlotResultType, TableResultType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/copy-number"
 
@@ -88,16 +88,79 @@ class OpenBioSingleCellCNVScore(io.ComfyNode):
         )
 
 
+class OpenBioSingleCellCNVHeatmapPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellCNVHeatmapPlot",
+            display_name="CNV Heatmap Plot",
+            category=CATEGORY,
+            description=(
+                "Read-only heatmap of the verified genome-ordered inferred-CNV window matrix."
+            ),
+            inputs=[
+                CNVStateType.Input("cnv_state"),
+                io.String.Input("groupby", default=""),
+                io.DynamicCombo.Input(
+                    "view",
+                    options=[
+                        io.DynamicCombo.Option(
+                            "group_mean",
+                            [io.Int.Input("max_groups", default=50, min=2, max=256)],
+                        ),
+                        io.DynamicCombo.Option(
+                            "cells",
+                            [io.Int.Input("max_cells", default=2000, min=2, max=10000)],
+                        ),
+                    ],
+                ),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
+class OpenBioSingleCellCNVScorePlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellCNVScorePlot",
+            display_name="CNV Score Plot",
+            category=CATEGORY,
+            description="Read-only descriptive group-score view; no tumor cutoff or hypothesis test is inferred.",
+            inputs=[
+                TableResultType.Input("table"),
+                io.DynamicCombo.Input(
+                    "view",
+                    options=[
+                        io.DynamicCombo.Option(
+                            "score_bar",
+                            [io.Int.Input("max_groups", default=30, min=1, max=100)],
+                        ),
+                        io.DynamicCombo.Option(
+                            "absolute_interval",
+                            [io.Int.Input("max_groups", default=30, min=1, max=100)],
+                        ),
+                    ],
+                ),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
 CNV_NODE_CLASSES = [
     OpenBioSingleCellInferCNV,
     OpenBioSingleCellCNVPCA,
     OpenBioSingleCellCNVScore,
+    OpenBioSingleCellCNVHeatmapPlot,
+    OpenBioSingleCellCNVScorePlot,
 ]
 
 
 __all__ = [
     "CNV_NODE_CLASSES",
+    "OpenBioSingleCellCNVHeatmapPlot",
     "OpenBioSingleCellCNVPCA",
     "OpenBioSingleCellCNVScore",
+    "OpenBioSingleCellCNVScorePlot",
     "OpenBioSingleCellInferCNV",
 ]

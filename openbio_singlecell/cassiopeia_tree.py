@@ -1298,6 +1298,8 @@ def prepare_cassiopeia_characters(
             maps_by_lineage[str(lineage_id)] = lineage_maps
 
     qc_table = pd.DataFrame.from_records(qc_records).sort_values("lineage_id", kind="stable").reset_index(drop=True)
+    for column in ("mean_missing_fraction", "mean_uncut_fraction_observed"):
+        qc_table[column] = pd.array(qc_table[column], dtype="Float64")
     parameters = {
         "first_column_as_index": bool(first_column_as_index),
         "lineage_column": lineage_column,
@@ -1674,6 +1676,10 @@ def compute_cassiopeia_expansions(
             }
         )
     table = pd.DataFrame.from_records(records)
+    for column in ("parent_id", "exclusion_reason"):
+        table[column] = pd.array(table[column], dtype="string")
+    for column in ("p_value", "q_value_bh"):
+        table[column] = pd.array(table[column], dtype="Float64")
     significant = [record for record in records if record["significant_fdr"]]
     eligible_records = [record for record in records if record["eligible"]]
     strongest = min(eligible_records, key=lambda record: (record["q_value_bh"], record["node_id"])) if eligible_records else None
@@ -2155,7 +2161,11 @@ def add_cassiopeia_plasticity(
                 "sc_effective_plasticity": score,
             }
         )
-    output.obs[output_key] = pd.Series(score_values, index=obs_names, dtype="Float64")
+    output.obs[output_key] = pd.Series(
+        [np.nan if value is pd.NA else float(value) for value in score_values],
+        index=obs_names,
+        dtype="float64",
+    )
     status_categories = ["included", "missing_annotation", "state_below_minimum_frequency", "not_in_tree"]
     output.obs[status_key] = pd.Categorical(status_values, categories=status_categories)
     output_registry = output.uns.get("openbio_cassiopeia_plasticity", {})
@@ -2188,6 +2198,9 @@ def add_cassiopeia_plasticity(
     if not output.obs[annotation_key].equals(annotation):
         raise RuntimeError("Plasticity output changed the source annotation.")
     table = pd.DataFrame.from_records(table_records)
+    for column in ("lineage_id", "annotation_state"):
+        table[column] = pd.array(table[column], dtype="string")
+    table["sc_effective_plasticity"] = pd.array(table["sc_effective_plasticity"], dtype="Float64")
     included_values = [float(value) for value in cell_scores.values()]
     ordered_values = sorted(included_values)
     mean_score = float(sum(ordered_values) / len(ordered_values))

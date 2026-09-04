@@ -3,7 +3,7 @@ from __future__ import annotations
 from comfy_api.latest import io
 
 from .expression_source import _SCRUBLET_SPEC
-from .node_types import AnnDataType, analysis_outputs
+from .node_types import AnnDataType, PlotResultType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/correction"
 MAX_RANDOM_SEED = 2**31 - 1
@@ -34,6 +34,28 @@ class OpenBioSingleCellMarkMADOutliers(io.ComfyNode):
         )
 
 
+class OpenBioSingleCellMADOutlierPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellMADOutlierPlot",
+            display_name="MAD Outlier Plot",
+            category=CATEGORY,
+            description="Read-only visualization of stored MAD threshold and Sample-level marking evidence.",
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.DynamicCombo.Input(
+                    "view",
+                    options=[
+                        io.DynamicCombo.Option("metric_distributions", []),
+                        io.DynamicCombo.Option("sample_marked_fraction", []),
+                    ],
+                ),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
 class OpenBioSingleCellScrublet(io.ComfyNode):
     EXPRESSION_SOURCE = _SCRUBLET_SPEC
 
@@ -60,6 +82,28 @@ class OpenBioSingleCellScrublet(io.ComfyNode):
         )
 
 
+class OpenBioSingleCellScrubletDiagnosticsPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellScrubletDiagnosticsPlot",
+            display_name="Scrublet Diagnostics Plot",
+            category=CATEGORY,
+            description="Read-only visualization of stored observed/simulated scores and Sample predictions.",
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.DynamicCombo.Input(
+                    "view",
+                    options=[
+                        io.DynamicCombo.Option("score_distributions", []),
+                        io.DynamicCombo.Option("sample_predicted_fraction", []),
+                    ],
+                ),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
 class OpenBioSingleCellFilterDoublets(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -77,8 +121,14 @@ class OpenBioSingleCellFilterDoublets(io.ComfyNode):
 
 CORRECTION_NODE_CLASSES = [
     OpenBioSingleCellMarkMADOutliers,
+    OpenBioSingleCellMADOutlierPlot,
     OpenBioSingleCellScrublet,
+    OpenBioSingleCellScrubletDiagnosticsPlot,
     OpenBioSingleCellFilterDoublets,
 ]
 
-__all__ = ["CORRECTION_NODE_CLASSES"]
+__all__ = [
+    "CORRECTION_NODE_CLASSES",
+    "OpenBioSingleCellMADOutlierPlot",
+    "OpenBioSingleCellScrubletDiagnosticsPlot",
+]

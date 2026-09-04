@@ -11,7 +11,7 @@ from comfy_api.latest import io
 import openbio_singlecell.extension as extension_module
 from openbio_singlecell.extension import NODE_CLASSES
 from openbio_singlecell.node_adapter import adapt_scientific_node
-from openbio_singlecell.node_types import WorkerType
+from openbio_singlecell.node_types import CompositionModelResultType, MiloResultType, WorkerType
 from openbio_singlecell.nodes_worker import OpenBioSingleCellPythonWorker
 from openbio_singlecell.worker_client import WorkerIdentity
 
@@ -56,6 +56,8 @@ def test_persist_artifact_is_registered_as_a_terminal_for_file_tickets():
     schema = schemas["OpenBioSingleCellPersistArtifact"]
     assert schema.display_name == "Persist Artifact"
     assert [item.id for item in schema.inputs] == ["artifact", "name"]
+    artifact_types = set(schema.inputs[0].get_io_type().split(","))
+    assert {MiloResultType.io_type, CompositionModelResultType.io_type} <= artifact_types
     assert schema.is_output_node is True
     assert schema.outputs == []
 

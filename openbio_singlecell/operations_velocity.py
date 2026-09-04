@@ -3,10 +3,13 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from .analysis_reporting import AnalysisReference, make_analysis_report
 from .analysis_utils import make_plot_result, make_summary_result, make_table_result
+from .artifact_envelope import table_from_metadata
 from .operations_input import (
     analysis_outputs,
     read_anndata_input,
+    read_table_input,
     require_artifact_input,
     require_input_names,
     require_parameters,
@@ -29,9 +32,26 @@ from .velocity_analysis import (
     validate_velocity_state,
     velocity_code,
 )
+from .velocity_plotting import (
+    run_velocity_dynamics_plot,
+    run_velocity_gene_ranking_plot,
+    velocity_dynamics_plot_code,
+    velocity_gene_ranking_plot_code,
+)
+from .velocity_portable import DYNAMICS_REFERENCES, _vs_series_fingerprint
 from .worker_protocol import JSONValue, OperationContext, register_operation
 
 VELOCITY_STATE_KIND = "OPENBIO_VELOCITY_STATE"
+MATPLOTLIB_REFERENCE = AnalysisReference(
+    citation="Hunter JD. Matplotlib: A 2D Graphics Environment. Computing in Science & Engineering. 2007;9:90-95.",
+    doi="10.1109/MCSE.2007.55",
+    url="https://doi.org/10.1109/MCSE.2007.55",
+    kind="software",
+)
+DYNAMICS_PLOT_REFERENCES = [
+    *(AnalysisReference(**reference) for reference in DYNAMICS_REFERENCES),
+    MATPLOTLIB_REFERENCE,
+]
 
 
 def _anndata_input(inputs: dict[str, JSONValue], *, operation: str) -> Any:
@@ -274,10 +294,20 @@ def velocity_gene_ranking(
     # Failed fits are scientific nulls, not non-finite JSON numbers. The table
     # is bounded and may be materialized with pandas nullable dtypes for JSONL.
     table = table.convert_dtypes()
+    table_parameters = {
+        **summary["parameters"],
+        "dynamics_fit_fingerprint_sha256": summary["key_results"]["dynamics_fit_fingerprint_sha256"],
+        "upstream_state_fingerprint_sha256": summary["key_results"]["upstream_state_fingerprint_sha256"],
+        "table_fingerprint_sha256": _vs_series_fingerprint(
+            table,
+            list(table.columns),
+            label="dynamics-ranking-plot",
+        ),
+    }
     table_result = make_table_result(
         title="Recovered dynamics fit ranking",
         operation="rank_recovered_dynamics",
-        parameters=summary["parameters"],
+        parameters=table_parameters,
         description=summary["results"],
         warnings=summary["warnings"],
         input_cells=cells,
@@ -297,6 +327,172 @@ def velocity_gene_ranking(
         report,
         velocity_code("ranking", **parameters),
         write_table_output(context, table_result, kind="OPENBIO_SINGLE_CELL_TABLE"),
+    )
+
+
+def velocity_dynamics_plot_owned(
+    state: Any,
+    *,
+    gene: str = "",
+    view: Any = None,
+) -> tuple[Any, Any, str]:
+    adata, _summary, _metadata, _portable = validate_velocity_state(
+        state,
+        allowed_stages=("dynamics_recovered", "velocity_estimated", "velocity_graph"),
+    )
+    started_at = time.perf_counter()
+    png, details = run_velocity_dynamics_plot(adata, gene=gene, view=view)
+    parameters = {"gene": details["gene"], "view": details["view_parameters"]}
+    code = velocity_dynamics_plot_code(gene=details["gene"], view=details["view_parameters"])
+    description = (
+        f"Rendered stored {details['view'].replace('_', ' ')} evidence for recovered-dynamics gene "
+        f"{details['gene']!r}; no kinetic model was refit."
+    )
+    warnings = [
+        "Recovered kinetic parameters and fitted time are model evidence, not direct molecular-rate or measured-time observations."
+    ]
+    plotted = make_plot_result(
+        title=details["title"],
+        operation="velocity_dynamics_plot",
+        parameters=parameters,
+        description=description,
+        warnings=warnings,
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+        png=png,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellVelocityDynamicsPlot",
+        title="Velocity dynamics plot summary",
+        operation="velocity_dynamics_plot",
+        methods=(
+            "Validated the exact portable VelocityState stage, observation and feature axes, complete recovered-fit "
+            "fingerprint, selected gene, kinetic fields, moment or loss axes, and finite plotted values before "
+            "read-only Matplotlib rendering."
+        ),
+        results=description,
+        key_results={key: value for key, value in details.items() if key not in {"title", "view_parameters"}},
+        parameters=parameters,
+        references=DYNAMICS_PLOT_REFERENCES,
+        software_packages=("anndata", "numpy", "pandas", "scipy", "scvelo", "matplotlib"),
+        warnings=warnings,
+        limitations=(
+            "The phase portrait displays stored Ms/Mu moments colored by stored fitted time; it is not a measured trajectory.",
+            "Fit likelihood and loss describe model fit, not a p-value, driver score, Condition contrast, or causal effect.",
+            "The plot does not infer latent time, terminal states, lineage, transition probability, or fate.",
+        ),
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+        code=code,
+    )
+    return plotted, report, code
+
+
+def velocity_gene_ranking_plot_owned(
+    table: Any,
+    *,
+    view: Any = None,
+) -> tuple[Any, Any, str]:
+    from .contracts import TableResult
+
+    if not isinstance(table, TableResult):
+        raise TypeError("Velocity Gene Ranking Plot requires the table from Recovered Dynamics Fit Ranking.")
+    if not isinstance(table.source, dict) or table.parameters != table.source.get("parameters"):
+        raise ValueError("Velocity Gene Ranking Plot requires internally consistent producer provenance.")
+    producer = {
+        "operation": table.source.get("operation"),
+        "parameters": table.parameters,
+        "input_cells": table.input_cells,
+        "input_genes": table.input_genes,
+        "random_seed": table.random_seed,
+    }
+    started_at = time.perf_counter()
+    png, details = run_velocity_gene_ranking_plot(table.table, producer=producer, view=view)
+    parameters = {"view": details["view_parameters"]}
+    code = velocity_gene_ranking_plot_code(producer=producer, view=details["view_parameters"])
+    description = (
+        f"Rendered {details['plotted_genes']:,} genes in upstream recovered-fit rank order using stored "
+        f"{details['view'].replace('_', ' ')} evidence."
+    )
+    warnings = list(table.warnings)
+    plotted = make_plot_result(
+        title=details["title"],
+        operation="velocity_gene_ranking_plot",
+        parameters=parameters,
+        description=description,
+        warnings=warnings,
+        input_cells=table.input_cells,
+        input_genes=table.input_genes,
+        started_at=started_at,
+        random_seed=table.random_seed,
+        png=png,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellVelocityGeneRankingPlot",
+        title="Velocity gene ranking plot summary",
+        operation="velocity_gene_ranking_plot",
+        methods=(
+            "Validated the exact Recovered Dynamics Fit Ranking producer, canonical table schema, consecutive "
+            "rank and gene axes, stored kinetic fields, state/dynamics fingerprints, and complete table fingerprint "
+            "before preserving upstream order in read-only Matplotlib rendering."
+        ),
+        results=description,
+        key_results={key: value for key, value in details.items() if key not in {"title", "view_parameters"}},
+        parameters=parameters,
+        references=DYNAMICS_PLOT_REFERENCES,
+        software_packages=("numpy", "pandas", "scvelo", "matplotlib"),
+        warnings=warnings,
+        limitations=(
+            "Fit likelihood ranks stored model-fit quality; it is not a p-value, marker statistic, driver score, or Condition contrast.",
+            "Recovered kinetic parameters are model-dependent fitted values, not directly measured molecular rates.",
+            "Plot truncation preserves upstream order and does not select a biologically preferred gene set.",
+        ),
+        input_cells=table.input_cells,
+        input_genes=table.input_genes,
+        started_at=started_at,
+        code=code,
+        random_seed=table.random_seed,
+    )
+    return plotted, report, code
+
+
+@register_operation("openbio.node.velocitydynamicsplot")
+def velocity_dynamics_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[dict[str, JSONValue]]:
+    operation = "Velocity Dynamics Plot"
+    require_parameters(parameters, {"gene", "view"}, operation=operation)
+    state = _state_input(inputs, operation=operation)
+    plotted, report, code = velocity_dynamics_plot_owned(state, **parameters)
+    return analysis_outputs(
+        report,
+        code,
+        write_plot_output(context, plotted, kind="OPENBIO_SINGLE_CELL_PLOT"),
+    )
+
+
+@register_operation("openbio.node.velocitygenerankingplot")
+def velocity_gene_ranking_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[dict[str, JSONValue]]:
+    operation = "Velocity Gene Ranking Plot"
+    require_input_names(inputs, {"table"}, operation=operation)
+    require_parameters(parameters, {"view"}, operation=operation)
+    table, metadata = read_table_input(inputs, "table", kind="OPENBIO_SINGLE_CELL_TABLE")
+    plotted, report, code = velocity_gene_ranking_plot_owned(
+        table_from_metadata(metadata, table),
+        **parameters,
+    )
+    return analysis_outputs(
+        report,
+        code,
+        write_plot_output(context, plotted, kind="OPENBIO_SINGLE_CELL_PLOT"),
     )
 
 
@@ -350,7 +546,11 @@ __all__ = [
     "estimate_velocity",
     "recover_dynamics",
     "velocity_filter_and_normalize",
+    "velocity_dynamics_plot",
+    "velocity_dynamics_plot_owned",
     "velocity_gene_ranking",
+    "velocity_gene_ranking_plot",
+    "velocity_gene_ranking_plot_owned",
     "velocity_graph",
     "velocity_moments",
     "velocity_stream_plot",

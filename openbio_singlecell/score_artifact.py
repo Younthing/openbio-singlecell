@@ -183,6 +183,9 @@ def validate_score_artifact(
             f"Score artifact for {score_key!r} has an invalid schema; "
             f"missing={sorted(required_fields - set(artifact))}, unknown={sorted(set(artifact) - required_fields)}."
         )
+    artifact = copy.deepcopy(dict(artifact))
+    if hasattr(artifact["score_names"], "tolist"):
+        artifact["score_names"] = artifact["score_names"].tolist()
     if artifact["schema_version"] != SCORE_ARTIFACT_SCHEMA_VERSION:
         raise ValueError(f"Score artifact for {score_key!r} has an unsupported schema version.")
     if artifact["score_key"] != score_key or artifact["storage"] != required_storage:

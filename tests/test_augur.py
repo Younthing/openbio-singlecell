@@ -9,13 +9,14 @@ from types import SimpleNamespace
 import pytest
 
 from openbio_singlecell import augur as augur_core
-from openbio_singlecell.artifact_codecs import read_table, write_anndata
+from openbio_singlecell.artifact_codecs import read_plot, read_table, write_anndata
 from openbio_singlecell.augur import (
     AUGUR_ARTIFACT_TYPE,
     AUGUR_CLASSIFIERS,
     AUGUR_VIEWS,
     CROSS_VALIDATION_COLUMNS,
     FEATURE_IMPORTANCE_COLUMNS,
+    PREDICTION_COLUMNS,
     PRIORITY_COLUMNS,
     AugurResult,
     run_augur_analysis,
@@ -24,11 +25,17 @@ from openbio_singlecell.augur import (
     validate_augur_result,
 )
 from openbio_singlecell.augur_codec import AUGUR_CODEC, read_augur, write_augur
-from openbio_singlecell.node_types import AugurResultType, SummaryResultType, TableResultType
-from openbio_singlecell.nodes_population import OpenBioSingleCellAugur, OpenBioSingleCellAugurResults
+from openbio_singlecell.node_types import AugurResultType, PlotResultType, SummaryResultType, TableResultType
+from openbio_singlecell.nodes_population import (
+    OpenBioSingleCellAugur,
+    OpenBioSingleCellAugurPlot,
+    OpenBioSingleCellAugurResults,
+)
 from openbio_singlecell.operations_population import augur as augur_operation
 from openbio_singlecell.operations_population import (
     augur_legacy_owned,
+    augur_plot,
+    augur_plot_owned,
     augur_results,
     augur_results_legacy_owned,
 )
@@ -108,7 +115,7 @@ def augur_adata(science):
     return _make_augur_adata(science)
 
 
-def _fake_pertpy(science, *, backend_mutator=None):
+def _fake_pertpy(science, *, backend_mutator=None, native_evidence=True):
     calls = []
 
     class FakeAugur:
@@ -167,7 +174,31 @@ def _fake_pertpy(science, *, backend_mutator=None):
             loaded = input.copy()
             loaded.obs["label"] = input.obs[label_col].tolist()
             loaded.obs["cell_type"] = input.obs[cell_type_col].tolist()
+            encoding = {value: index for index, value in enumerate(sorted({condition_label, treatment_label}))}
+            loaded.obs["y_"] = [encoding[value] for value in loaded.obs["label"]]
             return loaded
+
+        def run_cross_validation(
+            self,
+            subsample,
+            *,
+            subsample_idx,
+            folds,
+            random_state,
+            zero_division,
+        ):
+            class ScoreEstimator:
+                classes_ = science.np.asarray([0, 1])
+
+                @staticmethod
+                def predict_proba(values):
+                    scores = science.np.asarray(values)[:, 0]
+                    return science.np.column_stack([1.0 - scores, scores])
+
+            return {
+                "estimator": [ScoreEstimator() for _ in range(folds)],
+                "test_augur_score": [float(subsample.uns["expected_auc"])] * folds,
+            }
 
         def predict(
             self,
@@ -215,9 +246,7 @@ def _fake_pertpy(science, *, backend_mutator=None):
                 "mean_f1",
                 "mean_recall",
             )
-            scores = {
-                population: 0.82 - 0.20 * index for index, population in enumerate(populations)
-            }
+            scores = {population: 1.0 - 0.5 * index for index, population in enumerate(populations)}
             summary_metrics = science.pd.DataFrame(
                 {
                     population: [
@@ -234,13 +263,15 @@ def _fake_pertpy(science, *, backend_mutator=None):
             )
             full_rows = []
             feature_rows = []
+            population_runs = {population: [] for population in populations}
             for population in populations:
                 for subsample in range(n_subsamples):
+                    prediction_rows = []
                     for fold in range(folds):
                         full_rows.append(
                             {
                                 "idx": subsample,
-                                "augur_score": scores[population] + 0.01 * (fold - (folds - 1) / 2),
+                                "augur_score": scores[population],
                                 "folds": fold,
                                 "cell_type": population,
                             }
@@ -260,11 +291,59 @@ def _fake_pertpy(science, *, backend_mutator=None):
                                     "cell_type": population,
                                 }
                             )
+                        labels = [0, 0, 1] if fold == 0 else [0, 1, 1]
+                        fold_scores = (
+                            [0.1, 0.2, 0.9]
+                            if population == "population_A"
+                            else ([0.1, 0.9, 0.5] if fold == 0 else [0.5, 0.1, 0.9])
+                        )
+                        prediction_rows.extend(
+                            {
+                                "fold": fold,
+                                "observation": f"{population}_{subsample}_{fold}_{index}",
+                                "true_label": label,
+                                "prediction_score": score,
+                            }
+                            for index, (label, score) in enumerate(
+                                zip(labels, fold_scores, strict=True)
+                            )
+                        )
+                    run = {"openbio_prediction_evidence": prediction_rows}
+                    if not native_evidence:
+                        run = self.run_cross_validation(
+                            science.ad.AnnData(
+                                X=science.np.asarray(
+                                    [
+                                        [0.1],
+                                        [0.2],
+                                        [0.3],
+                                        [0.7],
+                                        [0.8],
+                                        [0.9],
+                                    ]
+                                    if population == "population_A"
+                                    else [[0.5]] * 6
+                                ),
+                                obs=science.pd.DataFrame(
+                                    {
+                                        "y_": [0, 0, 0, 1, 1, 1],
+                                        "label": ["control"] * 3 + ["treatment"] * 3,
+                                    },
+                                    index=[f"{population}_{subsample}_{index}" for index in range(6)],
+                                ),
+                                uns={"expected_auc": scores[population]},
+                            ),
+                            subsample_idx=subsample,
+                            folds=folds,
+                            random_state=random_state,
+                            zero_division=zero_division,
+                        )
+                    population_runs[population].append(run)
             results = {
                 "summary_metrics": summary_metrics,
                 "full_results": science.pd.DataFrame(full_rows),
                 "feature_importances": science.pd.DataFrame(feature_rows),
-                **{population: science.pd.DataFrame() for population in populations},
+                **population_runs,
             }
             if backend_mutator is not None:
                 backend_mutator(results)
@@ -313,11 +392,27 @@ def test_augur_portable_codec_round_trips_the_validated_table_family(tmp_path: P
     write_augur(root, tables, summary, metadata)
     restored_tables, restored_summary, restored_metadata = read_augur(root)
 
-    assert AUGUR_CODEC == "augur-jsonl-v1"
+    assert AUGUR_CODEC == "augur-jsonl-v2"
     assert restored_summary == summary
     assert restored_metadata == metadata
     for view in AUGUR_VIEWS:
         science.pd.testing.assert_frame_equal(restored_tables[view], tables[view])
+
+
+def test_augur_codec_rejects_tampered_prediction_evidence(tmp_path: Path, augur_adata, science):
+    tables, summary, metadata = validate_augur_result(_run(augur_adata, science))
+    root = tmp_path / "augur"
+    root.mkdir()
+    write_augur(root, tables, summary, metadata)
+    data_path = root / "tables" / "predictions" / "data.jsonl"
+    rows = data_path.read_text(encoding="utf-8").splitlines()
+    first = json.loads(rows[0])
+    first[6] = 1.0
+    rows[0] = json.dumps(first, separators=(",", ":"))
+    data_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="AUC|fingerprint"):
+        read_augur(root)
 
 
 def test_augur_artifact_path_does_not_construct_the_legacy_live_result(monkeypatch, augur_adata, science):
@@ -361,6 +456,201 @@ def test_augur_results_operation_reads_portable_artifact_without_a_live_result(
     assert [record["name"] for record in records] == ["table", "summary", "code"]
     restored, _ = read_table(staging / records[0]["payload"])
     science.pd.testing.assert_frame_equal(restored, tables["priorities"])
+
+
+def test_augur_plot_operation_renders_priorities_without_changing_the_artifact(
+    tmp_path: Path, augur_adata, science
+):
+    tables, summary, metadata = validate_augur_result(_run(augur_adata, science))
+    input_root = tmp_path / "augur-input"
+    input_root.mkdir()
+    write_augur(input_root, tables, summary, metadata)
+    before = {path.relative_to(input_root): path.read_bytes() for path in input_root.rglob("*") if path.is_file()}
+    staging = tmp_path / "run.partial"
+    staging.mkdir()
+    context = OperationContext.from_request_path(staging / "request.json", str(uuid.uuid4()))
+
+    records = augur_plot(
+        context,
+        {
+            "result": {
+                "type": "artifact",
+                "kind": AUGUR_ARTIFACT_TYPE,
+                "codec": AUGUR_CODEC,
+                "path": str(input_root.resolve()),
+            }
+        },
+        {"view": "priorities", "top_n": 20, "max_plot_rows": 100_000, "max_image_pixels": 40_000_000},
+    )
+    WorkerResponse.success(context.request_id, records)
+
+    assert [record["name"] for record in records] == ["plot", "summary", "code"]
+    png, plot_metadata = read_plot(staging / records[0]["payload"])
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert plot_metadata["source"]["operation"] == "augur_plot"
+    assert before == {
+        path.relative_to(input_root): path.read_bytes() for path in input_root.rglob("*") if path.is_file()
+    }
+
+
+def test_augur_plot_renders_cross_validation_distribution(augur_adata, science):
+    tables, summary, metadata = validate_augur_result(_run(augur_adata, science))
+
+    plotted, report, code = augur_plot_owned(
+        tables,
+        summary,
+        metadata,
+        view="cross_validation",
+        top_n=20,
+        max_plot_rows=100_000,
+        max_image_pixels=40_000_000,
+    )
+
+    assert plotted.png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert report.summary["key_results"]["view"] == "cross_validation"
+    assert "plot_augur_result" in code
+
+
+def test_augur_plot_renders_fold_aggregated_feature_importance(augur_adata, science):
+    tables, summary, metadata = validate_augur_result(_run(augur_adata, science))
+
+    plotted, report, _code = augur_plot_owned(
+        tables,
+        summary,
+        metadata,
+        view="feature_importance",
+        top_n=20,
+        max_plot_rows=100_000,
+        max_image_pixels=40_000_000,
+    )
+
+    assert plotted.png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert report.summary["key_results"]["view"] == "feature_importance"
+
+
+def test_augur_plot_renders_roc_from_retained_fold_predictions(augur_adata, science):
+    tables, summary, metadata = validate_augur_result(_run(augur_adata, science))
+
+    plotted, report, _code = augur_plot_owned(
+        tables,
+        summary,
+        metadata,
+        view="roc",
+        top_n=20,
+        max_plot_rows=100_000,
+        max_image_pixels=40_000_000,
+    )
+
+    assert plotted.png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert report.summary["key_results"]["view"] == "roc"
+    assert report.summary["key_results"]["source_rows"] == 24
+    assert report.summary["key_results"]["roc_curve_auc"] == pytest.approx(
+        {"population_A": 1.0, "population_B": 0.5}
+    )
+
+
+@pytest.mark.parametrize("view", ["priorities", "cross_validation", "feature_importance", "roc"])
+def test_augur_plot_generated_code_has_runtime_parity(augur_adata, science, view):
+    result = _run(augur_adata, science)
+    tables, summary, metadata = validate_augur_result(result)
+    plotted, report, code = augur_plot_owned(
+        tables,
+        summary,
+        metadata,
+        view=view,
+        top_n=20,
+        max_plot_rows=100_000,
+        max_image_pixels=40_000_000,
+    )
+    assert "openbio_singlecell" not in code
+    namespace = {}
+    exec(code, namespace)
+
+    reproduced_png, reproduced_summary = namespace["plot_augur_result"](result)
+
+    assert reproduced_png == plotted.png
+    assert reproduced_summary == report.summary
+
+
+def test_augur_plot_generated_code_rejects_tampered_portable_evidence(augur_adata, science):
+    result = _run(augur_adata, science)
+    code = augur_core.augur_plot_code(
+        view="priorities",
+        top_n=20,
+        max_plot_rows=100_000,
+        max_image_pixels=40_000_000,
+    )
+    namespace = {}
+    exec(code, namespace)
+    object.__getattribute__(result, "_tables")["priorities"].loc[0, "mean_accuracy"] = 0.25
+
+    with pytest.raises(ValueError, match="fingerprint"):
+        namespace["plot_augur_result"](result)
+
+
+def test_augur_plot_enforces_closed_view_payload_and_resource_guards(augur_adata, science):
+    assert OpenBioSingleCellAugurPlot.prepare_worker_arguments(
+        {
+            "result": "ticket",
+            "view": {"view": "roc", "top_n": 7},
+            "max_plot_rows": 100,
+            "max_image_pixels": 1_000_000,
+        }
+    ) == {
+        "result": "ticket",
+        "view": "roc",
+        "top_n": 7,
+        "max_plot_rows": 100,
+        "max_image_pixels": 1_000_000,
+    }
+    with pytest.raises(ValueError, match="inactive"):
+        OpenBioSingleCellAugurPlot.prepare_worker_arguments(
+            {"result": "ticket", "view": {"view": "roc", "top_n": 7, "population": "extra"}}
+        )
+
+    tables, summary, metadata = validate_augur_result(_run(augur_adata, science))
+    with pytest.raises(ValueError, match="max_plot_rows"):
+        augur_plot_owned(
+            tables,
+            summary,
+            metadata,
+            view="roc",
+            top_n=20,
+            max_plot_rows=23,
+            max_image_pixels=40_000_000,
+        )
+    with pytest.raises(MemoryError, match="max_image_pixels"):
+        augur_plot_owned(
+            tables,
+            summary,
+            metadata,
+            view="priorities",
+            top_n=20,
+            max_plot_rows=100_000,
+            max_image_pixels=1,
+        )
+
+    result = _run(augur_adata, science)
+    for code, exception, message in (
+        (
+            augur_core.augur_plot_code(
+                view="roc", top_n=20, max_plot_rows=23, max_image_pixels=40_000_000
+            ),
+            ValueError,
+            "max_plot_rows",
+        ),
+        (
+            augur_core.augur_plot_code(
+                view="priorities", top_n=20, max_plot_rows=100_000, max_image_pixels=1
+            ),
+            MemoryError,
+            "max_image_pixels",
+        ),
+    ):
+        namespace = {}
+        exec(code, namespace)
+        with pytest.raises(exception, match=message):
+            namespace["plot_augur_result"](result)
 
 
 def test_augur_operation_publishes_the_portable_codec(
@@ -415,7 +705,8 @@ def test_augur_operation_publishes_the_portable_codec(
     restored_tables, restored_summary, restored_metadata = read_augur(staging / records[0]["payload"])
     assert restored_summary == summary
     assert restored_metadata == metadata
-    science.pd.testing.assert_frame_equal(restored_tables["priorities"], tables["priorities"])
+    for view in AUGUR_VIEWS:
+        science.pd.testing.assert_frame_equal(restored_tables[view], tables[view])
 
 
 def _set_raw_value(adata, value):
@@ -510,6 +801,26 @@ def test_augur_schemas_are_atomic_and_typed():
         ("code", "STRING"),
     ]
 
+    plot_schema = OpenBioSingleCellAugurPlot.define_schema()
+    assert [item.id for item in plot_schema.inputs] == [
+        "result",
+        "view",
+        "max_plot_rows",
+        "max_image_pixels",
+    ]
+    view = plot_schema.inputs[1]
+    assert [(option.key, [item.id for item in option.inputs]) for option in view.options] == [
+        ("priorities", ["top_n"]),
+        ("cross_validation", ["top_n"]),
+        ("feature_importance", ["top_n"]),
+        ("roc", ["top_n"]),
+    ]
+    assert [(item.display_name, item.io_type) for item in plot_schema.outputs] == [
+        ("plot", PlotResultType.io_type),
+        ("summary", SummaryResultType.io_type),
+        ("code", "STRING"),
+    ]
+
 
 def test_augur_exact_backend_calls_summary_and_input_immutability(augur_adata, science):
     before = augur_adata.copy()
@@ -524,10 +835,12 @@ def test_augur_exact_backend_calls_summary_and_input_immutability(augur_adata, s
     assert tuple(tables["priorities"].columns) == PRIORITY_COLUMNS
     assert tuple(tables["cross_validation"].columns) == CROSS_VALIDATION_COLUMNS
     assert tuple(tables["feature_importance"].columns) == FEATURE_IMPORTANCE_COLUMNS
+    assert tuple(tables["predictions"].columns) == PREDICTION_COLUMNS
     assert tables["priorities"]["population"].tolist() == ["population_A", "population_B"]
     assert tables["priorities"]["rank"].tolist() == [1, 2]
     assert tables["cross_validation"].shape == (8, 4)
     assert tables["feature_importance"].shape == (16, 5)
+    assert tables["predictions"].shape == (24, 6)
     assert summary["status"] == "exploratory_cell_level_cross_validation"
     assert summary["software_versions"]["pertpy"] == "1.3.0"
     assert len(summary["references"]) >= 3
@@ -538,12 +851,18 @@ def test_augur_exact_backend_calls_summary_and_input_immutability(augur_adata, s
         "selection": "explicit",
         "integer_like": True,
     }
+    assert summary["key_results"]["prediction_label_encoding"] == {
+        "negative_label": 0,
+        "negative_condition": "control",
+        "positive_label": 1,
+        "positive_condition": "treatment",
+    }
     assert summary["key_results"]["sample_audit"]["minimum_two_samples_per_arm"] is True
     assert summary["key_results"]["technical_batch_audit"]["perfect_condition_confounding"] is False
     auc_distribution = summary["key_results"]["cross_validation_auc_distribution"]
     assert [record["population"] for record in auc_distribution] == ["population_A", "population_B"]
     assert [record["observations"] for record in auc_distribution] == [4, 4]
-    assert auc_distribution[0]["mean"] == pytest.approx(0.82)
+    assert auc_distribution[0]["mean"] == pytest.approx(1.0)
     assert summary["key_results"]["skipped_populations"] == [
         {
             "population": "population_weak",
@@ -598,6 +917,37 @@ def test_augur_exact_backend_calls_summary_and_input_immutability(augur_adata, s
     science.pd.testing.assert_frame_equal(augur_adata.obs, before.obs)
     science.pd.testing.assert_frame_equal(augur_adata.var, before.var)
     assert augur_adata.uns == before.uns
+
+
+@pytest.mark.parametrize("classifier", list(AUGUR_CLASSIFIERS))
+def test_augur_retains_predictions_from_fitted_fold_estimators(augur_adata, science, classifier):
+    result = _run(
+        augur_adata,
+        science,
+        pertpy_module=_fake_pertpy(science, native_evidence=False),
+        classifier=classifier,
+    )
+
+    predictions = result.table("predictions")
+    assert predictions.shape == (24, len(PREDICTION_COLUMNS))
+    assert predictions.groupby(["population", "subsample"], observed=True).size().tolist() == [6, 6, 6, 6]
+
+
+def test_augur_records_the_backend_positive_condition(augur_adata, science):
+    _replace_obs_column(
+        augur_adata,
+        "condition",
+        ["z_control" if value == "control" else "a_treatment" if value == "treatment" else value for value in augur_adata.obs["condition"]],
+    )
+
+    result = _run(augur_adata, science, control="z_control", treatment="a_treatment")
+
+    assert result.summary["key_results"]["prediction_label_encoding"] == {
+        "negative_label": 0,
+        "negative_condition": "a_treatment",
+        "positive_label": 1,
+        "positive_condition": "z_control",
+    }
 
 
 def test_generated_augur_code_has_runtime_parity(augur_adata, science):
@@ -681,6 +1031,9 @@ def test_augur_artifact_is_defensive_and_tamper_evident(augur_adata, science):
     returned_summary = result.summary
     returned_summary["status"] = "changed"
     assert result.summary["status"] == "exploratory_cell_level_cross_validation"
+    returned_predictions = result.table("predictions")
+    returned_predictions.loc[0, "prediction_score"] = 0.0
+    assert result.table("predictions").loc[0, "prediction_score"] != 0.0
 
     private_tables = object.__getattribute__(result, "_tables")
     private_tables["priorities"].loc[0, "mean_auc"] = 0.01
@@ -688,6 +1041,30 @@ def test_augur_artifact_is_defensive_and_tamper_evident(augur_adata, science):
         validate_augur_result(result)
     with pytest.raises(ValueError, match="fingerprint"):
         select_augur_view(result, view="priorities")
+
+
+def _reuse_prediction_observation_across_populations(table):
+    table.loc[12, "observation"] = table.loc[0, "observation"]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda table: table.__setitem__("prediction_score", [float("nan"), *table["prediction_score"].iloc[1:]]), "non-finite"),
+        (lambda table: table.__setitem__("prediction_score", [2.0, *table["prediction_score"].iloc[1:]]), r"\[0, 1\]"),
+        (lambda table: table.__setitem__("true_label", [2, *table["true_label"].iloc[1:]]), "binary"),
+        (lambda table: table.__setitem__("observation", [*table["observation"].iloc[:3], table["observation"].iloc[0], *table["observation"].iloc[4:]]), "exactly once"),
+        (_reuse_prediction_observation_across_populations, "more than one population"),
+        (lambda table: table.__setitem__("prediction_score", [1.0, *table["prediction_score"].iloc[1:]]), "recomputed AUC"),
+    ],
+)
+def test_augur_rejects_malformed_prediction_evidence(augur_adata, science, mutate, message):
+    result = _run(augur_adata, science)
+    predictions = object.__getattribute__(result, "_tables")["predictions"]
+    mutate(predictions)
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        validate_augur_result(result)
 
 
 @pytest.mark.parametrize(
@@ -963,6 +1340,7 @@ def test_real_pertpy_1_3_cpu_smoke(science):
         science,
         pertpy_module=pertpy,
         subsample_size=4,
+        n_threads=2,
         max_result_rows=100_000,
         max_result_mib=100.0,
     )
@@ -970,4 +1348,18 @@ def test_real_pertpy_1_3_cpu_smoke(science):
     assert tables["priorities"].shape == (2, len(PRIORITY_COLUMNS))
     assert tables["cross_validation"].shape == (8, len(CROSS_VALIDATION_COLUMNS))
     assert not tables["feature_importance"].empty
+    assert tables["predictions"].shape == (32, len(PREDICTION_COLUMNS))
     assert summary["software_versions"]["pertpy"] == "1.3.0"
+    plotted, report, _code = augur_plot_owned(
+        tables,
+        summary,
+        result.metadata,
+        view="roc",
+        top_n=20,
+        max_plot_rows=100_000,
+        max_image_pixels=40_000_000,
+    )
+    assert plotted.png.startswith(b"\x89PNG")
+    assert report.summary["key_results"]["roc_curve_auc"] == pytest.approx(
+        dict(zip(tables["priorities"]["population"], tables["priorities"]["mean_auc"], strict=True))
+    )

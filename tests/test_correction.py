@@ -14,6 +14,7 @@ from openbio_singlecell.nodes_correction import (
 from openbio_singlecell.operations_correction import (
     filter_doublets_owned,
     mark_mad_outliers_owned,
+    scrublet_diagnostics_plot_owned,
     scrublet_owned,
 )
 
@@ -76,6 +77,7 @@ def _install_fake_scrublet(monkeypatch, science, *, include_threshold=True):
             batches = {}
             for label in science.pd.unique(work.obs[group_key]):
                 payload = {
+                    "doublet_scores_sim": science.np.asarray([0.15, 0.25, 0.35, 0.45], dtype=float),
                     "parameters": {
                         "expected_doublet_rate": parameters["expected_doublet_rate"],
                         "sim_doublet_ratio": parameters["sim_doublet_ratio"],
@@ -89,6 +91,7 @@ def _install_fake_scrublet(monkeypatch, science, *, include_threshold=True):
             work.uns["scrublet"] = {"batches": batches, "batched_by": group_key}
         else:
             payload = {
+                "doublet_scores_sim": science.np.asarray([0.15, 0.25, 0.35, 0.45], dtype=float),
                 "parameters": {
                     "expected_doublet_rate": parameters["expected_doublet_rate"],
                     "sim_doublet_ratio": parameters["sim_doublet_ratio"],
@@ -452,6 +455,9 @@ def test_scrublet_scanpy_112_smoke(science):
     assert output.obs["predicted_doublet"].dtype == bool
     assert report.summary["key_results"]["effective_thresholds"] == {"sample_a": 0.1, "sample_b": 0.1}
     assert report.summary["software_versions"]["scanpy"] == "1.12.3"
+    plotted, plot_report, _ = scrublet_diagnostics_plot_owned(output)
+    assert plotted.png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert plot_report.summary["key_results"]["plotted_observed_scores"] == 60
     namespace = {}
     exec(code, namespace)
     equivalent = namespace["run_scrublet"](value)

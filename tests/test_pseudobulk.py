@@ -8,6 +8,7 @@ import uuid
 import pytest
 
 from openbio_singlecell.artifact_codecs import ANNDATA_PAYLOAD, read_table, write_anndata
+from openbio_singlecell.differential_evidence import differential_table_content_fingerprint
 from openbio_singlecell.node_types import PseudobulkType, SummaryResultType
 from openbio_singlecell.nodes_differential import (
     OpenBioSingleCellPseudobulk as _PseudobulkSchema,
@@ -1279,6 +1280,11 @@ def test_edger_full_table_summary_backend_controls_generated_parity_and_input_im
     )
     assert result.table.columns.tolist() == EDGER_COLUMNS
     assert len(result.table) == 4
+    assert result.parameters["table_content_fingerprint_sha256"] == differential_table_content_fingerprint(
+        result.table,
+        contract="pseudobulk_edger",
+    )
+    assert report.summary["parameters"] == result.parameters
     assert backend.calls[1] == ("fit", {"robust": True})
     science.np.testing.assert_array_equal(backend.calls[2][1], [0.0, 0.0, 1.0])
     assert report.summary["key_results"]["condition_counts"] == {"control": 3, "treated": 3}
@@ -1377,6 +1383,11 @@ def test_pydeseq2_null_preservation_summary_controls_generated_parity_and_no_r_c
     )
     assert result.table.columns.tolist() == PYDESEQ2_COLUMNS
     assert len(result.table) == 4
+    assert result.parameters["table_content_fingerprint_sha256"] == differential_table_content_fingerprint(
+        result.table,
+        contract="pseudobulk_deseq2",
+    )
+    assert report.summary["parameters"] == result.parameters
     assert result.table["p_value"].isna().sum() == 1
     assert result.table["p_adjusted"].isna().sum() == 2
     assert backend.calls[1] == (

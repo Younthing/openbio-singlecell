@@ -6,14 +6,26 @@ from collections.abc import Mapping
 from typing import Any
 
 from . import PLUGIN_VERSION, dependencies
-from .analysis_utils import make_summary_result, make_table_result
+from .analysis_reporting import AnalysisReference, make_analysis_report
+from .analysis_utils import make_plot_result, make_summary_result, make_table_result
+from .artifact_envelope import table_from_metadata
+from .differential_plotting import (
+    pseudobulk_condition_contrast_plot_code,
+    pseudobulk_qc_plot_code,
+    run_pseudobulk_condition_contrast_plot,
+    run_pseudobulk_qc_plot,
+    run_scvi_population_de_evidence_plot,
+    scvi_population_de_evidence_plot_code,
+)
 from .expression_source import _PSEUDOBULK_SPEC
 from .operations_input import (
     analysis_outputs,
     read_anndata_input,
+    read_table_input,
     require_artifact_input,
     require_input_names,
     require_parameters,
+    write_plot_output,
     write_table_output,
 )
 from .pseudobulk import build_pseudobulk_summary, pseudobulk_code, run_pseudobulk
@@ -42,6 +54,13 @@ TABLE_KIND = "OPENBIO_SINGLE_CELL_TABLE"
 SCVI_MODEL_KIND = "OPENBIO_SCVI_MODEL"
 SCVI_MODEL_CODEC = "scvi-native-directory"
 PSEUDOBULK_SOURCE = _PSEUDOBULK_SPEC
+PLOT_KIND = "OPENBIO_SINGLE_CELL_PLOT"
+MATPLOTLIB_REFERENCE = AnalysisReference(
+    citation="Hunter JD. Matplotlib: A 2D Graphics Environment. Computing in Science & Engineering. 2007;9:90-95.",
+    doi="10.1109/MCSE.2007.55",
+    url="https://doi.org/10.1109/MCSE.2007.55",
+    kind="software",
+)
 
 
 def _strict_source(value: JSONValue, adata: Any) -> Any:
@@ -145,6 +164,61 @@ def run_pseudobulk_owned(
     return artifact, report, code
 
 
+def pseudobulk_qc_plot_owned(artifact: Any, *, view: Any = None) -> tuple[Any, Any, str]:
+    started_at = time.perf_counter()
+    png, details = run_pseudobulk_qc_plot(artifact, view=view)
+    parameters = {"view": details["view_parameters"]}
+    code = pseudobulk_qc_plot_code(view=details["view_parameters"])
+    description = (
+        f"Rendered descriptive {details['view'].replace('_', ' ')} evidence for "
+        f"{details['plotted_profiles']:,} retained Sample-by-population profiles across "
+        f"{details['plotted_samples']:,} independent Sample declarations."
+    )
+    warnings: list[str] = []
+    input_cells = int(artifact.metadata["input_dimensions"]["cells"])
+    input_genes = int(details["plotted_genes"])
+    common = {
+        "parameters": parameters,
+        "description": description,
+        "warnings": warnings,
+        "input_cells": input_cells,
+        "input_genes": input_genes,
+        "started_at": started_at,
+    }
+    plotted = make_plot_result(
+        png=png,
+        title=details["title"],
+        operation="pseudobulk_qc_plot",
+        **common,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellPseudobulkQCPlot",
+        title="Pseudobulk QC plot summary",
+        operation="pseudobulk_qc_plot",
+        methods=(
+            "Validated the complete immutable Sample-by-population pseudobulk artifact and its current-content "
+            "fingerprint before read-only Matplotlib rendering of retained profile cell counts, raw-count library "
+            "sizes, and Sample-by-population coverage already stored by the producer."
+        ),
+        results=description,
+        key_results={key: value for key, value in details.items() if key not in {"view_parameters", "title"}},
+        parameters=parameters,
+        references=[MATPLOTLIB_REFERENCE],
+        software_packages=["numpy", "pandas", "scipy", "matplotlib"],
+        warnings=warnings,
+        limitations=(
+            "These are descriptive quality diagnostics; they do not test a Condition contrast.",
+            "Sample identity, count-source identity, and population annotation remain analyst declarations.",
+            "Cell-count and library-size differences can reflect recovery, Technical batch, composition, or biology.",
+        ),
+        input_cells=input_cells,
+        input_genes=input_genes,
+        started_at=started_at,
+        code=code,
+    )
+    return plotted, report, code
+
+
 def _run_pseudobulk_engine_owned(
     artifact: Any,
     *,
@@ -231,6 +305,81 @@ def run_pseudobulk_deseq2_owned(artifact: Any, **parameters: Any) -> tuple[Any, 
     return _run_pseudobulk_engine_owned(artifact, engine="pydeseq2", **parameters)
 
 
+def pseudobulk_condition_contrast_plot_owned(
+    table: Any,
+    *,
+    view: Any = None,
+) -> tuple[Any, Any, str]:
+    from .contracts import TableResult, _metadata_value
+
+    if not isinstance(table, TableResult):
+        raise TypeError(
+            "Pseudobulk Condition Contrast Plot requires the table result from Pseudobulk edgeR or PyDESeq2."
+        )
+    if not isinstance(table.source, dict) or _metadata_value(table.parameters) != table.source.get("parameters"):
+        raise ValueError("Pseudobulk Condition Contrast Plot requires internally consistent producer provenance.")
+    producer = {
+        "operation": table.source.get("operation"),
+        "parameters": table.parameters,
+        "input_cells": table.input_cells,
+        "input_genes": table.input_genes,
+        "random_seed": table.random_seed,
+    }
+    started_at = time.perf_counter()
+    png, details = run_pseudobulk_condition_contrast_plot(table.table, producer=producer, view=view)
+    parameters = {"view": details["view_parameters"]}
+    code = pseudobulk_condition_contrast_plot_code(producer=producer, view=details["view_parameters"])
+    description = (
+        f"Rendered {details['engine']} {details['view'].replace('_', ' ')} evidence for "
+        f"{details['tested_genes']:,} genes in the Sample-level "
+        f"{details['comparison_condition']} versus {details['reference_condition']} Condition contrast "
+        f"within population {details['population']!r}."
+    )
+    warnings = list(table.warnings)
+    common = {
+        "parameters": parameters,
+        "description": description,
+        "warnings": warnings,
+        "input_cells": table.input_cells,
+        "input_genes": table.input_genes,
+        "started_at": started_at,
+        "random_seed": table.random_seed,
+    }
+    plotted = make_plot_result(
+        png=png,
+        title=details["title"],
+        operation="pseudobulk_condition_contrast_plot",
+        **common,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellPseudobulkConditionContrastPlot",
+        title="Pseudobulk Condition contrast plot summary",
+        operation="pseudobulk_condition_contrast_plot",
+        methods=(
+            f"Validated the exact {details['engine']} producer identity, canonical full tested-gene table, "
+            "producer-generated current-content fingerprint, Condition direction, thresholds, and adjusted-p-value "
+            "universe before read-only rendering. The independent Sample is the replicate unit."
+        ),
+        results=description,
+        key_results={key: value for key, value in details.items() if key not in {"view_parameters", "title"}},
+        parameters=parameters,
+        references=[MATPLOTLIB_REFERENCE],
+        software_packages=["numpy", "pandas", "matplotlib"],
+        warnings=warnings,
+        limitations=(
+            "The plot visualizes the upstream frequentist test; it does not refit the model or change its tested universe.",
+            "Reported log2 fold changes are unshrunk and can be unstable for low-count genes or few Samples.",
+            "Biological Sample identity and count-source identity remain analyst declarations.",
+        ),
+        input_cells=table.input_cells,
+        input_genes=table.input_genes,
+        started_at=started_at,
+        code=code,
+        random_seed=table.random_seed,
+    )
+    return plotted, report, code
+
+
 def run_scvi_differential_owned(
     adata: Any,
     model: SCVIModel,
@@ -306,6 +455,79 @@ def run_scvi_differential_owned(
     return result, report, code
 
 
+def scvi_population_de_evidence_plot_owned(
+    table: Any,
+    *,
+    view: Any = None,
+) -> tuple[Any, Any, str]:
+    from .contracts import TableResult, _metadata_value
+
+    if not isinstance(table, TableResult):
+        raise TypeError("scVI Population DE Evidence Plot requires the table from scVI Model DE Evidence.")
+    if not isinstance(table.source, dict) or _metadata_value(table.parameters) != table.source.get("parameters"):
+        raise ValueError("scVI Population DE Evidence Plot requires internally consistent producer provenance.")
+    producer = {
+        "operation": table.source.get("operation"),
+        "parameters": table.parameters,
+        "input_cells": table.input_cells,
+        "input_genes": table.input_genes,
+        "random_seed": table.random_seed,
+    }
+    started_at = time.perf_counter()
+    png, details = run_scvi_population_de_evidence_plot(table.table, producer=producer, view=view)
+    parameters = {"view": details["view_parameters"]}
+    code = scvi_population_de_evidence_plot_code(producer=producer, view=details["view_parameters"])
+    description = (
+        f"Rendered scVI {details['view'].replace('_', ' ')} for {details['tested_fitted_features']:,} "
+        f"fitted features comparing {details['group1']!r} with {details['group2']!r}; this is "
+        "cell/model-conditional posterior evidence, not Sample-level Condition inference."
+    )
+    warnings = list(table.warnings)
+    common = {
+        "parameters": parameters,
+        "description": description,
+        "warnings": warnings,
+        "input_cells": table.input_cells,
+        "input_genes": table.input_genes,
+        "started_at": started_at,
+        "random_seed": table.random_seed,
+    }
+    plotted = make_plot_result(
+        png=png,
+        title=details["title"],
+        operation="scvi_population_de_evidence_plot",
+        **common,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellSCVIPopulationDEEvidencePlot",
+        title="scVI population DE evidence plot summary",
+        operation="scvi_population_de_evidence_plot",
+        methods=(
+            "Validated the exact scVI Model DE Evidence producer, canonical mode-specific fitted-feature table, "
+            "producer-generated current-content fingerprint, population direction, posterior probabilities, "
+            "decoded-expression quantities, and retained upstream ranking before read-only rendering. The "
+            "statistical unit is the selected cells and fitted-model posterior draws, not independent Samples."
+        ),
+        results=description,
+        key_results={key: value for key, value in details.items() if key not in {"view_parameters", "title"}},
+        parameters=parameters,
+        references=[MATPLOTLIB_REFERENCE],
+        software_packages=["numpy", "pandas", "matplotlib"],
+        warnings=warnings,
+        limitations=(
+            "No between-Sample variance is estimated; use pseudobulk edgeR or PyDESeq2 for Condition inference.",
+            "Posterior expected-FDR tags are not p-values or Benjamini–Hochberg adjusted p-values.",
+            "Evidence is conditional on the fitted model, fitted feature view, selected cells, and nuisance declarations.",
+        ),
+        input_cells=table.input_cells,
+        input_genes=table.input_genes,
+        started_at=started_at,
+        code=code,
+        random_seed=table.random_seed,
+    )
+    return plotted, report, code
+
+
 def _table_record(context: OperationContext, result: Any) -> dict[str, JSONValue]:
     table = result.table
     science = dependencies.require_scientific_dependencies()
@@ -363,6 +585,24 @@ def pseudobulk(
     )
 
 
+@register_operation("openbio.node.pseudobulkqcplot")
+def pseudobulk_qc_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    require_input_names(inputs, {"pseudobulk"}, operation="Pseudobulk QC Plot")
+    require_parameters(parameters, {"view"}, operation="Pseudobulk QC Plot")
+    root = require_artifact_input(
+        inputs,
+        "pseudobulk",
+        kind=PSEUDOBULK_KIND,
+        codec=PSEUDOBULK_CODEC,
+    )
+    plotted, report, code = pseudobulk_qc_plot_owned(read_pseudobulk(root), **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
+
+
 _ENGINE_PARAMETERS = {
     "population",
     "reference_condition",
@@ -412,6 +652,22 @@ def pseudobulk_deseq2(
     artifact = _pseudobulk_engine_input(inputs, parameters, operation="Pseudobulk DESeq2", deseq2=True)
     result, report, code = run_pseudobulk_deseq2_owned(artifact, **parameters)
     return analysis_outputs(report, code, _table_record(context, result))
+
+
+@register_operation("openbio.node.pseudobulkconditioncontrastplot")
+def pseudobulk_condition_contrast_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    require_input_names(inputs, {"table"}, operation="Pseudobulk Condition Contrast Plot")
+    require_parameters(parameters, {"view"}, operation="Pseudobulk Condition Contrast Plot")
+    table, metadata = read_table_input(inputs, "table", kind=TABLE_KIND)
+    plotted, report, code = pseudobulk_condition_contrast_plot_owned(
+        table_from_metadata(metadata, table),
+        **parameters,
+    )
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
 
 
 def _scvi_training_parameters(adata: Any) -> dict[str, Any]:
@@ -483,15 +739,37 @@ def scvi_differential_expression(
     return analysis_outputs(report, code, _table_record(context, result))
 
 
+@register_operation("openbio.node.scvipopulationdeevidenceplot")
+def scvi_population_de_evidence_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    require_input_names(inputs, {"table"}, operation="scVI Population DE Evidence Plot")
+    require_parameters(parameters, {"view"}, operation="scVI Population DE Evidence Plot")
+    table, metadata = read_table_input(inputs, "table", kind=TABLE_KIND)
+    plotted, report, code = scvi_population_de_evidence_plot_owned(
+        table_from_metadata(metadata, table),
+        **parameters,
+    )
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
+
+
 __all__ = [
     "PSEUDOBULK_CODEC",
     "PSEUDOBULK_KIND",
     "pseudobulk",
+    "pseudobulk_condition_contrast_plot",
+    "pseudobulk_condition_contrast_plot_owned",
     "pseudobulk_deseq2",
     "pseudobulk_edger",
+    "pseudobulk_qc_plot",
+    "pseudobulk_qc_plot_owned",
     "run_pseudobulk_deseq2_owned",
     "run_pseudobulk_edger_owned",
     "run_pseudobulk_owned",
     "run_scvi_differential_owned",
     "scvi_differential_expression",
+    "scvi_population_de_evidence_plot",
+    "scvi_population_de_evidence_plot_owned",
 ]

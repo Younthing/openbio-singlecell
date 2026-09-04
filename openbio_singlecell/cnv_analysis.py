@@ -458,6 +458,12 @@ def _cnv_absolute_matrix_summary(matrix, *, numpy, scipy_sparse):
     }
 
 
+def _cnv_score_table_fingerprint(table):
+    columns = [str(value) for value in table.columns]
+    rows = [list(row) for row in table.itertuples(index=False, name=None)]
+    return _cnv_sha_json({"columns": columns, "rows": rows})
+
+
 def _cnv_versions(*, openbio_version):
     versions = {"python": platform.python_version(), "openbio-singlecell": str(openbio_version)}
     for package in ("infercnvpy", "scanpy", "anndata", "numpy", "pandas", "scipy", "natsort"):
@@ -1552,6 +1558,7 @@ def _cnv_run_score(
             "fingerprint_sha256": partition["fingerprint_sha256"],
         },
         "group_scores": table_rows,
+        "table_fingerprint_sha256": _cnv_score_table_fingerprint(table),
         "output": {
             "obs_key": output_key,
             "score_summary": _cnv_numeric_summary(scores, numpy=numpy),
@@ -1654,6 +1661,7 @@ _CNV_SCORE_SOURCE_HELPERS = (
     _cnv_axes,
     _cnv_numeric_summary,
     _cnv_absolute_matrix_summary,
+    _cnv_score_table_fingerprint,
     _cnv_versions,
     _cnv_references,
     _cnv_summary,
@@ -1862,6 +1870,7 @@ def run_cnv_score(cnv_state, adata):
 
 
 __all__ = [
+    "_cnv_score_table_fingerprint",
     "CNV_PCA_NODE_ID",
     "CNV_SCORE_NODE_ID",
     "CNV_STATE_SCHEMA",

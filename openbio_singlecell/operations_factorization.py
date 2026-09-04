@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from .analysis_reporting import AnalysisReference, make_analysis_report, summarize_numeric
-from .analysis_utils import finish_adata, make_table_result, matrix_totals_and_nonzero
+from .analysis_utils import finish_adata, make_plot_result, make_table_result, matrix_totals_and_nonzero
+from .artifact_envelope import table_from_metadata
 from .cnmf_native_codec import CNMF_NATIVE_CODEC, checkout_cnmf_run, write_cnmf_run
 from .cnmf_run import CNMFRun
 from .cnmf_standalone import (
@@ -22,13 +25,21 @@ from .cnmf_standalone import (
     cnmf_rank_survey as _cnmf_rank_survey_science,
 )
 from .expression_source import _CNMF_SPEC, DynamicExpressionSource, ExpressionSource
+from .factorization_plotting import (
+    cnmf_programs_plot_code,
+    cnmf_rank_plot_code,
+    run_cnmf_programs_plot,
+    run_cnmf_rank_plot,
+)
 from .operations_input import (
     analysis_outputs,
     read_anndata_input,
+    read_table_input,
     require_artifact_input,
     require_input_names,
     require_parameters,
     write_anndata_output,
+    write_plot_output,
     write_table_output,
 )
 from .worker_protocol import JSONValue, OperationContext, register_operation
@@ -119,6 +130,12 @@ CNMF_REFERENCES = (
     SCIPY_REFERENCE,
     SCIKIT_LEARN_REFERENCE,
 )
+MATPLOTLIB_REFERENCE = AnalysisReference(
+    citation="Hunter JD. Matplotlib: A 2D Graphics Environment. Computing in Science & Engineering. 2007;9:90-95.",
+    doi="10.1109/MCSE.2007.55",
+    url="https://doi.org/10.1109/MCSE.2007.55",
+    kind="software",
+)
 
 
 def _source_string(expression: ExpressionSource) -> str:
@@ -133,6 +150,23 @@ def _source_string(expression: ExpressionSource) -> str:
 
 def _source_label(expression: ExpressionSource) -> str:
     return f"layer:{expression.layer_name}" if expression.kind == "layer" else expression.kind
+
+
+def _rank_metrics_fingerprint(table: Any) -> str:
+    rows = [
+        [
+            int(row.k),
+            float(row.stability),
+            float(row.prediction_error),
+            float(row.statistics_density_threshold),
+            int(row.expected_restarts),
+            int(row.completed_restarts),
+            int(row.combined_components),
+        ]
+        for row in table.itertuples(index=False)
+    ]
+    payload = json.dumps(rows, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
 
 
 def _survey_code(
@@ -253,6 +287,8 @@ class OpenBioSingleCellCNMFRankSurvey:
                 "total_restarts": metadata.total_restarts,
                 "source_features": metadata.input_genes,
                 "current_features": metadata.current_features,
+                "input_fingerprint": metadata.input_fingerprint,
+                "k_metrics_fingerprint_sha256": _rank_metrics_fingerprint(metric_table),
                 "fixed_policy": asdict(metadata.fixed_policy),
                 "requested_resource": metadata.requested_resource.as_dict(),
             }
@@ -540,8 +576,143 @@ class OpenBioSingleCellCNMF:
         return output, report, code
 
 
+def cnmf_rank_plot_owned(k_metrics: Any, *, view: Any = None) -> tuple[Any, Any, str]:
+    from .contracts import TableResult
+
+    if not isinstance(k_metrics, TableResult):
+        raise TypeError("cNMF Rank Plot requires the k_metrics TableResult from cNMF Rank Survey.")
+    source_parameters = k_metrics.source.get("parameters") if isinstance(k_metrics.source, dict) else None
+    provenance_keys = (
+        "candidate_ks",
+        "components_min",
+        "components_max",
+        "n_iter",
+        "total_restarts",
+        "source_features",
+        "input_fingerprint",
+        "k_metrics_fingerprint_sha256",
+    )
+    if not isinstance(source_parameters, dict) or any(
+        k_metrics.parameters.get(key) != source_parameters.get(key) for key in provenance_keys
+    ):
+        raise ValueError("cNMF Rank Plot requires internally consistent k_metrics producer provenance.")
+    top_policy = k_metrics.parameters.get("fixed_policy")
+    source_policy = source_parameters.get("fixed_policy")
+    if (
+        not isinstance(top_policy, dict)
+        or not isinstance(source_policy, dict)
+        or top_policy.get("statistics_density_threshold")
+        != source_policy.get("statistics_density_threshold")
+    ):
+        raise ValueError("cNMF Rank Plot requires internally consistent k_metrics producer provenance.")
+    producer = {
+        "operation": k_metrics.source.get("operation"),
+        "parameters": k_metrics.parameters,
+        "input_cells": k_metrics.input_cells,
+        "input_genes": k_metrics.input_genes,
+    }
+    started_at = time.perf_counter()
+    png, details = run_cnmf_rank_plot(k_metrics.table, producer=producer, view=view)
+    parameters = {"view": details["view_parameters"]}
+    code = cnmf_rank_plot_code(producer=producer, view=details["view_parameters"])
+    description = (
+        f"Rendered stored cNMF rank evidence for {details['plotted_ranks']:,} complete candidate K values. "
+        "No rank was selected or recommended."
+    )
+    common = {
+        "parameters": parameters,
+        "description": description,
+        "warnings": [],
+        "input_cells": k_metrics.input_cells,
+        "input_genes": k_metrics.input_genes,
+        "started_at": started_at,
+        "random_seed": k_metrics.random_seed,
+    }
+    plotted = make_plot_result(
+        png=png,
+        title=details["title"],
+        operation="cnmf_rank_plot",
+        **common,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellCNMFRankPlot",
+        title="cNMF rank plot summary",
+        operation="cnmf_rank_plot",
+        methods=(
+            "Validated the exact cNMF Rank Survey producer, canonical K-metrics schema, source fingerprint, "
+            "candidate-rank axis, and complete restart family before read-only Matplotlib rendering."
+        ),
+        results=description,
+        key_results={key: value for key, value in details.items() if key not in {"view_parameters", "title"}},
+        parameters=parameters,
+        references=(*CNMF_REFERENCES, MATPLOTLIB_REFERENCE),
+        software_packages=(*CNMF_SOFTWARE_PACKAGES, "matplotlib"),
+        warnings=[],
+        limitations=(
+            "Rank selection remains an analyst decision supported by stability, reconstruction error, and biological interpretability.",
+            "The plot is diagnostic and pooled-cell; it is not replicate-aware Condition inference.",
+        ),
+        input_cells=k_metrics.input_cells,
+        input_genes=k_metrics.input_genes,
+        started_at=started_at,
+        code=code,
+        random_seed=k_metrics.random_seed,
+    )
+    return plotted, report, code
+
+
+def cnmf_programs_plot_owned(adata: Any, *, view: Any = None) -> tuple[Any, Any, str]:
+    started_at = time.perf_counter()
+    png, details = run_cnmf_programs_plot(adata, view=view)
+    parameters = {"view": details["view_parameters"]}
+    code = cnmf_programs_plot_code(view=details["view_parameters"])
+    description = (
+        f"Rendered stored cNMF {details['view'].replace('_', ' ')} for {details['plotted_programs']:,} "
+        f"continuous gene-expression programs across {details['plotted_cells']:,} cells."
+    )
+    common = {
+        "parameters": parameters,
+        "description": description,
+        "warnings": [],
+        "input_cells": int(adata.n_obs),
+        "input_genes": int(adata.n_vars),
+        "started_at": started_at,
+    }
+    plotted = make_plot_result(
+        png=png,
+        title=details["title"],
+        operation="cnmf_programs_plot",
+        **common,
+    )
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellCNMFProgramsPlot",
+        title="cNMF programs plot summary",
+        operation="cnmf_programs_plot",
+        methods=(
+            "Validated cNMF Consensus Programs provenance, observation and feature axes, normalized usage, GEP "
+            "scores, stored top-gene ordering, and all content fingerprints before read-only Matplotlib rendering."
+        ),
+        results=description,
+        key_results={key: value for key, value in details.items() if key not in {"view_parameters", "title"}},
+        parameters=parameters,
+        references=(*CNMF_REFERENCES, MATPLOTLIB_REFERENCE),
+        software_packages=(*CNMF_SOFTWARE_PACKAGES, "matplotlib"),
+        warnings=[],
+        limitations=(
+            "Gene-expression programs require biological annotation and external validation; usages are continuous mixtures, not cell clusters.",
+            "Pooled-cell programs may reflect Sample or Technical batch effects and are not replicate-aware Condition inference.",
+        ),
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+        code=code,
+    )
+    return plotted, report, code
+
+
 CNMF_RUN_KIND = "OPENBIO_CNMF_RUN"
 TABLE_KIND = "OPENBIO_SINGLE_CELL_TABLE"
+PLOT_KIND = "OPENBIO_SINGLE_CELL_PLOT"
 
 
 @register_operation("openbio.node.cnmfranksurvey")
@@ -588,6 +759,20 @@ def cnmf_rank_survey_operation(
     return records
 
 
+@register_operation("openbio.node.cnmfrankplot")
+def cnmf_rank_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    require_input_names(inputs, {"k_metrics"}, operation="cNMF Rank Plot")
+    require_parameters(parameters, {"view"}, operation="cNMF Rank Plot")
+    table, metadata = read_table_input(inputs, "k_metrics", kind=TABLE_KIND)
+    result = table_from_metadata(metadata, table)
+    plotted, report, code = cnmf_rank_plot_owned(result, **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
+
+
 @register_operation("openbio.node.cnmf")
 def cnmf_operation(
     context: OperationContext,
@@ -618,6 +803,18 @@ def cnmf_operation(
         return analysis_outputs(summary, code, write_anndata_output(context, output))
 
 
+@register_operation("openbio.node.cnmfprogramsplot")
+def cnmf_programs_plot(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[JSONValue]:
+    require_input_names(inputs, {"adata"}, operation="cNMF Programs Plot")
+    require_parameters(parameters, {"view"}, operation="cNMF Programs Plot")
+    plotted, report, code = cnmf_programs_plot_owned(read_anndata_input(inputs), **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
+
+
 # Stable public names match operation IDs while avoiding collisions with the standalone science functions.
 cnmf_rank_survey = cnmf_rank_survey_operation
 cnmf = cnmf_operation
@@ -628,5 +825,9 @@ __all__ = [
     "OpenBioSingleCellCNMF",
     "OpenBioSingleCellCNMFRankSurvey",
     "cnmf",
+    "cnmf_programs_plot",
+    "cnmf_programs_plot_owned",
+    "cnmf_rank_plot",
+    "cnmf_rank_plot_owned",
     "cnmf_rank_survey",
 ]

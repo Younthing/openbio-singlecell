@@ -837,6 +837,9 @@ def test_rank_survey_uses_exact_file_backed_official_chain_and_reports_integrity
     assert model.calls[2][1] == {"components": (2, 3), "skip_missing_files": False}
     assert table_result.table["k"].tolist() == [2, 3]
     assert table_result.table["completed_restarts"].tolist() == [4, 4]
+    rank_plot, rank_plot_report, _ = operations_factorization.cnmf_rank_plot_owned(table_result)
+    assert rank_plot.png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert rank_plot_report.summary["key_results"]["candidate_ks"] == [2, 3]
     assert run.metadata.backend_name == "cnmf.cNMF"
     assert run.metadata.backend_version == "1.7.1"
     assert run.metadata.adapter_version == 4
@@ -1052,6 +1055,27 @@ def test_user_selected_noninteger_source_is_advisory_without_inferred_state():
     assert final_report.summary["key_results"]["input_advisories"] == list(run.metadata.input_advisories)
     assert any("not integer-like" in warning for warning in final_report.summary["warnings"])
     assert not any("provenance" in warning.lower() for warning in final_report.summary["warnings"])
+    run.close()
+
+
+def test_consensus_retains_program_plot_axis_and_content_fingerprints():
+    run, _, _, _ = _run_survey()
+    output, _, _ = _run_consensus(run, selected_k=2, n_top_genes=3)
+    state = output.uns["cnmf"]
+
+    assert state["schema_version"] == 2
+    for key in (
+        "observation_axis_fingerprint_sha256",
+        "feature_axis_fingerprint_sha256",
+        "usage_fingerprint_sha256",
+        "gep_scores_fingerprint_sha256",
+        "top_genes_fingerprint_sha256",
+    ):
+        assert state[key].startswith("sha256:")
+        assert len(state[key]) == 71
+    plotted, plot_report, _ = operations_factorization.cnmf_programs_plot_owned(output)
+    assert plotted.png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert plot_report.summary["key_results"]["programs"] == ["cNMF_1", "cNMF_2"]
     run.close()
 
 

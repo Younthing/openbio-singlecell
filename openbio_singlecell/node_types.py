@@ -2,8 +2,10 @@ from comfy_api.latest import io
 
 AnnDataType = io.Custom("OPENBIO_ANNDATA")
 AugurResultType = io.Custom("OPENBIO_AUGUR_RESULT")
+CompositionModelResultType = io.Custom("OPENBIO_COMPOSITION_MODEL_RESULT")
 DGIdbResourceType = io.Custom("OPENBIO_DGIDB_RESOURCE")
 LianaResultType = io.Custom("OPENBIO_LIANA_RESULT")
+MiloResultType = io.Custom("OPENBIO_MILO_RESULT")
 SummaryResultType = io.Custom("OPENBIO_SINGLE_CELL_SUMMARY")
 TableResultType = io.Custom("OPENBIO_SINGLE_CELL_TABLE")
 TFActivityArtifactType = io.Custom("OPENBIO_TF_ACTIVITY")
@@ -31,8 +33,10 @@ __all__ = [
     "CassiopeiaTreeType",
     "CNMFRunType",
     "CNVStateType",
+    "CompositionModelResultType",
     "DGIdbResourceType",
     "LianaResultType",
+    "MiloResultType",
     "PlotResultType",
     "PseudobulkType",
     "SCVIModelType",

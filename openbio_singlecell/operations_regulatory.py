@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Any
 
 from . import PLUGIN_VERSION
-from .analysis_utils import make_summary_result, make_table_result
+from .analysis_reporting import AnalysisReference, make_analysis_report
+from .analysis_utils import make_plot_result, make_summary_result, make_table_result
 from .artifact_envelope import table_from_metadata
 from .collectri_ulm import collectri_ulm_code, run_collectri_ulm
 from .expression_source import _COLLECTRI_SPEC, DynamicExpressionSource
@@ -18,6 +19,7 @@ from .operations_input import (
     require_input_names,
     require_parameters,
     write_anndata_output,
+    write_plot_output,
     write_table_output,
 )
 from .pyscenic_import import import_pyscenic_bundle, pyscenic_import_code
@@ -29,6 +31,16 @@ from .regulatory_artifact_codecs import (
     write_scenic,
     write_tf_activity,
 )
+from .regulatory_plotting import (
+    PLOT_EVIDENCE_SCHEMA,
+    regulatory_table_plot_code,
+    run_regulatory_table_plot,
+    run_scenic_activity_plot,
+    run_tf_activity_plot,
+    scenic_activity_plot_code,
+    table_evidence_fingerprint,
+    tf_activity_plot_code,
+)
 from .scenic_binarization import binarize_scenic_activity, scenic_binarization_code
 from .scenic_membership import scenic_membership_code, scenic_regulon_membership
 from .scenic_rss import compute_scenic_rss, scenic_rss_code
@@ -38,7 +50,23 @@ from .worker_protocol import JSONValue, OperationContext, ProtocolError, registe
 TABLE_KIND = "OPENBIO_SINGLE_CELL_TABLE"
 TF_ACTIVITY_KIND = "OPENBIO_TF_ACTIVITY"
 SCENIC_KIND = "OPENBIO_SCENIC_RESULT"
+PLOT_KIND = "OPENBIO_SINGLE_CELL_PLOT"
 COLLECTRI_EXPRESSION_SOURCE = _COLLECTRI_SPEC
+
+MATPLOTLIB_REFERENCE = AnalysisReference(
+    citation="Hunter JD. Matplotlib: A 2D graphics environment. Computing in Science & Engineering. 2007;9:90-95.",
+    doi="10.1109/MCSE.2007.55",
+    url="https://doi.org/10.1109/MCSE.2007.55",
+    kind="software",
+)
+
+
+def _plot_evidence_parameters(parameters: dict[str, Any], table: Any, *, contract: str) -> dict[str, Any]:
+    return {
+        **parameters,
+        "plot_evidence_schema": PLOT_EVIDENCE_SCHEMA,
+        "plot_evidence_fingerprint_sha256": table_evidence_fingerprint(table, contract=contract),
+    }
 
 
 def _tf_activity_input(inputs: dict[str, JSONValue]) -> dict[str, Any]:
@@ -203,7 +231,8 @@ def rank_tf_activities_owned(
         table=table,
         title=f"TF activities by {annotation_key}",
         operation="rank_tf_activities",
-        **common,
+        parameters=_plot_evidence_parameters(summary["parameters"], table, contract="tf_ranking"),
+        **{key: value for key, value in common.items() if key != "parameters"},
     )
     report = make_summary_result(
         summary=summary,
@@ -302,7 +331,8 @@ def scenic_rss_owned(
         table=table,
         title=f"SCENIC regulon specificity by {annotation_key}",
         operation="scenic_regulon_specificity",
-        **common,
+        parameters=_plot_evidence_parameters(summary["parameters"], table, contract="scenic_rss"),
+        **{key: value for key, value in common.items() if key != "parameters"},
     )
     report = make_summary_result(
         summary=summary,
@@ -359,7 +389,10 @@ def scenic_binarization_owned(
         table=threshold_table,
         title="SCENIC activity thresholds",
         operation="scenic_activity_binarization",
-        **common,
+        parameters=_plot_evidence_parameters(
+            summary["parameters"], threshold_table, contract="scenic_binarization"
+        ),
+        **{key: value for key, value in common.items() if key != "parameters"},
     )
     report = make_summary_result(
         summary=summary,
@@ -405,7 +438,8 @@ def scenic_membership_owned(
         table=table,
         title=title,
         operation="scenic_final_regulon_membership",
-        **common,
+        parameters=_plot_evidence_parameters(summary["parameters"], table, contract="scenic_membership"),
+        **{key: value for key, value in common.items() if key != "parameters"},
     )
     report = make_summary_result(
         summary=summary,
@@ -599,6 +633,276 @@ def scenic_tf_modules(
     )
 
 
+def _regulatory_activity_plot_owned(
+    adata: Any,
+    artifact: Any,
+    *,
+    node_id: str,
+    operation: str,
+    label: str,
+    runner: Any,
+    code_builder: Any,
+    view: Any,
+) -> tuple[Any, Any, str]:
+    started_at = time.perf_counter()
+    png, details = runner(adata, artifact, view=view)
+    parameters = {"view": details["view_parameters"]}
+    code = code_builder(view=details["view_parameters"])
+    description = (
+        f"Rendered {details['plotted_activities']:,} of {details['available_activities']:,} stored {label} "
+        f"activities across {details['plotted_cells']:,} cells using the {details['view'].replace('_', ' ')} view."
+    )
+    plotted = make_plot_result(
+        png=png,
+        title=details["title"],
+        operation=operation,
+        parameters=parameters,
+        description=description,
+        warnings=[],
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+    )
+    report, code = make_analysis_report(
+        node_id=node_id,
+        title=f"{label} activity plot summary",
+        operation=operation,
+        methods=(
+            "Validated the exact typed producer artifact, current-content fingerprint, activity axes, and exact "
+            "AnnData observation alignment before read-only Matplotlib rendering."
+        ),
+        results=description,
+        key_results={key: value for key, value in details.items() if key not in {"title", "view_parameters"}},
+        parameters=parameters,
+        references=[MATPLOTLIB_REFERENCE],
+        software_packages=["matplotlib", "numpy", "pandas"],
+        warnings=[],
+        limitations=(
+            "Cell-level activity distributions and arithmetic group means are descriptive and are not Sample-level Condition inference.",
+            "Activity scores inherit upstream expression, resource, cell-cohort, and Technical-batch limitations and do not establish TF binding or causality.",
+        ),
+        input_cells=int(adata.n_obs),
+        input_genes=int(adata.n_vars),
+        started_at=started_at,
+        code=code,
+    )
+    return plotted, report, code
+
+
+def tf_activity_plot_owned(adata: Any, activities: Any, *, view: Any = None) -> tuple[Any, Any, str]:
+    return _regulatory_activity_plot_owned(
+        adata,
+        activities,
+        node_id="OpenBioSingleCellTFActivityPlot",
+        operation="tf_activity_plot",
+        label="CollecTRI ULM",
+        runner=run_tf_activity_plot,
+        code_builder=tf_activity_plot_code,
+        view=view,
+    )
+
+
+def scenic_activity_plot_owned(adata: Any, scenic_result: Any, *, view: Any = None) -> tuple[Any, Any, str]:
+    return _regulatory_activity_plot_owned(
+        adata,
+        scenic_result,
+        node_id="OpenBioSingleCellSCENICActivityPlot",
+        operation="scenic_activity_plot",
+        label="SCENIC AUCell",
+        runner=run_scenic_activity_plot,
+        code_builder=scenic_activity_plot_code,
+        view=view,
+    )
+
+
+def _regulatory_table_plot_owned(
+    result: Any,
+    *,
+    contract: str,
+    node_id: str,
+    operation: str,
+    function_name: str,
+    label: str,
+    view: Any,
+) -> tuple[Any, Any, str]:
+    from .contracts import TableResult
+
+    if not isinstance(result, TableResult):
+        raise TypeError(f"{label} Plot requires its canonical TableResult input.")
+    source_parameters = result.source.get("parameters") if isinstance(result.source, dict) else None
+    if not isinstance(source_parameters, dict) or any(
+        result.parameters.get(key) != source_parameters.get(key)
+        for key in ("plot_evidence_schema", "plot_evidence_fingerprint_sha256")
+    ):
+        raise ValueError(f"{label} producer parameters are internally inconsistent.")
+    producer = {
+        "operation": result.source.get("operation"),
+        "parameters": result.parameters,
+        "input_cells": result.input_cells,
+        "input_genes": result.input_genes,
+    }
+    started_at = time.perf_counter()
+    png, details = run_regulatory_table_plot(
+        result.table,
+        producer=producer,
+        contract=contract,
+        view=view,
+    )
+    parameters = {"view": details["view_parameters"]}
+    code = regulatory_table_plot_code(
+        function_name=function_name,
+        producer=producer,
+        contract=contract,
+        view=details["view_parameters"],
+    )
+    description = (
+        f"Rendered {details['plotted_marks']:,} visual marks from {details['total_rows']:,} stored {label} "
+        "evidence rows using the "
+        f"{details['view'].replace('_', ' ')} view."
+    )
+    warnings = list(result.warnings)
+    plotted = make_plot_result(
+        png=png,
+        title=details["title"],
+        operation=operation,
+        parameters=parameters,
+        description=description,
+        warnings=warnings,
+        input_cells=result.input_cells,
+        input_genes=result.input_genes,
+        started_at=started_at,
+        random_seed=result.random_seed,
+    )
+    report, code = make_analysis_report(
+        node_id=node_id,
+        title=f"{label} plot summary",
+        operation=operation,
+        methods=(
+            "Validated exact producer identity, canonical schema, scientific table invariants, and the "
+            "current-content fingerprint before read-only Matplotlib rendering."
+        ),
+        results=description,
+        key_results={key: value for key, value in details.items() if key not in {"title", "view_parameters"}},
+        parameters=parameters,
+        references=[MATPLOTLIB_REFERENCE],
+        software_packages=["matplotlib", "numpy", "pandas"],
+        warnings=warnings,
+        limitations=(
+            "The plot presents upstream evidence and does not rerun activity inference, statistical testing, RSS, or binarization.",
+            "Regulon and TF evidence does not establish direct binding, causality, cell identity, or a replicate-aware Condition effect.",
+        ),
+        input_cells=result.input_cells,
+        input_genes=result.input_genes,
+        started_at=started_at,
+        code=code,
+        random_seed=result.random_seed,
+    )
+    return plotted, report, code
+
+
+def tf_activity_ranking_plot_owned(result: Any, *, view: Any = None) -> tuple[Any, Any, str]:
+    return _regulatory_table_plot_owned(
+        result,
+        contract="tf_ranking",
+        node_id="OpenBioSingleCellTFActivityRankingPlot",
+        operation="tf_activity_ranking_plot",
+        function_name="plot_tf_activity_ranking",
+        label="TF activity ranking",
+        view=view,
+    )
+
+
+def scenic_rss_plot_owned(result: Any, *, view: Any = None) -> tuple[Any, Any, str]:
+    return _regulatory_table_plot_owned(
+        result,
+        contract="scenic_rss",
+        node_id="OpenBioSingleCellSCENICRegulonSpecificityPlot",
+        operation="scenic_regulon_specificity_plot",
+        function_name="plot_scenic_regulon_specificity",
+        label="SCENIC regulon specificity",
+        view=view,
+    )
+
+
+def scenic_binarization_plot_owned(result: Any, *, view: Any = None) -> tuple[Any, Any, str]:
+    return _regulatory_table_plot_owned(
+        result,
+        contract="scenic_binarization",
+        node_id="OpenBioSingleCellSCENICBinarizationPlot",
+        operation="scenic_binarization_plot",
+        function_name="plot_scenic_binarization",
+        label="SCENIC binarization",
+        view=view,
+    )
+
+
+def scenic_membership_plot_owned(result: Any, *, view: Any = None) -> tuple[Any, Any, str]:
+    return _regulatory_table_plot_owned(
+        result,
+        contract="scenic_membership",
+        node_id="OpenBioSingleCellSCENICRegulonMembershipPlot",
+        operation="scenic_regulon_membership_plot",
+        function_name="plot_scenic_regulon_membership",
+        label="SCENIC regulon membership",
+        view=view,
+    )
+
+
+@register_operation("openbio.node.tfactivityplot")
+def tf_activity_plot_operation(context, inputs, parameters):
+    require_input_names(inputs, {"adata", "activities"}, operation="TF Activity Plot")
+    require_parameters(parameters, {"view"}, operation="TF Activity Plot")
+    plotted, report, code = tf_activity_plot_owned(
+        read_anndata_input(inputs), _tf_activity_input(inputs), **parameters
+    )
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
+
+
+@register_operation("openbio.node.scenicactivityplot")
+def scenic_activity_plot_operation(context, inputs, parameters):
+    require_input_names(inputs, {"adata", "scenic_result"}, operation="SCENIC Activity Plot")
+    require_parameters(parameters, {"view"}, operation="SCENIC Activity Plot")
+    plotted, report, code = scenic_activity_plot_owned(
+        read_anndata_input(inputs), _scenic_input(inputs), **parameters
+    )
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
+
+
+def _table_plot_operation(context, inputs, parameters, *, label: str, owned: Any):
+    require_input_names(inputs, {"table"}, operation=label)
+    require_parameters(parameters, {"view"}, operation=label)
+    plotted, report, code = owned(_table_input(inputs, "table"), **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plotted, kind=PLOT_KIND))
+
+
+@register_operation("openbio.node.tfactivityrankingplot")
+def tf_activity_ranking_plot_operation(context, inputs, parameters):
+    return _table_plot_operation(
+        context, inputs, parameters, label="TF Activity Ranking Plot", owned=tf_activity_ranking_plot_owned
+    )
+
+
+@register_operation("openbio.node.scenicregulonspecificityplot")
+def scenic_rss_plot_operation(context, inputs, parameters):
+    return _table_plot_operation(
+        context, inputs, parameters, label="SCENIC Regulon Specificity Plot", owned=scenic_rss_plot_owned
+    )
+
+
+@register_operation("openbio.node.scenicbinarizationplot")
+def scenic_binarization_plot_operation(context, inputs, parameters):
+    return _table_plot_operation(
+        context, inputs, parameters, label="SCENIC Binarization Plot", owned=scenic_binarization_plot_owned
+    )
+
+
+@register_operation("openbio.node.scenicregulonmembershipplot")
+def scenic_membership_plot_operation(context, inputs, parameters):
+    return _table_plot_operation(
+        context, inputs, parameters, label="SCENIC Regulon Membership Plot", owned=scenic_membership_plot_owned
+    )
+
+
 __all__ = [
     "collectri_ulm",
     "collectri_ulm_owned",
@@ -606,10 +910,22 @@ __all__ = [
     "import_pyscenic_results",
     "rank_tf_activities_owned",
     "rank_tf_activity",
+    "scenic_activity_plot_operation",
+    "scenic_activity_plot_owned",
     "scenic_activity_binarization",
+    "scenic_binarization_plot_operation",
+    "scenic_binarization_plot_owned",
     "scenic_binarization_owned",
     "scenic_membership_owned",
+    "scenic_membership_plot_operation",
+    "scenic_membership_plot_owned",
     "scenic_regulon_specificity",
+    "scenic_rss_plot_operation",
+    "scenic_rss_plot_owned",
     "scenic_rss_owned",
     "scenic_tf_modules",
+    "tf_activity_plot_operation",
+    "tf_activity_plot_owned",
+    "tf_activity_ranking_plot_operation",
+    "tf_activity_ranking_plot_owned",
 ]

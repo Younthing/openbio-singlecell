@@ -11,7 +11,11 @@ import pytest
 
 from openbio_singlecell.node_types import AnnDataType, SummaryResultType
 from openbio_singlecell.nodes_abundance import ABUNDANCE_NODE_CLASSES
-from openbio_singlecell.nodes_schist import SCHIST_NODE_CLASSES, OpenBioSingleCellSchistNestedModel
+from openbio_singlecell.nodes_schist import (
+    SCHIST_NODE_CLASSES,
+    OpenBioSingleCellSchistHierarchyPlot,
+    OpenBioSingleCellSchistNestedModel,
+)
 from openbio_singlecell.operations_schist import schist_nested_model_owned
 from openbio_singlecell.schist_analysis import run_schist_nested_model, schist_nested_model_code
 
@@ -306,7 +310,7 @@ def test_schist_schema_is_one_atomic_nested_hierarchy_analysis():
 
 
 def test_schist_registry_ownership_is_clustering_not_abundance():
-    assert SCHIST_NODE_CLASSES == [OpenBioSingleCellSchistNestedModel]
+    assert SCHIST_NODE_CLASSES == [OpenBioSingleCellSchistNestedModel, OpenBioSingleCellSchistHierarchyPlot]
     assert all(
         node.define_schema().node_id != "OpenBioSingleCellSchistNestedModel" for node in ABUNDANCE_NODE_CLASSES
     )
@@ -362,6 +366,9 @@ def test_schist_runs_exact_reviewed_model_and_generated_code_is_equivalent(scien
     assert len(report.summary["graph"]["fingerprint_sha256"]) == 64
     assert report.summary["parameters"]["connectivity_weights_used_by_model"] is False
     assert report.summary["software_versions"]["schist"] == "0.10.0"
+    hierarchy_fingerprint = output.uns["schist"]["hierarchy"]["openbio_evidence_sha256"]
+    assert len(hierarchy_fingerprint) == 64
+    assert report.summary["key_results"]["hierarchy_evidence_sha256"] == hierarchy_fingerprint
     assert report.summary["software_versions"]["graph-tool"] == "3.0.1"
     assert any("differential abundance" in item.lower() for item in report.summary["limitations"])
     assert any("curated annotation" in item.lower() for item in report.summary["limitations"])

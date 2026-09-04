@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from . import PLUGIN_VERSION
 from .analysis_reporting import _package_version, collect_software_versions
+from .differential_evidence import differential_table_content_fingerprint
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -502,6 +503,10 @@ def _analyze_scvi_model_de_evidence_core(
         "n_samples_overall": n_samples_overall,
         "random_seed": random_seed,
         "fixed_backend_parameters": copy.deepcopy(dict(run.backend_parameters)),
+        "table_content_fingerprint_sha256": differential_table_content_fingerprint(
+            table,
+            contract=f"scvi_model_de_evidence/{mode}",
+        ),
     }
     method = {
         "name": "scVI model-based differential-expression evidence",
@@ -641,6 +646,7 @@ def scvi_de_code(
         _top_effects,
         _package_version,
         collect_software_versions,
+        differential_table_content_fingerprint,
         _standalone_accelerator_runtime,
         _analyze_scvi_model_de_evidence_core,
     )

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from comfy_api.latest import io
 
-from .expression_source import _CELL_CYCLE_SPEC
-from .node_types import AnnDataType, analysis_outputs
+from .expression_source import _CELL_CYCLE_SPEC, _MARKER_PLOT_SPEC
+from .node_types import AnnDataType, PlotResultType, analysis_outputs
 
 CATEGORY = "openbio/single-cell/trajectory"
 ANNOTATION_CATEGORY = "openbio/single-cell/annotation"
@@ -45,6 +45,24 @@ class OpenBioSingleCellCellCycleScore(io.ComfyNode):
                 io.Int.Input("random_seed", default=0, min=0, max=2**31 - 1, advanced=True),
             ],
             outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
+        )
+
+
+class OpenBioSingleCellCellCycleScorePlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellCellCycleScorePlot",
+            display_name="Cell Cycle Score Plot",
+            category=ANNOTATION_CATEGORY,
+            description=(
+                "Render the stored S/G2M score plane and phase counts from Cell Cycle Score without rescoring genes."
+            ),
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input("output_prefix", default="cell_cycle"),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
         )
 
 class OpenBioSingleCellDiffusionMap(io.ComfyNode):
@@ -126,9 +144,65 @@ class OpenBioSingleCellDPT(io.ComfyNode):
             outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
         )
 
+
+class OpenBioSingleCellPAGAPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellPAGAPlot",
+            display_name="PAGA Plot",
+            category=CATEGORY,
+            description="Read-only circular layout of the verified stored PAGA abstraction.",
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.Float.Input("min_connectivity", default=0.0, min=0.0, max=1.0, step=0.05),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
+class OpenBioSingleCellDiffusionSpectrumPlot(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellDiffusionSpectrumPlot",
+            display_name="Diffusion Spectrum Plot",
+            category=CATEGORY,
+            description="Read-only component spectrum from the graph-bound Diffusion Map bundle.",
+            inputs=[AnnDataType.Input("adata")],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
+class OpenBioSingleCellDPTGeneTrendPlot(io.ComfyNode):
+    EXPRESSION_SOURCE = _MARKER_PLOT_SPEC
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellDPTGeneTrendPlot",
+            display_name="DPT Gene Trend Plot",
+            category=CATEGORY,
+            description=(
+                "Read-only binned expression summaries along verified root-dependent diffusion pseudotime."
+            ),
+            inputs=[
+                AnnDataType.Input("adata"),
+                io.String.Input("genes", default=""),
+                cls.EXPRESSION_SOURCE.input(),
+                io.Int.Input("n_bins", default=20, min=3, max=100),
+            ],
+            outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
+        )
+
+
 TRAJECTORY_NODE_CLASSES = [
     OpenBioSingleCellCellCycleScore,
+    OpenBioSingleCellCellCycleScorePlot,
     OpenBioSingleCellDiffusionMap,
     OpenBioSingleCellPAGA,
     OpenBioSingleCellDPT,
+    OpenBioSingleCellPAGAPlot,
+    OpenBioSingleCellDiffusionSpectrumPlot,
+    OpenBioSingleCellDPTGeneTrendPlot,
 ]

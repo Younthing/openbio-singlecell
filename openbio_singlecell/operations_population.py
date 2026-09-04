@@ -10,7 +10,9 @@ from .augur import (
     AUGUR_VIEWS,
     AugurResult,
     augur_code,
+    augur_plot_code,
     augur_results_code,
+    render_augur_plot,
     run_augur_artifact,
     select_augur_view,
 )
@@ -158,6 +160,46 @@ def augur_results_legacy_owned(result: AugurResult, *, view: str = "priorities")
     return _augur_view_results(table, summary, view=view, started_at=started_at)
 
 
+def augur_plot_owned(
+    tables: dict[str, Any],
+    parent_summary: dict[str, Any],
+    metadata: dict[str, Any],
+    *,
+    view: str,
+    top_n: int,
+    max_plot_rows: int,
+    max_image_pixels: int,
+) -> tuple[Any, Any, str]:
+    started_at = time.perf_counter()
+    png, summary = render_augur_plot(
+        tables,
+        parent_summary,
+        metadata,
+        view=view,
+        top_n=top_n,
+        max_plot_rows=max_plot_rows,
+        max_image_pixels=max_image_pixels,
+    )
+    common = {
+        "operation": "augur_plot",
+        "parameters": summary["parameters"],
+        "description": summary["results"],
+        "warnings": summary["warnings"],
+        "input_cells": int(parent_summary["key_results"]["input_cells"]),
+        "input_genes": int(parent_summary["key_results"]["selected_source_features"]),
+        "started_at": started_at,
+    }
+    plot = make_plot_result(png=png, title=f"Augur {view.replace('_', ' ')}", **common)
+    report = make_summary_result(summary=summary, title="Augur plot summary", **common)
+    code = augur_plot_code(
+        view=view,
+        top_n=top_n,
+        max_plot_rows=max_plot_rows,
+        max_image_pixels=max_image_pixels,
+    )
+    return plot, report, code
+
+
 def population_correlation_owned(
     adata: Any,
     *,
@@ -283,6 +325,21 @@ def augur_results(
     return analysis_outputs(report, code, write_table_output(context, result, kind=TABLE_KIND))
 
 
+@register_operation("openbio.node.augurplot")
+def augur_plot(
+    context: OperationContext, inputs: dict[str, JSONValue], parameters: dict[str, JSONValue]
+) -> list[JSONValue]:
+    require_input_names(inputs, {"result"}, operation="Augur Plot")
+    require_parameters(
+        parameters,
+        {"view", "top_n", "max_plot_rows", "max_image_pixels"},
+        operation="Augur Plot",
+    )
+    root = require_artifact_input(inputs, "result", kind=AUGUR_ARTIFACT_TYPE, codec=AUGUR_CODEC)
+    plot, report, code = augur_plot_owned(*read_augur(root), **parameters)
+    return analysis_outputs(report, code, write_plot_output(context, plot, kind=PLOT_KIND))
+
+
 @register_operation("openbio.node.celltypecorrelation")
 def population_centroid_correlation(
     context: OperationContext, inputs: dict[str, JSONValue], parameters: dict[str, JSONValue]
@@ -318,6 +375,8 @@ __all__ = [
     "augur",
     "augur_artifact_owned",
     "augur_legacy_owned",
+    "augur_plot",
+    "augur_plot_owned",
     "augur_results",
     "augur_results_artifact_owned",
     "augur_results_legacy_owned",

@@ -63,7 +63,7 @@ def test_sample_composition_plot_schema():
 
     assert schema.node_id == "OpenBioSingleCellSampleCompositionPlot"
     assert schema.display_name == "Sample Composition Plot"
-    assert schema.category == "openbio/single-cell/visualization"
+    assert schema.category == "openbio/single-cell/differential-abundance"
     assert [item.id for item in schema.inputs] == ["table", "value"]
     assert schema.inputs[0].io_type == TableResultType.io_type
     assert schema.inputs[1].options == ["proportion", "cell_count"]

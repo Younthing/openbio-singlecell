@@ -5,24 +5,9 @@ import textwrap
 import threading
 from typing import Any
 
-MILO_TABLE_COLUMNS = [
-    "neighborhood_id",
-    "index_cell",
-    "neighborhood_size",
-    "kth_distance",
-    "reference_condition",
-    "comparison_condition",
-    "log2_fold_change",
-    "log_counts_per_million",
-    "quasi_likelihood_f",
-    "p_value",
-    "p_adjusted_bh",
-    "spatial_fdr",
-    "majority_annotation",
-    "majority_annotation_fraction",
-    "reported_annotation",
-    "is_mixed",
-]
+from .milo_result import MILO_RESULT_COLUMNS
+
+MILO_TABLE_COLUMNS = list(MILO_RESULT_COLUMNS)
 
 _MILO_RNG_LOCK = threading.RLock()
 
@@ -1290,8 +1275,57 @@ def _standalone_milo_differential_abundance_impl(
         ],
         "software_versions": software_versions,
     }
+    row_memberships = np.diff(membership.indptr)
+    overlap_pair_contributions = sum(int(value) * (int(value) - 1) // 2 for value in row_memberships)
+    membership_bytes = int(membership.data.nbytes + membership.indices.nbytes + membership.indptr.nbytes)
+    overlap_working_bytes = membership_bytes * 3 + overlap_pair_contributions * 64
+    # ponytail: fixed artifact bound; make this a node parameter only if larger Milo graphs become a demonstrated need.
+    maximum_overlap_pair_contributions = 10_000_000
+    maximum_overlap_working_bytes = 2 * 1024**3
+    if overlap_pair_contributions > maximum_overlap_pair_contributions:
+        raise MemoryError(
+            "Milo overlap-graph pair contributions exceed the fixed artifact limit: "
+            f"{overlap_pair_contributions:,} > {maximum_overlap_pair_contributions:,}."
+        )
+    if overlap_working_bytes > maximum_overlap_working_bytes:
+        raise MemoryError(
+            "Milo overlap-graph estimated working memory exceeds the fixed artifact limit: "
+            f"{overlap_working_bytes / 1024**3:.3f} GiB > "
+            f"{maximum_overlap_working_bytes / 1024**3:.3f} GiB."
+        )
+    neighborhood_graph = (membership.T @ membership).tocsr()
+    neighborhood_graph.setdiag(0)
+    neighborhood_graph.eliminate_zeros()
+    neighborhood_graph.sort_indices()
+    summary["graph_evidence"]["overlap_graph_preflight"] = {
+        "pair_contributions": overlap_pair_contributions,
+        "estimated_working_bytes": overlap_working_bytes,
+        "maximum_pair_contributions": maximum_overlap_pair_contributions,
+        "maximum_working_bytes": maximum_overlap_working_bytes,
+    }
+    evidence = {
+        "membership": membership,
+        "graph": neighborhood_graph,
+        "representative_coordinates": np.asarray(
+            dense_array(representation[refined_positions, :2]),
+            dtype=float,
+        ),
+        "observation_names": list(selected_obs_names),
+        "neighborhood_names": list(neighborhood_ids),
+        "representation_key": representation_key,
+        "representation_sha256": representation_sha256,
+        "condition_key": condition_key,
+        "annotation_key": annotation_key,
+        "annotation_status": annotation_status,
+        "n_neighbors": n_neighbors,
+        "neighborhood_proportion": neighborhood_proportion,
+        "mixed_annotation_threshold": mixed_annotation_threshold,
+        "spatial_fdr_threshold": spatial_fdr_threshold,
+        "min_abs_log2_fold_change": min_abs_log2_fold_change,
+        "random_seed": random_seed,
+    }
     json.dumps(summary, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True)
-    return table, summary
+    return table, summary, evidence
 
 
 def _standalone_milo_differential_abundance(adata, **parameters):
@@ -1330,7 +1364,7 @@ def run_milo_differential_abundance(
     min_abs_log2_fold_change: float = 0.0,
     random_seed: int = 123,
     openbio_version: str = "unknown",
-) -> tuple[Any, dict[str, Any]]:
+) -> tuple[Any, dict[str, Any], dict[str, Any]]:
     return _standalone_milo_differential_abundance(
         adata,
         sample_key=sample_key,

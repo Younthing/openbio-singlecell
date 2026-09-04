@@ -170,9 +170,17 @@ def test_scvi_integration_publishes_the_trained_native_model(adata, science, mon
             self.train_parameters = None
             self.n_latent = kwargs["n_latent"]
             self.latent_calls = []
+            epoch = science.pd.Index([0, 1, 2], name="epoch")
             self.history = {
-                "elbo_train": science.np.asarray([12.0, 8.0, 6.0]),
-                "elbo_validation": science.np.asarray([13.0, 9.0, 7.0]),
+                key: science.pd.DataFrame({key: values}, index=epoch.copy())
+                for key, values in {
+                    "elbo_train": [12.0, 8.0, 6.0],
+                    "elbo_validation": [13.0, 9.0, 7.0],
+                    "reconstruction_loss_train": [10.0, 7.0, 5.0],
+                    "reconstruction_loss_validation": [11.0, 8.0, 6.0],
+                    "kl_local_train": [2.0, 1.0, 1.0],
+                    "kl_local_validation": [2.0, 1.0, 1.0],
+                }.items()
             }
             self.train_indices = list(range(5))
             self.validation_indices = [5]
@@ -225,7 +233,7 @@ def test_scvi_integration_publishes_the_trained_native_model(adata, science, mon
     assert model_artifact == {
         "kind": "OPENBIO_SCVI_MODEL",
         "codec": "scvi-native-directory",
-        "members": ("model.pt",),
+        "members": ("model.pt", "openbio-training-diagnostics.json"),
     }
     assert raw_model.adata is not output
     assert list(raw_model.adata.obs_names) == list(output.obs_names)
@@ -286,7 +294,18 @@ def test_scvi_integration_restores_gradients_inside_comfyui_inference_mode(adata
             self.is_trained = False
             self.n_latent = kwargs["n_latent"]
             self.weight = torch.nn.Parameter(torch.ones((1, registered_adata.n_vars)))
-            self.history = {"elbo_train": science.np.asarray([2.0, 1.0])}
+            epoch = science.pd.Index([0, 1], name="epoch")
+            self.history = {
+                key: science.pd.DataFrame({key: values}, index=epoch.copy())
+                for key, values in {
+                    "elbo_train": [2.0, 1.0],
+                    "reconstruction_loss_train": [1.5, 0.8],
+                    "kl_local_train": [0.5, 0.2],
+                }.items()
+            }
+            self.train_indices = science.np.arange(registered_adata.n_obs)
+            self.validation_indices = science.np.asarray([], dtype=int)
+            self.test_indices = science.np.asarray([], dtype=int)
             self.device = "cpu"
             type(self).instances.append(self)
 
@@ -365,22 +384,35 @@ def test_scvi_model_snapshots_training_parameters(adata, science):
 def test_scvi_model_exposes_selected_source_without_inferred_state(adata, science):
     model = SCVIModel(FakeTrainedSCVI(adata, science), adata, current_training_parameters())
 
-    assert SCVI_MODEL_ARTIFACT_SCHEMA == "openbio-singlecell/scvi-model/v3"
+    assert SCVI_MODEL_ARTIFACT_SCHEMA == "openbio-singlecell/scvi-model/v4"
     assert model.training_parameters == {"source": "X"}
     assert model.evidence["registered_count_source"] == "X"
     assert {"registered_count_state", "registered_count_state_evidence"}.isdisjoint(model.evidence)
 
 
 def test_scvi_model_snapshots_training_diagnostics(adata, science):
-    diagnostics = {"actual_epochs": 2, "metrics": {"elbo_train": {"last": 1.0}}}
+    diagnostics = {
+        "schema_version": "openbio-singlecell/scvi-training-diagnostics/v1",
+        "actual_epochs": 2,
+        "metrics": {
+            metric: {"records": [{"epoch": 0, "value": 2.0}, {"epoch": 1, "value": 1.0}]}
+            for metric in ("elbo_train", "reconstruction_loss_train", "kl_local_train")
+        },
+        "train_cells": adata.n_obs,
+        "validation_cells": 0,
+        "test_cells": 0,
+        "training_observations": adata.n_obs,
+        "fitted_features": adata.n_vars,
+        "device": "cpu",
+    }
     model = SCVIModel(
         FakeTrainedSCVI(adata, science),
         adata,
         current_training_parameters(),
         diagnostics=diagnostics,
     )
-    diagnostics["metrics"]["elbo_train"]["last"] = 999.0
+    diagnostics["metrics"]["elbo_train"]["records"][-1]["value"] = 999.0
     visible = model.diagnostics
-    visible["metrics"]["elbo_train"]["last"] = -1.0
+    visible["metrics"]["elbo_train"]["records"][-1]["value"] = -1.0
 
-    assert model.diagnostics["metrics"]["elbo_train"]["last"] == 1.0
+    assert model.diagnostics["metrics"]["elbo_train"]["records"][-1]["value"] == 1.0

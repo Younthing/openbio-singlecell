@@ -21,12 +21,14 @@ if TYPE_CHECKING:
 
 
 AUGUR_ARTIFACT_TYPE = "OPENBIO_AUGUR_RESULT"
-AUGUR_ARTIFACT_SCHEMA_VERSION = 1
+AUGUR_ARTIFACT_SCHEMA_VERSION = 2
 AUGUR_PRODUCER_NODE_ID = "OpenBioSingleCellAugur"
 AUGUR_RESULTS_NODE_ID = "OpenBioSingleCellAugurResults"
-AUGUR_PRODUCER_SCHEMA = "openbio-singlecell/augur-result/v1"
-AUGUR_SUMMARY_SCHEMA = "openbio-singlecell/augur-summary/v1"
-AUGUR_VIEWS = ("priorities", "cross_validation", "feature_importance")
+AUGUR_PLOT_NODE_ID = "OpenBioSingleCellAugurPlot"
+AUGUR_PRODUCER_SCHEMA = "openbio-singlecell/augur-result/v2"
+AUGUR_SUMMARY_SCHEMA = "openbio-singlecell/augur-summary/v2"
+AUGUR_VIEWS = ("priorities", "cross_validation", "feature_importance", "predictions")
+AUGUR_PLOT_VIEWS = ("priorities", "cross_validation", "feature_importance", "roc")
 AUGUR_CLASSIFIERS = ("random_forest_classifier", "logistic_regression_classifier")
 
 PRIORITY_COLUMNS = (
@@ -45,6 +47,14 @@ PRIORITY_COLUMNS = (
 )
 CROSS_VALIDATION_COLUMNS = ("population", "subsample", "fold", "auc")
 FEATURE_IMPORTANCE_COLUMNS = ("population", "subsample", "fold", "gene", "importance")
+PREDICTION_COLUMNS = (
+    "population",
+    "subsample",
+    "fold",
+    "observation",
+    "true_label",
+    "prediction_score",
+)
 
 _PRIORITY_FLOAT_COLUMNS = (
     "mean_augur_score",
@@ -204,6 +214,7 @@ def _frame_fingerprint(frame: Any, *, view: str, numpy: Any, pandas: Any) -> str
         "priorities": PRIORITY_COLUMNS,
         "cross_validation": CROSS_VALIDATION_COLUMNS,
         "feature_importance": FEATURE_IMPORTANCE_COLUMNS,
+        "predictions": PREDICTION_COLUMNS,
     }[view]
     if tuple(frame.columns) != expected:
         raise ValueError(
@@ -214,7 +225,7 @@ def _frame_fingerprint(frame: Any, *, view: str, numpy: Any, pandas: Any) -> str
     digest.update(int(len(frame)).to_bytes(8, "little", signed=False))
     for column in expected:
         _append_string(digest, column)
-        if column in {"population", "gene"}:
+        if column in {"population", "gene", "observation"}:
             for value in frame[column].tolist():
                 if not isinstance(value, str) or not value or value != value.strip():
                     raise ValueError(f"Augur {view} column {column!r} contains a noncanonical identifier.")
@@ -227,6 +238,7 @@ def _frame_fingerprint(frame: Any, *, view: str, numpy: Any, pandas: Any) -> str
             "samples_treatment",
             "subsample",
             "fold",
+            "true_label",
         }:
             if not pandas.api.types.is_integer_dtype(frame[column].dtype):
                 raise TypeError(f"Augur {view} column {column!r} must use an integer dtype.")
@@ -274,6 +286,7 @@ def _validate_canonical_tables(
     priorities = tables["priorities"]
     cross_validation = tables["cross_validation"]
     feature_importance = tables["feature_importance"]
+    predictions = tables["predictions"]
     fingerprints = {
         view: _frame_fingerprint(tables[view], view=view, numpy=numpy, pandas=pandas) for view in AUGUR_VIEWS
     }
@@ -361,6 +374,71 @@ def _validate_canonical_tables(
             raise ValueError("Random-forest Augur feature importances must sum to one within every fitted fold.")
     elif classifier != "logistic_regression_classifier":
         raise ValueError(f"Augur artifact contains unsupported classifier {classifier!r}.")
+
+    if predictions.empty:
+        raise ValueError("Augur prediction-evidence table cannot be empty.")
+    prediction_keys = ["population", "subsample", "fold", "observation"]
+    if predictions.duplicated(prediction_keys).any():
+        raise ValueError("Augur prediction-evidence keys must be unique.")
+    if set(predictions["population"]) != set(populations):
+        raise ValueError("Augur prediction-evidence populations differ from priorities.")
+    if bool((predictions.groupby("observation", observed=True)["population"].nunique() > 1).any()):
+        raise ValueError("An Augur prediction observation cannot belong to more than one population.")
+    prediction_groups = set(
+        predictions[["population", "subsample", "fold"]].itertuples(index=False, name=None)
+    )
+    if prediction_groups != expected_cv_keys:
+        raise ValueError("Augur prediction evidence does not cover every cross-validation fold.")
+    expected_prediction_order = sorted(
+        predictions[prediction_keys].itertuples(index=False, name=None)
+    )
+    if list(predictions[prediction_keys].itertuples(index=False, name=None)) != expected_prediction_order:
+        raise ValueError("Augur prediction-evidence rows are not in canonical order.")
+    if bool((~predictions["true_label"].isin([0, 1])).any()):
+        raise ValueError("Augur prediction true labels must be binary integers 0 or 1.")
+    prediction_scores = predictions["prediction_score"].to_numpy(dtype=float)
+    if bool(((prediction_scores < 0.0) | (prediction_scores > 1.0)).any()):
+        raise ValueError("Augur prediction scores must lie in [0, 1].")
+    subsample_size = parameters.get("subsample_size")
+    if isinstance(subsample_size, bool) or not isinstance(subsample_size, int) or subsample_size < 2:
+        raise ValueError("Augur artifact parameters contain an invalid subsample_size.")
+    for (population, subsample), group in predictions.groupby(
+        ["population", "subsample"], observed=True, sort=False
+    ):
+        if len(group) != 2 * subsample_size or group["observation"].duplicated().any():
+            raise ValueError(
+                "Augur prediction evidence must cover each balanced subsample observation exactly once."
+            )
+        label_counts = group["true_label"].value_counts().to_dict()
+        if label_counts != {0: subsample_size, 1: subsample_size}:
+            raise ValueError(
+                f"Augur prediction evidence is not balanced for population {population!r}, "
+                f"subsample {int(subsample)}."
+            )
+    auc_by_key = {
+        key: float(value)
+        for key, value in cross_validation.set_index(["population", "subsample", "fold"])["auc"].items()
+    }
+    for key, group in predictions.groupby(
+        ["population", "subsample", "fold"], observed=True, sort=False
+    ):
+        labels = group["true_label"].to_numpy(dtype=int)
+        scores = group["prediction_score"].to_numpy(dtype=float)
+        positives = labels == 1
+        positive_count = int(positives.sum())
+        negative_count = int((~positives).sum())
+        if not positive_count or not negative_count:
+            raise ValueError("Every Augur prediction fold must contain both true labels.")
+        ranks = pandas.Series(scores).rank(method="average").to_numpy(dtype=float)
+        observed_auc = float(
+            (ranks[positives].sum() - positive_count * (positive_count + 1) / 2)
+            / (positive_count * negative_count)
+        )
+        if not math.isclose(observed_auc, auc_by_key[key], rel_tol=1e-10, abs_tol=1e-12):
+            raise ValueError(
+                "Augur prediction evidence recomputed AUC does not match cross-validation AUC "
+                f"for population/subsample/fold {key!r}."
+            )
     return fingerprints
 
 
@@ -544,6 +622,27 @@ def validate_augur_portable(
     key_results = summary["key_results"]
     if not isinstance(key_results, Mapping):
         raise ValueError("Augur artifact summary key_results must be a mapping.")
+    encoding = key_results.get("prediction_label_encoding")
+    expected_encoding_keys = {
+        "negative_label",
+        "negative_condition",
+        "positive_label",
+        "positive_condition",
+    }
+    if not isinstance(encoding, Mapping) or set(encoding) != expected_encoding_keys:
+        raise ValueError("Augur artifact prediction label encoding is invalid.")
+    if encoding["negative_label"] != 0 or encoding["positive_label"] != 1:
+        raise ValueError("Augur artifact prediction labels must be encoded as 0 and 1.")
+    if not all(
+        isinstance(encoding[key], str) and encoding[key]
+        for key in ("negative_condition", "positive_condition")
+    ):
+        raise ValueError("Augur artifact prediction conditions must be nonempty strings.")
+    if {encoding["negative_condition"], encoding["positive_condition"]} != {
+        parameters.get("control"),
+        parameters.get("treatment"),
+    }:
+        raise ValueError("Augur artifact prediction label encoding differs from its selected Conditions.")
     if key_results.get("table_fingerprints_sha256") != table_fingerprints:
         raise ValueError("Augur summary and artifact table fingerprints disagree.")
     analysis_fingerprint = key_results.get("analysis_fingerprint_sha256")
@@ -642,11 +741,20 @@ def _validate_pertpy_1_3_interface(pertpy_module: Any) -> tuple[Any, str]:
             "random_state",
             "zero_division",
         ),
+        "run_cross_validation": (
+            "self",
+            "subsample",
+            "subsample_idx",
+            "folds",
+            "random_state",
+            "zero_division",
+        ),
     }
     callables = {
         "constructor": augur_class,
         "load": getattr(augur_class, "load", None),
         "predict": getattr(augur_class, "predict", None),
+        "run_cross_validation": getattr(augur_class, "run_cross_validation", None),
     }
     for name, callable_value in callables.items():
         if not callable(callable_value):
@@ -660,6 +768,78 @@ def _validate_pertpy_1_3_interface(pertpy_module: Any) -> tuple[Any, str]:
                 f"Pertpy {version} Augur.{name} interface is incompatible; expected={expected[name]}, observed={observed}."
             )
     return augur_class, version
+
+
+def _with_prediction_evidence(
+    results: Any,
+    subsample: Any,
+    *,
+    folds: int,
+    random_state: int | None,
+) -> dict[str, Any]:
+    import numpy as np
+    from sklearn.model_selection import StratifiedKFold
+
+    if not isinstance(results, Mapping):
+        raise RuntimeError("Pertpy Augur run_cross_validation returned a non-mapping result.")
+    estimators = results.get("estimator")
+    if not isinstance(estimators, Sequence) or len(estimators) != folds:
+        raise RuntimeError("Pertpy Augur did not retain one fitted estimator per fold.")
+    matrix = subsample.X.toarray() if hasattr(subsample.X, "toarray") else np.asarray(subsample.X)
+    labels = np.asarray(subsample.obs["y_"])
+    splitter = StratifiedKFold(n_splits=folds, random_state=random_state, shuffle=True)
+    evidence = []
+    for fold, ((_, test_positions), estimator) in enumerate(
+        zip(splitter.split(matrix, labels), estimators, strict=True)
+    ):
+        classes = np.asarray(getattr(estimator, "classes_", []))
+        positive_columns = np.flatnonzero(classes == 1)
+        if classes.size != 2 or positive_columns.size != 1 or not callable(getattr(estimator, "predict_proba", None)):
+            raise RuntimeError("Pertpy Augur fitted classifier cannot provide binary fold probabilities.")
+        probabilities = np.asarray(estimator.predict_proba(matrix[test_positions]), dtype=float)
+        if probabilities.shape != (len(test_positions), 2):
+            raise RuntimeError("Pertpy Augur fitted classifier returned malformed fold probabilities.")
+        scores = probabilities[:, int(positive_columns[0])]
+        evidence.extend(
+            {
+                "fold": fold,
+                "observation": str(subsample.obs_names[position]),
+                "true_label": int(labels[position]),
+                "prediction_score": float(score),
+            }
+            for position, score in zip(test_positions, scores, strict=True)
+        )
+    owned = dict(results)
+    owned["openbio_prediction_evidence"] = evidence
+    return owned
+
+
+def _prediction_retaining_augur_class(base_class: Any) -> Any:
+    class PredictionRetainingAugur(base_class):
+        def run_cross_validation(
+            self: Any,
+            subsample: Any,
+            *,
+            subsample_idx: int,
+            folds: int,
+            random_state: int | None,
+            zero_division: int | str,
+        ) -> dict[str, Any]:
+            results = super().run_cross_validation(
+                subsample,
+                subsample_idx=subsample_idx,
+                folds=folds,
+                random_state=random_state,
+                zero_division=zero_division,
+            )
+            return _with_prediction_evidence(
+                results,
+                subsample,
+                folds=folds,
+                random_state=random_state,
+            )
+
+    return PredictionRetainingAugur
 
 
 def _validate_integer(value: Any, *, name: str, minimum: int) -> int:
@@ -702,6 +882,7 @@ def _canonicalize_backend_results(
     eligible_populations: Sequence[str],
     support: Mapping[str, Mapping[str, int]],
     n_subsamples: int,
+    subsample_size: int,
     folds: int,
     classifier: str,
     max_result_rows: int,
@@ -823,10 +1004,58 @@ def _canonicalize_backend_results(
         ["population", "subsample", "fold", "gene"], kind="mergesort", ignore_index=True
     )
 
+    prediction_rows = []
+    for population in eligible_populations:
+        population_results = backend_results[population]
+        if not isinstance(population_results, Sequence) or isinstance(population_results, str | bytes):
+            raise RuntimeError(f"Pertpy Augur fold results for population {population!r} must be a sequence.")
+        if len(population_results) != n_subsamples:
+            raise RuntimeError(
+                f"Pertpy Augur fold results for population {population!r} do not cover every subsample."
+            )
+        for subsample, fold_results in enumerate(population_results):
+            if not isinstance(fold_results, Mapping):
+                raise RuntimeError("Pertpy Augur fold result must be a mapping.")
+            evidence = fold_results.get("openbio_prediction_evidence")
+            if not isinstance(evidence, Sequence) or isinstance(evidence, str | bytes):
+                raise RuntimeError("Pertpy Augur did not retain fold-level prediction evidence.")
+            for row in evidence:
+                if not isinstance(row, Mapping) or set(row) != {
+                    "fold",
+                    "observation",
+                    "true_label",
+                    "prediction_score",
+                }:
+                    raise RuntimeError("Pertpy Augur prediction-evidence schema changed.")
+                prediction_rows.append({"population": population, "subsample": subsample, **row})
+    predictions = pandas.DataFrame(prediction_rows, columns=PREDICTION_COLUMNS)
+    prediction_populations, _ = _canonical_labels(
+        predictions["population"], label="backend prediction population", pandas=pandas
+    )
+    prediction_observations, _ = _canonical_labels(
+        predictions["observation"], label="backend prediction observation", pandas=pandas
+    )
+    predictions["population"] = prediction_populations
+    predictions["observation"] = prediction_observations
+    for column in ("subsample", "fold", "true_label"):
+        predictions[column] = _backend_integer_column(
+            predictions[column], label=f"prediction-evidence column {column!r}", numpy=numpy, pandas=pandas
+        )
+    predictions["prediction_score"] = _backend_float_column(
+        predictions["prediction_score"],
+        label="prediction-evidence prediction_score",
+        numpy=numpy,
+        pandas=pandas,
+    )
+    predictions = predictions.sort_values(
+        ["population", "subsample", "fold", "observation"], kind="mergesort", ignore_index=True
+    )
+
     tables = {
         "priorities": priority,
         "cross_validation": cross_validation,
         "feature_importance": feature_importance,
+        "predictions": predictions,
     }
     total_rows = sum(len(table) for table in tables.values())
     if total_rows > max_result_rows:
@@ -842,7 +1071,12 @@ def _canonicalize_backend_results(
         )
     _validate_canonical_tables(
         tables,
-        parameters={"n_subsamples": n_subsamples, "folds": folds, "classifier": classifier},
+        parameters={
+            "n_subsamples": n_subsamples,
+            "subsample_size": subsample_size,
+            "folds": folds,
+            "classifier": classifier,
+        },
         numpy=numpy,
         pandas=pandas,
     )
@@ -1191,13 +1425,19 @@ def _run_augur_artifact_owned(
     expected_cross_rows = len(eligible) * n_subsamples * folds
     estimated_features_per_fold = max(1, math.ceil(int(source_var.shape[0]) * 0.25))
     estimated_feature_rows = expected_cross_rows * estimated_features_per_fold
-    estimated_total_rows = len(eligible) + expected_cross_rows + estimated_feature_rows
+    estimated_prediction_rows = len(eligible) * n_subsamples * 2 * subsample_size
+    estimated_total_rows = len(eligible) + expected_cross_rows + estimated_feature_rows + estimated_prediction_rows
     if estimated_total_rows > max_result_rows:
         raise ValueError(
             f"Augur estimated result size is {estimated_total_rows:,} rows, exceeding "
             f"max_result_rows={max_result_rows:,}; reduce populations/subsamples/folds or raise the guard."
         )
-    estimated_bytes = len(eligible) * 512 + expected_cross_rows * 96 + estimated_feature_rows * 160
+    estimated_bytes = (
+        len(eligible) * 512
+        + expected_cross_rows * 96
+        + estimated_feature_rows * 160
+        + estimated_prediction_rows * 192
+    )
     if estimated_bytes > int(max_result_mib * 1024 * 1024):
         raise MemoryError(
             f"Augur estimated canonical result memory is {estimated_bytes / (1024 * 1024):,.1f} MiB, "
@@ -1300,7 +1540,7 @@ def _run_augur_artifact_owned(
     pertpy_module = _require_pertpy() if pertpy_module is None else pertpy_module
     augur_class, pertpy_version = _validate_pertpy_1_3_interface(pertpy_module)
     try:
-        augur = augur_class(classifier, random_state=random_seed)
+        augur = _prediction_retaining_augur_class(augur_class)(classifier, random_state=random_seed)
     except Exception as exc:
         raise RuntimeError(f"Pertpy 1.3.0 Augur initialization failed ({type(exc).__name__}: {exc}).") from exc
     with python_warnings.catch_warnings(record=True) as caught:
@@ -1313,6 +1553,25 @@ def _run_augur_artifact_owned(
                 condition_label=control,
                 treatment_label=treatment,
             )
+            if not isinstance(loaded, AnnData) or not {"label", "y_"}.issubset(loaded.obs):
+                raise RuntimeError("Pertpy Augur load did not expose canonical binary label encoding.")
+            encoded_conditions: dict[int, str] = {}
+            for condition, encoded in zip(loaded.obs["label"], loaded.obs["y_"], strict=True):
+                if isinstance(encoded, bool) or not isinstance(encoded, int | np.integer) or int(encoded) not in {0, 1}:
+                    raise RuntimeError("Pertpy Augur load returned a non-binary label encoding.")
+                code = int(encoded)
+                condition = str(condition)
+                if code in encoded_conditions and encoded_conditions[code] != condition:
+                    raise RuntimeError("Pertpy Augur load returned an inconsistent label encoding.")
+                encoded_conditions[code] = condition
+            if set(encoded_conditions) != {0, 1} or set(encoded_conditions.values()) != {control, treatment}:
+                raise RuntimeError("Pertpy Augur load label encoding differs from the selected Conditions.")
+            prediction_label_encoding = {
+                "negative_label": 0,
+                "negative_condition": encoded_conditions[0],
+                "positive_label": 1,
+                "positive_condition": encoded_conditions[1],
+            }
             updated, backend_results = augur.predict(
                 loaded,
                 n_subsamples=n_subsamples,
@@ -1339,6 +1598,7 @@ def _run_augur_artifact_owned(
         eligible_populations=eligible,
         support=support,
         n_subsamples=n_subsamples,
+        subsample_size=subsample_size,
         folds=folds,
         classifier=classifier,
         max_result_rows=max_result_rows,
@@ -1507,6 +1767,8 @@ def _run_augur_artifact_owned(
             "not gate the cell-level calculation. Populations with sufficient Pertpy cell support were "
             f"prioritized with Pertpy {pertpy_version} Augur {classifier}, {n_subsamples} balanced cell "
             f"subsamples of {subsample_size} cells per Condition, and {folds}-fold cell-level cross-validation. "
+            "True labels and positive-class probabilities from each fitted test fold were retained as Diagnostic "
+            "evidence and checked against the reported fold AUC. "
             "Original Augur variance-feature selection used feature_perc=0.5, var_quantile=0.5, span=0.75, "
             "and filter_negative_residuals=False."
         ),
@@ -1533,6 +1795,8 @@ def _run_augur_artifact_owned(
             "cross_validation_rows": len(tables["cross_validation"]),
             "cross_validation_auc_distribution": cross_validation_auc_distribution,
             "feature_importance_rows": len(tables["feature_importance"]),
+            "prediction_evidence_rows": len(tables["predictions"]),
+            "prediction_label_encoding": prediction_label_encoding,
             "sample_audit": sample_audit,
             "technical_batch_audit": batch_audit,
             "annotation_status": annotation_status,
@@ -1559,6 +1823,7 @@ def _run_augur_artifact_owned(
             "Sample support and batch audits improve reviewability but do not make this a replicate-aware Condition analysis.",
             "Cell abundance, library properties, donor composition, population labeling, and Technical batch can influence classifier performance.",
             "Priorities and feature importance depend on the classifier, random feature subsets, fold assignment, and Pertpy 1.3.0 implementation.",
+            "Prediction rows are out-of-fold within each subsample; one cell can appear again in another subsample.",
             "The selected expression matrix is structurally validated; source choice remains part of the workflow.",
         ],
     }
@@ -1611,6 +1876,286 @@ def select_augur_view(result: AugurResult, *, view: str) -> tuple[DataFrame, dic
     return selected, summary
 
 
+def render_augur_plot(
+    tables: Mapping[str, DataFrame],
+    parent_summary: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+    *,
+    view: str,
+    top_n: int,
+    max_plot_rows: int,
+    max_image_pixels: int,
+) -> tuple[bytes, dict[str, Any]]:
+    import io
+
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    if view not in AUGUR_PLOT_VIEWS:
+        raise ValueError(f"Unsupported Augur plot view: {view!r}.")
+    for value, label in (
+        (top_n, "top_n"),
+        (max_plot_rows, "max_plot_rows"),
+        (max_image_pixels, "max_image_pixels"),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"Augur plot {label} must be an integer >= 1.")
+    if top_n > 200:
+        raise ValueError("Augur plot top_n cannot exceed 200.")
+    owned_tables, owned_parent, owned_metadata = validate_augur_portable(tables, parent_summary, metadata)
+    source_view = "predictions" if view == "roc" else view
+    source = owned_tables[source_view]
+    if len(source) > max_plot_rows:
+        raise ValueError(
+            f"Augur {source_view} plot evidence has {len(source):,} rows, exceeding max_plot_rows={max_plot_rows:,}."
+        )
+    width, height, dpi = 10.0, 6.0, 120
+    nominal_pixels = int(width * dpi) * int(height * dpi)
+    if nominal_pixels > max_image_pixels:
+        raise MemoryError(
+            f"Augur plot requires {nominal_pixels:,} nominal pixels, exceeding max_image_pixels={max_image_pixels:,}."
+        )
+    figure = Figure(figsize=(width, height))
+    axis = figure.subplots()
+
+    def plot_label(value: str) -> str:
+        return value if len(value) <= 60 else f"{value[:57]}..."
+    displayed = min(top_n, len(owned_tables["priorities"]))
+    available = len(owned_tables["priorities"])
+    displayed_kind = "ranked populations"
+    roc_curve_auc: dict[str, float] = {}
+    if view == "priorities":
+        selected = owned_tables["priorities"].head(top_n).iloc[::-1]
+        axis.barh([plot_label(value) for value in selected["population"]], selected["mean_augur_score"], color="#4C78A8")
+        axis.axvline(0.5, color="#666666", linestyle="--", linewidth=1)
+        axis.set(xlabel="Mean cross-validation AUC", ylabel="Population", xlim=(0.0, 1.02))
+        axis.set_xticks(np.linspace(0.0, 1.0, 6))
+        axis.set_title("Augur population priorities")
+    elif view == "cross_validation":
+        populations = owned_tables["priorities"].head(top_n)["population"].tolist()[::-1]
+        distributions = [
+            owned_tables["cross_validation"].loc[
+                owned_tables["cross_validation"]["population"] == population, "auc"
+            ].to_numpy(dtype=float)
+            for population in populations
+        ]
+        positions = list(range(1, len(populations) + 1))
+        boxes = axis.boxplot(distributions, positions=positions, orientation="horizontal", patch_artist=True)
+        for box in boxes["boxes"]:
+            box.set_facecolor("#72B7B2")
+        for position, values in zip(positions, distributions, strict=True):
+            offsets = np.linspace(-0.12, 0.12, len(values)) if len(values) > 1 else np.zeros(1)
+            axis.scatter(values, position + offsets, color="#1F5A85", s=16, zorder=3)
+        axis.axvline(0.5, color="#666666", linestyle="--", linewidth=1)
+        axis.set_yticks(positions, labels=[plot_label(value) for value in populations])
+        axis.set(xlabel="Fold AUC", ylabel="Population", xlim=(-0.02, 1.02))
+        axis.set_xticks(np.linspace(0.0, 1.0, 6))
+        axis.set_title("Augur cross-validation distribution")
+    elif view == "feature_importance":
+        aggregated = (
+            owned_tables["feature_importance"]
+            .groupby(["population", "gene"], observed=True, as_index=False)["importance"]
+            .mean()
+        )
+        aggregated["magnitude"] = aggregated["importance"].abs()
+        selected = aggregated.sort_values(
+            ["magnitude", "population", "gene"], ascending=[False, True, True], kind="mergesort"
+        ).head(top_n).iloc[::-1]
+        labels = [
+            plot_label(f"{population} · {gene}")
+            for population, gene in selected[["population", "gene"]].itertuples(index=False, name=None)
+        ]
+        colors = ["#4C78A8" if value >= 0 else "#E45756" for value in selected["importance"]]
+        axis.barh(labels, selected["importance"], color=colors)
+        axis.axvline(0.0, color="#666666", linewidth=1)
+        axis.set(xlabel="Mean fold importance", ylabel="Population · gene")
+        axis.set_title("Augur feature importance")
+        displayed = len(selected)
+        available = len(aggregated)
+        displayed_kind = "population-gene pairs"
+    elif view == "roc":
+        populations = owned_tables["priorities"].head(top_n)["population"].tolist()
+        mean_auc = owned_tables["priorities"].set_index("population")["mean_auc"]
+        for population in populations:
+            population_predictions = owned_tables["predictions"].loc[
+                owned_tables["predictions"]["population"] == population
+            ]
+            fold_curves = []
+            for _, fold_predictions in population_predictions.groupby(
+                ["subsample", "fold"], observed=True, sort=False
+            ):
+                labels = fold_predictions["true_label"].to_numpy(dtype=int)
+                scores = fold_predictions["prediction_score"].to_numpy(dtype=float)
+                order = np.argsort(-scores, kind="stable")
+                ordered_labels = labels[order]
+                ordered_scores = scores[order]
+                threshold_ends = np.flatnonzero(np.r_[np.diff(ordered_scores) != 0, True])
+                true_positives = np.cumsum(ordered_labels)[threshold_ends]
+                false_positives = 1 + threshold_ends - true_positives
+                fold_tpr = np.r_[0.0, true_positives / true_positives[-1]]
+                fold_fpr = np.r_[0.0, false_positives / false_positives[-1]]
+                unique_fpr = np.unique(fold_fpr)
+                fold_curves.append(
+                    (
+                        unique_fpr,
+                        np.asarray([fold_tpr[fold_fpr == value].max() for value in unique_fpr]),
+                    )
+                )
+            fpr = np.unique(np.concatenate([curve[0] for curve in fold_curves]))
+            tpr = np.mean(
+                np.vstack(
+                    [
+                        fold_tpr[np.searchsorted(fold_fpr, fpr, side="right") - 1]
+                        for fold_fpr, fold_tpr in fold_curves
+                    ]
+                ),
+                axis=0,
+            )
+            curve_auc = float(np.sum(tpr[:-1] * np.diff(fpr)))
+            if not math.isclose(curve_auc, float(mean_auc[population]), rel_tol=1e-10, abs_tol=1e-12):
+                raise RuntimeError(f"Augur mean ROC curve AUC disagrees with fold evidence for {population!r}.")
+            roc_curve_auc[population] = curve_auc
+            axis.plot(
+                np.r_[0.0, fpr],
+                np.r_[0.0, tpr],
+                linewidth=2,
+                drawstyle="steps-post",
+                label=plot_label(f"{population} (mean AUC {mean_auc[population]:.3f})"),
+            )
+        axis.plot([0.0, 1.0], [0.0, 1.0], color="#666666", linestyle="--", linewidth=1)
+        positive_condition = str(owned_parent["key_results"]["prediction_label_encoding"]["positive_condition"])
+        axis.set(
+            xlabel=f"False-positive rate (positive: {plot_label(positive_condition)})",
+            ylabel="True-positive rate",
+            xlim=(-0.02, 1.02),
+            ylim=(-0.02, 1.02),
+        )
+        axis.set_xticks(np.linspace(0.0, 1.0, 6))
+        axis.set_yticks(np.linspace(0.0, 1.0, 6))
+        axis.set_title("Augur mean fold ROC")
+        axis.legend(loc="lower right", fontsize="small")
+    else:
+        raise NotImplementedError(f"Augur plot view {view!r} is not implemented.")
+    figure.tight_layout()
+    canvas = FigureCanvasAgg(figure)
+    canvas.draw()
+    tight_bbox = figure.get_tightbbox(canvas.get_renderer())
+    tight_pixels = math.ceil((tight_bbox.width + 0.2) * dpi) * math.ceil((tight_bbox.height + 0.2) * dpi)
+    if tight_pixels > max_image_pixels:
+        raise MemoryError(
+            f"Augur plot requires {tight_pixels:,} tight-layout pixels, exceeding "
+            f"max_image_pixels={max_image_pixels:,}."
+        )
+    buffer = io.BytesIO()
+    figure.savefig(buffer, format="png", dpi=dpi, bbox_inches="tight")
+    png = buffer.getvalue()
+    truncated = available > displayed
+    warnings = [str(value) for value in owned_parent["warnings"]]
+    if truncated:
+        warnings.append(f"The plot displays {displayed} of {available} {displayed_kind}.")
+    summary = {
+        "schema_version": "openbio-singlecell/augur-plot-summary/v1",
+        "node_id": AUGUR_PLOT_NODE_ID,
+        "status": "diagnostic_visualization",
+        "methods": f"Rendered the {view!r} view from validated immutable Augur diagnostic evidence.",
+        "results": f"Displayed {displayed:,} item(s) in the Augur {view.replace('_', ' ')} view.",
+        "key_results": {
+            "view": view,
+            "displayed_items": displayed,
+            "available_items": available,
+            "displayed_kind": displayed_kind,
+            "source_rows": int(len(source)),
+            "image_pixels": tight_pixels,
+            **({"roc_curve_auc": roc_curve_auc} if view == "roc" else {}),
+            "artifact_fingerprint_sha256": owned_metadata["artifact_fingerprint_sha256"],
+        },
+        "parameters": {
+            "view": view,
+            "top_n": top_n,
+            "max_plot_rows": max_plot_rows,
+            "max_image_pixels": max_image_pixels,
+        },
+        "references": copy.deepcopy(owned_parent["references"]),
+        "software_versions": copy.deepcopy(owned_parent["software_versions"]),
+        "warnings": warnings,
+        "limitations": [
+            "This visualization is diagnostic evidence and does not add Condition-level inference.",
+            "Only the retained Augur result is plotted; the classifier analysis is not rerun.",
+            *(
+                [
+                    "The displayed ROC is the deterministic mean of fold curves; it is diagnostic, not a new "
+                    "population-level estimate."
+                ]
+                if view == "roc"
+                else []
+            ),
+        ],
+    }
+    json.dumps(summary, ensure_ascii=False, allow_nan=False)
+    return png, summary
+
+
+def augur_plot_code(*, view: str, top_n: int, max_plot_rows: int, max_image_pixels: int) -> str:
+    helpers = (
+        _canonical_json_sha256,
+        _append_string,
+        _frame_fingerprint,
+        _validate_canonical_tables,
+        _is_compatible_pertpy_1_3,
+        validate_augur_portable,
+        render_augur_plot,
+    )
+    implementation = "\n\n".join(dedent(inspect.getsource(helper)).strip() for helper in helpers)
+    return f'''from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import math
+import re
+from collections.abc import Mapping
+
+AUGUR_ARTIFACT_TYPE = {AUGUR_ARTIFACT_TYPE!r}
+AUGUR_ARTIFACT_SCHEMA_VERSION = {AUGUR_ARTIFACT_SCHEMA_VERSION!r}
+AUGUR_PRODUCER_NODE_ID = {AUGUR_PRODUCER_NODE_ID!r}
+AUGUR_PLOT_NODE_ID = {AUGUR_PLOT_NODE_ID!r}
+AUGUR_PRODUCER_SCHEMA = {AUGUR_PRODUCER_SCHEMA!r}
+AUGUR_SUMMARY_SCHEMA = {AUGUR_SUMMARY_SCHEMA!r}
+AUGUR_VIEWS = {AUGUR_VIEWS!r}
+AUGUR_PLOT_VIEWS = {AUGUR_PLOT_VIEWS!r}
+PRIORITY_COLUMNS = {PRIORITY_COLUMNS!r}
+CROSS_VALIDATION_COLUMNS = {CROSS_VALIDATION_COLUMNS!r}
+FEATURE_IMPORTANCE_COLUMNS = {FEATURE_IMPORTANCE_COLUMNS!r}
+PREDICTION_COLUMNS = {PREDICTION_COLUMNS!r}
+_PRIORITY_FLOAT_COLUMNS = {_PRIORITY_FLOAT_COLUMNS!r}
+_PRIORITY_INTEGER_COLUMNS = {_PRIORITY_INTEGER_COLUMNS!r}
+
+{implementation}
+
+
+def plot_augur_result(result):
+    """Return (PNG bytes, strict plot summary) without rerunning Augur."""
+    if getattr(result, "artifact_type", None) != AUGUR_ARTIFACT_TYPE:
+        raise TypeError("Augur Plot requires an OPENBIO_AUGUR_RESULT artifact.")
+    portable_tables = getattr(result, "portable_tables", None)
+    if not callable(portable_tables):
+        raise TypeError("Augur Plot requires portable typed artifact evidence.")
+    metadata = result.metadata
+    if result.fingerprint != metadata.get("artifact_fingerprint_sha256"):
+        raise ValueError("Augur artifact fingerprint identity is invalid.")
+    return render_augur_plot(
+        portable_tables(),
+        result.summary,
+        metadata,
+        view={view!r},
+        top_n={top_n!r},
+        max_plot_rows={max_plot_rows!r},
+        max_image_pixels={max_image_pixels!r},
+    )
+'''
+
+
 def augur_code(**parameters: Any) -> str:
     portable_parameters = dict(parameters)
     portable_parameters["source_kind"] = portable_parameters.pop("source")
@@ -1646,6 +2191,8 @@ def augur_code(**parameters: Any) -> str:
         _pertpy_version,
         _is_compatible_pertpy_1_3,
         _validate_pertpy_1_3_interface,
+        _with_prediction_evidence,
+        _prediction_retaining_augur_class,
         _validate_integer,
         _backend_float_column,
         _backend_integer_column,
@@ -1680,6 +2227,7 @@ AUGUR_CLASSIFIERS = {AUGUR_CLASSIFIERS!r}
 PRIORITY_COLUMNS = {PRIORITY_COLUMNS!r}
 CROSS_VALIDATION_COLUMNS = {CROSS_VALIDATION_COLUMNS!r}
 FEATURE_IMPORTANCE_COLUMNS = {FEATURE_IMPORTANCE_COLUMNS!r}
+PREDICTION_COLUMNS = {PREDICTION_COLUMNS!r}
 _PRIORITY_FLOAT_COLUMNS = {_PRIORITY_FLOAT_COLUMNS!r}
 _PRIORITY_INTEGER_COLUMNS = {_PRIORITY_INTEGER_COLUMNS!r}
 AUGUR_REFERENCES = {AUGUR_REFERENCES!r}
@@ -1734,6 +2282,8 @@ __all__ = [
     "AUGUR_CLASSIFIERS",
     "AUGUR_PRODUCER_NODE_ID",
     "AUGUR_PRODUCER_SCHEMA",
+    "AUGUR_PLOT_VIEWS",
+    "AUGUR_PLOT_NODE_ID",
     "AUGUR_REFERENCES",
     "AUGUR_RESULTS_NODE_ID",
     "AUGUR_SUMMARY_SCHEMA",
@@ -1741,12 +2291,15 @@ __all__ = [
     "AugurResult",
     "CROSS_VALIDATION_COLUMNS",
     "FEATURE_IMPORTANCE_COLUMNS",
+    "PREDICTION_COLUMNS",
     "PRIORITY_COLUMNS",
     "augur_code",
+    "augur_plot_code",
     "augur_results_code",
     "run_augur_analysis",
     "run_augur_artifact",
     "run_augur_portable",
+    "render_augur_plot",
     "select_augur_view",
     "validate_augur_portable",
     "validate_augur_result",
