@@ -19,6 +19,7 @@ EXAMPLE_DIRECTORY = PLUGIN_ROOT / "example_workflows"
 TEMPLATE_NAMES = (
     "Quality Control and Clean Counts",
     "Cell Clustering and Marker Discovery",
+    "Subpopulation Reclustering and Annotation",
     "Sample Composition Comparison",
     "scVI Batch Integration and Contrast",
     "Single-Cell Best Practice",
@@ -174,7 +175,7 @@ def test_workflow_generator_cli_resolves_comfyui_before_importing_schemas():
     )
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert "Verified 5 generated workflows." in completed.stdout
+    assert "Verified 6 generated workflows." in completed.stdout
 
 
 def test_packaged_workflows_exclude_removed_node_ids():
@@ -837,3 +838,144 @@ def test_best_practice_template_only_links_the_two_condition_values_from_study_p
     assert deseq2["population"] == "smc_pc_intermediate"
     assert deseq2["reference_condition"] == "Normal"
     assert deseq2["comparison_condition"] == "nonDM_ED"
+
+
+def test_subpopulation_template_reclusters_raw_and_merges_only_reviewed_subtypes():
+    workflow = _load_examples()["Subpopulation Reclustering and Annotation.json"]
+
+    assert _widgets(workflow, "OpenBioSingleCellSubsetObservations") == {
+        "column": "cell_type",
+        "values": "",
+        "invert": False,
+        "missing_policy": "exclude",
+    }
+    assert _widgets(workflow, "OpenBioSingleCellSnapshotExpression") == {
+        "source": "X",
+        "overwrite_existing": False,
+    }
+    assert _widgets(workflow, "OpenBioSingleCellHighlyVariableGenes")["subset"] is False
+    assert _widgets(workflow, "OpenBioSingleCellHighlyVariableGenes")["overwrite_existing"] is True
+    assert _widgets(workflow, "OpenBioSingleCellMarkerGenes")["source"] == "layer"
+    assert _widgets(workflow, "OpenBioSingleCellMarkerGenes")["layer_name"] == "log1p_norm"
+    assert _widgets(workflow, "OpenBioSingleCellMapClusterAnnotations") == {
+        "groupby": "subcluster",
+        "mapping_json": "{}",
+        "output_column": "cell_subtype",
+        "unmapped_policy": "error",
+        "annotation_status": "curated",
+        "overwrite_existing": False,
+    }
+    assert _widgets(workflow, "OpenBioSingleCellMergeObservationAnnotations") == {
+        "source_column": "cell_subtype",
+        "target_column": "cell_subtype",
+        "conflict_policy": "error",
+    }
+
+    for origin_type, target_type in [
+        ("OpenBioSingleCellLoadH5AD", "OpenBioSingleCellSubsetObservations"),
+        ("OpenBioSingleCellSubsetObservations", "OpenBioSingleCellRawSnapshotToAnnData"),
+        ("OpenBioSingleCellRawSnapshotToAnnData", "OpenBioSingleCellSnapshotExpression"),
+        ("OpenBioSingleCellSnapshotExpression", "OpenBioSingleCellNormalizeToLayer"),
+        ("OpenBioSingleCellNormalizeToLayer", "OpenBioSingleCellHighlyVariableGenes"),
+        ("OpenBioSingleCellHighlyVariableGenes", "OpenBioSingleCellPCA"),
+        ("OpenBioSingleCellPCA", "OpenBioSingleCellNeighbors"),
+        ("OpenBioSingleCellNeighbors", "OpenBioSingleCellLeidenResolutionSweep"),
+        ("OpenBioSingleCellLeidenResolutionSweep", "OpenBioSingleCellLeiden"),
+        ("OpenBioSingleCellLeiden", "OpenBioSingleCellUMAP"),
+        ("OpenBioSingleCellUMAP", "OpenBioSingleCellMarkerGenes"),
+        ("OpenBioSingleCellUMAP", "OpenBioSingleCellMapClusterAnnotations"),
+    ]:
+        _assert_link(workflow, origin_type, "adata", target_type, "adata", "OPENBIO_ANNDATA")
+
+    for output_name in ("table", "universe"):
+        _assert_link(
+            workflow,
+            "OpenBioSingleCellMarkerGenes",
+            output_name,
+            "OpenBioSingleCellFilterMarkerGenes",
+            output_name,
+            "OPENBIO_SINGLE_CELL_TABLE",
+        )
+        _assert_link(
+            workflow,
+            "OpenBioSingleCellFilterMarkerGenes",
+            output_name,
+            "OpenBioSingleCellMarkerEvidencePlot",
+            output_name,
+            "OPENBIO_SINGLE_CELL_TABLE",
+        )
+    _assert_link(
+        workflow,
+        "OpenBioSingleCellUMAP",
+        "adata",
+        "OpenBioSingleCellMarkerEvidencePlot",
+        "adata",
+        "OPENBIO_ANNDATA",
+    )
+    _assert_link(
+        workflow,
+        "OpenBioSingleCellLeidenResolutionSweep",
+        "resolution_metrics",
+        "OpenBioSingleCellLeidenResolutionSweepPlot",
+        "resolution_metrics",
+        "OPENBIO_SINGLE_CELL_TABLE",
+    )
+
+    _assert_link(
+        workflow,
+        "OpenBioSingleCellLoadH5AD",
+        "adata",
+        "OpenBioSingleCellMergeObservationAnnotations",
+        "adata",
+        "OPENBIO_ANNDATA",
+    )
+    _assert_link(
+        workflow,
+        "OpenBioSingleCellMapClusterAnnotations",
+        "adata",
+        "OpenBioSingleCellMergeObservationAnnotations",
+        "subset_adata",
+        "OPENBIO_ANNDATA",
+    )
+
+    node_types = {node["type"] for node in workflow["nodes"]}
+    assert {
+        "OpenBioSingleCellHVGSelectionPlot",
+        "OpenBioSingleCellPCAVariancePlot",
+        "OpenBioSingleCellNeighborGraphDiagnosticsPlot",
+        "OpenBioSingleCellLeidenResolutionSweepPlot",
+        "OpenBioSingleCellUMAPPlot",
+        "OpenBioSingleCellMarkerEvidencePlot",
+    } <= node_types
+    save_subpopulation = _node_with_widget(
+        workflow,
+        "OpenBioSingleCellSaveH5AD",
+        "filename_prefix",
+        "subpopulation_reclustered_annotated",
+    )
+    save_parent = _node_with_widget(
+        workflow,
+        "OpenBioSingleCellSaveH5AD",
+        "filename_prefix",
+        "parent_with_subpopulation_annotations",
+    )
+    assert {node["widgets_values_named"]["filename_prefix"] for node in _nodes(workflow, "OpenBioSingleCellSaveH5AD")} == {
+        "subpopulation_reclustered_annotated",
+        "parent_with_subpopulation_annotations",
+    }
+    _assert_node_link(
+        workflow,
+        _node(workflow, "OpenBioSingleCellMapClusterAnnotations"),
+        "adata",
+        save_subpopulation,
+        "adata",
+        "OPENBIO_ANNDATA",
+    )
+    _assert_node_link(
+        workflow,
+        _node(workflow, "OpenBioSingleCellMergeObservationAnnotations"),
+        "adata",
+        save_parent,
+        "adata",
+        "OPENBIO_ANNDATA",
+    )

@@ -168,7 +168,7 @@ invalid file requires the explicit force option.
 
 ## Example workflows
 
-Open one of the five production starting-point templates in `example_workflows`:
+Open one of the six production starting-point templates in `example_workflows`:
 
 - `Quality Control and Clean Counts.json` loads raw counts, calculates and filters QC metrics, previews the
   retained data, and writes a clean H5AD only through the explicit save node.
@@ -177,6 +177,10 @@ Open one of the five production starting-point templates in `example_workflows`:
   and explicit outputs. It previews stored HVG, PCA-variance, neighbor-graph, embedding, and direct marker-evidence
   diagnostics. It deliberately omits Scale so the production path does not densify the expression matrix merely to
   reach PCA.
+- `Subpopulation Reclustering and Annotation.json` selects one or more parent populations, materializes their Raw
+  snapshot as a fresh full-gene AnnData, recomputes the preprocessing, diagnostics, graph, clustering, embedding,
+  and marker evidence, then transfers only the reviewed `cell_subtype` annotation to the parent. It saves the
+  annotated subpopulation and updated parent separately.
 - `Sample Composition Comparison.json` loads AnnData that already contains sample metadata and fans reusable
   Sample, Condition, and annotation strings into one descriptive Sample Composition Summary node. Its complete
   Sample-by-population table drives a stacked proportion plot, preview, PNG export, CSV export, and report without
@@ -206,6 +210,12 @@ feature count, grouping columns, labels, comparison groups, and output names. In
   records the declared `control` and `treated` Condition mapping while constructing the complete descriptive
   Sample-by-cell-type count/proportion grid, including structural zeros. It performs no Condition hypothesis test;
   choose a reviewed Sample-level compositional model when inferential comparison is required.
+- The subpopulation template expects `annotated_parent_with_count_raw.h5ad` to contain `adata.obs["cell_type"]` and
+  a Raw snapshot that the user has independently verified contains original non-negative counts; the presence of
+  `adata.raw` alone does not establish that expression state. Before queueing, enter the parent population in
+  `Subset Observations`, replace the deliberately empty cluster mapping after reviewing marker and resolution
+  evidence, and adjust PCA dimensions and the final Leiden resolution for the selected population. Do not use its
+  fixed Snapshot/Normalize path when Raw instead contains normalized or log-transformed values.
 - Every consumer declares its expression source. Count-model methods enforce the numeric domain their algorithms
   require; QC, filtering, and normalization nodes that support broader finite expert inputs disclose signed or
   non-count-like values as warnings rather than imposing a universal count gate. For conventional practice, select

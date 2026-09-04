@@ -33,6 +33,19 @@ class OpenBioSingleCellSnapshotExpression(io.ComfyNode):
         )
 
 
+class OpenBioSingleCellRawSnapshotToAnnData(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="OpenBioSingleCellRawSnapshotToAnnData",
+            display_name="Raw Snapshot to AnnData",
+            category=CATEGORY,
+            description="Materialize the current cells and Raw feature axis into a clean AnnData.",
+            inputs=[AnnDataType.Input("adata")],
+            outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
+        )
+
+
 class OpenBioSingleCellSubsetObservations(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -120,6 +133,7 @@ class OpenBioSingleCellMapGeneIdsFromGTF(io.ComfyNode):
 
 DATA_NODE_CLASSES = [
     OpenBioSingleCellSnapshotExpression,
+    OpenBioSingleCellRawSnapshotToAnnData,
     OpenBioSingleCellSubsetObservations,
     OpenBioSingleCellMergeObservationAnnotations,
     OpenBioSingleCellMapGeneIdsFromGTF,
@@ -130,6 +144,7 @@ __all__ = [
     "DATA_NODE_CLASSES",
     "OpenBioSingleCellMapGeneIdsFromGTF",
     "OpenBioSingleCellMergeObservationAnnotations",
+    "OpenBioSingleCellRawSnapshotToAnnData",
     "OpenBioSingleCellSnapshotExpression",
     "OpenBioSingleCellSubsetObservations",
 ]

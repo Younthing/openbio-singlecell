@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import gzip
 import re
 import time
@@ -249,6 +250,35 @@ def _snapshot_expression_code(expression: ExpressionSource, overwrite_existing: 
     )
 
 
+def _raw_snapshot_to_anndata_code() -> str:
+    return dedent(
+        """
+        import copy
+
+
+        def raw_snapshot_to_anndata(adata):
+            if adata.raw is None:
+                raise ValueError("Raw Snapshot to AnnData requires adata.raw; create a Raw snapshot first.")
+            if adata.n_obs == 0:
+                raise ValueError("Raw Snapshot to AnnData requires at least one observation; received zero cells.")
+            if adata.raw.n_vars == 0:
+                raise ValueError("Raw Snapshot to AnnData requires at least one Raw feature; adata.raw has zero variables.")
+            metadata = copy.deepcopy(adata.uns.get("openbio_singlecell"))
+            output = adata.raw.to_adata()
+            if output.layers or output.raw is not None:
+                raise RuntimeError("AnnData Raw materialization unexpectedly retained layers or nested Raw storage.")
+            output.obsm.clear()
+            output.obsp.clear()
+            output.varm.clear()
+            output.varp.clear()
+            output.uns.clear()
+            if metadata is not None:
+                output.uns["openbio_singlecell"] = metadata
+            return output
+        """
+    )
+
+
 def _bounded_value_counts(values: Any, limit: int = 64) -> dict[str, Any]:
     missing_mask = values.isna()
     counts = values.loc[~missing_mask].astype("object").value_counts(dropna=True, sort=True)
@@ -403,8 +433,54 @@ def _verify_shared_provenance(adata: Any, subset_adata: Any) -> str:
     if target_source is None or subset_source is None:
         return "not_available"
     if _provenance_token(target_source) != _provenance_token(subset_source):
-        return "conflicting_advisory"
+        raise ValueError(
+            "The inputs carry different OpenBio source provenance; annotation transfer requires a common source."
+        )
     return "verified_equal"
+
+
+def _annotation_provenance(adata: Any, column: str) -> Mapping[str, Any] | None:
+    metadata = adata.uns.get("openbio_singlecell")
+    if not isinstance(metadata, Mapping):
+        return None
+    annotations = metadata.get("annotations")
+    if not isinstance(annotations, Mapping):
+        return None
+    provenance = annotations.get(column)
+    return provenance if isinstance(provenance, Mapping) else None
+
+
+def _prepare_annotation_provenance_transfer(
+    adata: Any,
+    subset_adata: Any,
+    *,
+    source_column: str,
+    target_column: str,
+) -> tuple[str, Any, dict[str, Any] | None]:
+    source = _annotation_provenance(subset_adata, source_column)
+    if source is None:
+        return "not_available", None, None
+    transferred = copy.deepcopy(dict(source))
+    transferred["output_column"] = target_column
+    metadata = adata.uns.get("openbio_singlecell")
+    annotations = metadata.get("annotations") if isinstance(metadata, Mapping) else None
+    if isinstance(annotations, Mapping) and target_column in annotations:
+        if _provenance_token(annotations[target_column]) != _provenance_token(transferred):
+            raise ValueError(
+                f"Target annotation provenance for {target_column!r} differs from the transferred source provenance."
+            )
+        return "verified_equal", transferred.get("annotation_status"), None
+    return "transferred", transferred.get("annotation_status"), transferred
+
+
+def _store_annotation_provenance(output: Any, target_column: str, provenance: dict[str, Any] | None) -> None:
+    if provenance is None:
+        return
+    metadata = output.uns["openbio_singlecell"]
+    annotations = copy.deepcopy(metadata.get("annotations", {}))
+    annotations[target_column] = provenance
+    metadata["annotations"] = annotations
+    output.uns["openbio_singlecell"] = metadata
 
 
 def _merge_annotation_values(
@@ -526,6 +602,9 @@ def _merge_observation_annotations_code(
 ) -> str:
     return dedent(
         f"""
+        import copy
+        from collections.abc import Mapping
+
         import pandas as pd
 
 
@@ -535,6 +614,24 @@ def _merge_observation_annotations_code(
                 return bool(result) if isinstance(result, bool) or type(result).__module__.startswith("numpy") else False
             except (TypeError, ValueError):
                 return False
+
+
+        def _provenance_token(value):
+            if isinstance(value, Mapping):
+                return {{str(key): _provenance_token(item) for key, item in value.items()}}
+            if isinstance(value, (list, tuple)):
+                return [_provenance_token(item) for item in value]
+            if not isinstance(value, (str, bytes, bytearray)) and hasattr(value, "tolist"):
+                try:
+                    return _provenance_token(value.tolist())
+                except (TypeError, ValueError):
+                    pass
+            if hasattr(value, "item"):
+                try:
+                    return _provenance_token(value.item())
+                except (TypeError, ValueError):
+                    pass
+            return value
 
 
         def merge_observation_annotations(adata, subset_adata):
@@ -549,6 +646,43 @@ def _merge_observation_annotations_code(
                 raise ValueError(f"Source annotation not found: {{source_column!r}}")
             if not adata.obs_names.is_unique or not subset_adata.obs_names.is_unique:
                 raise ValueError("Annotation transfer requires unique obs_names in both inputs.")
+            target_metadata = adata.uns.get("openbio_singlecell")
+            subset_metadata = subset_adata.uns.get("openbio_singlecell")
+            target_source = target_metadata.get("source") if isinstance(target_metadata, Mapping) else None
+            subset_source = subset_metadata.get("source") if isinstance(subset_metadata, Mapping) else None
+            if (
+                isinstance(target_source, Mapping)
+                and target_source
+                and isinstance(subset_source, Mapping)
+                and subset_source
+                and _provenance_token(target_source) != _provenance_token(subset_source)
+            ):
+                raise ValueError(
+                    "The inputs carry different OpenBio source provenance; annotation transfer requires a common source."
+                )
+            source_metadata = subset_adata.uns.get("openbio_singlecell")
+            source_annotations = (
+                source_metadata.get("annotations") if isinstance(source_metadata, Mapping) else None
+            )
+            source_provenance = (
+                source_annotations.get(source_column) if isinstance(source_annotations, Mapping) else None
+            )
+            transferred_provenance = None
+            if isinstance(source_provenance, Mapping):
+                candidate = copy.deepcopy(dict(source_provenance))
+                candidate["output_column"] = target_column
+                target_metadata = adata.uns.get("openbio_singlecell")
+                target_annotations = (
+                    target_metadata.get("annotations") if isinstance(target_metadata, Mapping) else None
+                )
+                if isinstance(target_annotations, Mapping) and target_column in target_annotations:
+                    if _provenance_token(target_annotations[target_column]) != _provenance_token(candidate):
+                        raise ValueError(
+                            f"Target annotation provenance for {{target_column!r}} differs from the "
+                            "transferred source provenance."
+                        )
+                else:
+                    transferred_provenance = candidate
             source = subset_adata.obs[source_column].copy()
             aligned = source.reindex(adata.obs_names)
             source_present = aligned.notna()
@@ -607,6 +741,22 @@ def _merge_observation_annotations_code(
                     output.obs[target_column] = (
                         resolved_native if resolved_native.dtype == target.dtype else resolved_object
                     )
+            if transferred_provenance is not None:
+                metadata = copy.deepcopy(output.uns.get("openbio_singlecell"))
+                if metadata is None:
+                    metadata = {{
+                        "schema_version": 1,
+                        "version": "not-installed",
+                        "display_name": "AnnData",
+                        "source": {{}},
+                        "random_seed": 0,
+                        "warnings": [],
+                        "analysis_history": {{}},
+                    }}
+                annotations = copy.deepcopy(metadata.get("annotations", {{}}))
+                annotations[target_column] = transferred_provenance
+                metadata["annotations"] = annotations
+                output.uns["openbio_singlecell"] = metadata
             return output
         """
     )
@@ -1048,6 +1198,86 @@ def snapshot_expression(
     return _result_records(context, adata, report, code)
 
 
+@register_operation("openbio.node.rawsnapshottoanndata")
+def raw_snapshot_to_anndata(
+    context: OperationContext,
+    inputs: dict[str, JSONValue],
+    parameters: dict[str, JSONValue],
+) -> list[dict[str, JSONValue]]:
+    require_input_names(inputs, {"adata"}, operation="Raw Snapshot to AnnData")
+    require_parameters(parameters, set(), operation="Raw Snapshot to AnnData")
+    adata = read_anndata_input(inputs)
+    if adata.raw is None:
+        raise ValueError("Raw Snapshot to AnnData requires adata.raw; create a Raw snapshot first.")
+    if adata.n_obs == 0:
+        raise ValueError("Raw Snapshot to AnnData requires at least one observation; received zero cells.")
+    if adata.raw.n_vars == 0:
+        raise ValueError("Raw Snapshot to AnnData requires at least one Raw feature; adata.raw has zero variables.")
+
+    started_at = time.perf_counter()
+    cells, genes = int(adata.n_obs), int(adata.n_vars)
+    raw_genes = int(adata.raw.n_vars)
+    metadata = copy.deepcopy(adata.uns.get("openbio_singlecell"))
+    output = adata.raw.to_adata()
+    if output.layers or output.raw is not None:
+        raise RuntimeError("AnnData Raw materialization unexpectedly retained layers or nested Raw storage.")
+    if not output.obs.equals(adata.obs) or not output.var.equals(adata.raw.var):
+        raise RuntimeError("AnnData Raw materialization changed current observations or Raw feature annotations.")
+    output.obsm.clear()
+    output.obsp.clear()
+    output.varm.clear()
+    output.varp.clear()
+    output.uns.clear()
+    if metadata is not None:
+        output.uns["openbio_singlecell"] = metadata
+    finish_adata(
+        output,
+        "raw_snapshot_to_anndata",
+        {},
+        cells,
+        genes,
+        started_at,
+    )
+    code = _raw_snapshot_to_anndata_code()
+    report, code = make_analysis_report(
+        node_id="OpenBioSingleCellRawSnapshotToAnnData",
+        title="Raw snapshot materialization",
+        operation="raw_snapshot_to_anndata",
+        methods=(
+            "Materialized the current observation subset with adata.raw.to_adata(), retained Raw X and var "
+            "with current obs, and removed inherited analysis representations and non-OpenBio uns entries."
+        ),
+        results=(
+            f"Created a clean AnnData with {cells:,} cells and {raw_genes:,} Raw features; the input current "
+            f"feature axis contained {genes:,} features."
+        ),
+        key_results={
+            "cells": cells,
+            "input_features": genes,
+            "raw_features": raw_genes,
+            "output_features": int(output.n_vars),
+            "matrix": _matrix_description(output.X),
+            "current_obs_preserved": True,
+            "raw_var_preserved": True,
+            "derived_state_cleared": ["layers", "obsm", "obsp", "varm", "varp", "raw"],
+            "uns_keys": list(output.uns.keys()),
+        },
+        parameters={},
+        references=[ANNDATA_REFERENCE],
+        software_packages=["anndata", "numpy", "pandas", "scipy"],
+        warnings=[],
+        limitations=[
+            "Raw is an independent expression snapshot; materialization does not infer whether its values are "
+            "counts, normalized, or transformed."
+        ],
+        input_cells=cells,
+        input_genes=genes,
+        started_at=started_at,
+        code=code,
+    )
+    return _result_records(context, output, report, code)
+
+
 @register_operation("openbio.node.subsetobservations")
 def subset_observations(
     context: OperationContext,
@@ -1202,6 +1432,14 @@ def merge_observation_annotations(
     if conflict_policy not in {"error", "keep_target", "overwrite"}:
         raise ValueError(f"Unsupported conflict_policy: {conflict_policy!r}")
 
+    annotation_provenance_status, transferred_annotation_status, transferred_provenance = (
+        _prepare_annotation_provenance_transfer(
+            adata,
+            subset_adata,
+            source_column=source_column,
+            target_column=target_column,
+        )
+    )
     source_only = subset_adata.obs_names.difference(adata.obs_names)
     shared_names = subset_adata.obs_names.intersection(adata.obs_names, sort=False)
     provenance_status = _verify_shared_provenance(adata, subset_adata)
@@ -1225,11 +1463,6 @@ def merge_observation_annotations(
         warnings_list.append(
             "Compatible OpenBio source provenance was not available on both inputs; confirm that observation "
             "identifiers refer to the same cells."
-        )
-    elif provenance_status == "conflicting_advisory":
-        warnings_list.append(
-            "The inputs carry different OpenBio source provenance. Exact unique observation identifiers were "
-            "used for the requested transfer; confirm that the shared names refer to the intended cells."
         )
     if len(source_only):
         warnings_list.append(
@@ -1269,6 +1502,7 @@ def merge_observation_annotations(
         started_at,
         warnings=warnings_list,
     )
+    _store_annotation_provenance(output, target_column, transferred_provenance)
     code = _merge_observation_annotations_code(source_column, target_column, conflict_policy)
     report, code = make_analysis_report(
         node_id="OpenBioSingleCellMergeObservationAnnotations",
@@ -1295,6 +1529,8 @@ def merge_observation_annotations(
             "target_column": target_column,
             "conflict_policy": conflict_policy,
             "provenance_status": provenance_status,
+            "annotation_provenance_status": annotation_provenance_status,
+            "transferred_annotation_status": transferred_annotation_status,
             "final_value_counts": _bounded_value_counts(output.obs[target_column]),
             "expression_and_axes_preserved": True,
         },
@@ -1517,6 +1753,7 @@ def map_gene_ids_from_gtf(
 __all__ = [
     "map_gene_ids_from_gtf",
     "merge_observation_annotations",
+    "raw_snapshot_to_anndata",
     "snapshot_expression",
     "subset_observations",
 ]

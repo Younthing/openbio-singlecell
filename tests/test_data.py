@@ -17,16 +17,18 @@ from openbio_singlecell.files import input_file_provenance, resolve_input_path
 from openbio_singlecell.nodes_data import (
     OpenBioSingleCellMapGeneIdsFromGTF,
     OpenBioSingleCellMergeObservationAnnotations,
+    OpenBioSingleCellRawSnapshotToAnnData,
     OpenBioSingleCellSnapshotExpression,
     OpenBioSingleCellSubsetObservations,
 )
 from openbio_singlecell.operations_data import (
     map_gene_ids_from_gtf,
     merge_observation_annotations,
+    raw_snapshot_to_anndata,
     snapshot_expression,
     subset_observations,
 )
-from openbio_singlecell.worker_protocol import OperationContext, ProtocolError
+from openbio_singlecell.worker_protocol import OperationContext, ProtocolError, WorkerRequest, execute_request
 
 
 def _dense(matrix, science):
@@ -95,6 +97,14 @@ def _execute_snapshot(adata, source=None, overwrite_existing=False):
         snapshot_expression,
         {"adata": adata},
         {"source": source, "overwrite_existing": overwrite_existing},
+    )
+
+
+def _execute_raw_snapshot_to_anndata(adata):
+    return _run_data_operation(
+        raw_snapshot_to_anndata,
+        {"adata": adata},
+        {},
     )
 
 
@@ -214,6 +224,11 @@ def test_every_data_operation_rejects_extended_parameter_objects(tmp_path, data_
             {"source": None, "overwrite_existing": False},
         ),
         (
+            raw_snapshot_to_anndata,
+            {"adata": _artifact_descriptor(input_root)},
+            {},
+        ),
+        (
             subset_observations,
             {"adata": _artifact_descriptor(input_root)},
             {"column": "sample", "values": "a", "invert": False, "missing_policy": "exclude"},
@@ -253,12 +268,56 @@ def test_data_operation_module_is_worker_only():
     assert "nodes_" not in source
 
 
+def test_raw_and_merge_operations_dispatch_through_the_public_registry(tmp_path, data_adata):
+    parent = data_adata.copy()
+    parent.raw = parent
+    parent_root = _write_operation_input(tmp_path, "registry-parent", parent)
+    raw_context = _operation_context(tmp_path, "registry-raw")
+    raw_request = WorkerRequest.create(
+        "openbio.node.rawsnapshottoanndata",
+        inputs={"adata": _artifact_descriptor(parent_root)},
+        parameters={},
+        request_id=raw_context.request_id,
+    )
+
+    raw_records = execute_request(raw_request, raw_context).outputs
+    raw_output = read_anndata(raw_context.output_root / raw_records[0]["payload"])
+    assert raw_output.shape == parent.shape
+
+    subset = parent[[parent.obs_names[0]], :].copy()
+    subset.obs["cell_subtype"] = "reviewed"
+    subset_root = _write_operation_input(tmp_path, "registry-subset", subset)
+    merge_context = _operation_context(tmp_path, "registry-merge")
+    merge_request = WorkerRequest.create(
+        "openbio.node.mergeobservationannotations",
+        inputs={
+            "adata": _artifact_descriptor(parent_root),
+            "subset_adata": _artifact_descriptor(subset_root),
+        },
+        parameters={
+            "source_column": "cell_subtype",
+            "target_column": "cell_subtype",
+            "conflict_policy": "error",
+        },
+        request_id=merge_context.request_id,
+    )
+
+    merge_records = execute_request(merge_request, merge_context).outputs
+    merged = read_anndata(merge_context.output_root / merge_records[0]["payload"])
+    assert merged.obs.loc[parent.obs_names[0], "cell_subtype"] == "reviewed"
+
+
 def test_all_data_operations_leave_input_artifact_bytes_unchanged(tmp_path, data_adata):
     input_root = _write_operation_input(tmp_path, "immutable-input", data_adata)
+    raw_input = data_adata.copy()
+    raw_input.raw = raw_input
+    raw_input_root = _write_operation_input(tmp_path, "immutable-raw-input", raw_input)
     subset_root = _write_operation_input(tmp_path, "immutable-subset", data_adata[["cell_0"], :].copy())
     input_payload = input_root / "data.h5ad"
+    raw_input_payload = raw_input_root / "data.h5ad"
     subset_payload = subset_root / "data.h5ad"
     before = hashlib.sha256(input_payload.read_bytes()).hexdigest()
+    raw_input_before = hashlib.sha256(raw_input_payload.read_bytes()).hexdigest()
     subset_before = hashlib.sha256(subset_payload.read_bytes()).hexdigest()
     gtf_path = tmp_path / "immutable.gtf"
     gtf_path.write_text(
@@ -271,6 +330,11 @@ def test_all_data_operations_leave_input_artifact_bytes_unchanged(tmp_path, data
             snapshot_expression,
             {"adata": _artifact_descriptor(input_root)},
             {"source": None, "overwrite_existing": False},
+        ),
+        (
+            raw_snapshot_to_anndata,
+            {"adata": _artifact_descriptor(raw_input_root)},
+            {},
         ),
         (
             subset_observations,
@@ -302,6 +366,7 @@ def test_all_data_operations_leave_input_artifact_bytes_unchanged(tmp_path, data
     for index, (operation, inputs, parameters) in enumerate(cases):
         operation(_operation_context(tmp_path, f"immutable-{index}"), inputs, parameters)
         assert hashlib.sha256(input_payload.read_bytes()).hexdigest() == before
+        assert hashlib.sha256(raw_input_payload.read_bytes()).hexdigest() == raw_input_before
         assert hashlib.sha256(subset_payload.read_bytes()).hexdigest() == subset_before
         assert hashlib.sha256(gtf_path.read_bytes()).hexdigest() == gtf_before
 
@@ -329,9 +394,110 @@ def data_adata(science):
     return value
 
 
+def test_raw_snapshot_to_anndata_materializes_filtered_raw_and_clears_derived_state(science):
+    raw_values = science.np.arange(20, dtype=float).reshape(4, 5)
+    parent = science.ad.AnnData(
+        science.sparse.csr_matrix(raw_values),
+        obs=science.pd.DataFrame(
+            {"cell_type": ["T", "B", "T", "B"]},
+            index=["cell_0", "cell_1", "cell_2", "cell_3"],
+        ),
+        var=science.pd.DataFrame(
+            {"feature_kind": ["gene"] * 5},
+            index=["gene_0", "gene_1", "gene_2", "gene_3", "gene_4"],
+        ),
+    )
+    parent.varm["old_loadings"] = science.np.arange(10, dtype=float).reshape(5, 2)
+    ensure_metadata(parent, display_name="parent", source={"kind": "test", "study": "same"})
+    parent.uns["openbio_singlecell"]["annotations"] = {
+        "cell_type": {"schema_version": 1, "annotation_status": "curated"}
+    }
+    parent.uns["openbio_singlecell"]["analysis_history"] = {
+        "000000": {"operation": "snapshot_expression"}
+    }
+    parent.raw = parent
+
+    selected = parent[["cell_2", "cell_0"], ["gene_1", "gene_3"]].copy()
+    selected.obs["subpopulation_source"] = ["selected", "selected"]
+    selected.layers["old_normalized"] = selected.X.copy()
+    selected.obsm["X_umap"] = science.np.arange(4, dtype=float).reshape(2, 2)
+    selected.obsp["connectivities"] = science.sparse.eye(2, format="csr")
+    selected.varm["PCs"] = science.np.ones((2, 2))
+    selected.varp["correlations"] = science.np.eye(2)
+    selected.uns["neighbors"] = {"params": {"n_neighbors": 1}}
+    selected.uns["rank_genes_groups"] = {"params": {"groupby": "cell_type"}}
+
+    output, report, code = _execute_raw_snapshot_to_anndata(selected).result
+
+    assert output.shape == (2, 5)
+    assert output.obs_names.tolist() == ["cell_2", "cell_0"]
+    assert output.var_names.tolist() == ["gene_0", "gene_1", "gene_2", "gene_3", "gene_4"]
+    science.np.testing.assert_array_equal(
+        _dense(output.X, science),
+        raw_values[[2, 0], :],
+    )
+    science.pd.testing.assert_frame_equal(output.obs, selected.obs)
+    science.pd.testing.assert_frame_equal(output.var, parent.var)
+    assert not output.layers
+    assert not output.obsm
+    assert not output.obsp
+    assert not output.varm
+    assert not output.varp
+    assert output.raw is None
+    assert set(output.uns) == {"openbio_singlecell"}
+    metadata = output.uns["openbio_singlecell"]
+    assert metadata["source"] == {"kind": "test", "study": "same"}
+    assert metadata["annotations"] == {
+        "cell_type": {"schema_version": 1, "annotation_status": "curated"}
+    }
+    assert [entry["operation"] for entry in metadata["analysis_history"].values()] == [
+        "snapshot_expression",
+        "raw_snapshot_to_anndata",
+    ]
+    _assert_report(report, code, "OpenBioSingleCellRawSnapshotToAnnData")
+
+    namespace = {}
+    exec(code, namespace)
+    reproduced = namespace["raw_snapshot_to_anndata"](selected)
+    science.np.testing.assert_array_equal(_dense(reproduced.X, science), _dense(output.X, science))
+    science.pd.testing.assert_frame_equal(reproduced.obs, output.obs)
+    science.pd.testing.assert_frame_equal(reproduced.var, output.var)
+    assert not reproduced.layers
+    assert not reproduced.obsm
+    assert not reproduced.obsp
+    assert not reproduced.varm
+    assert not reproduced.varp
+    assert reproduced.raw is None
+    assert set(reproduced.uns) == {"openbio_singlecell"}
+    reproduced_metadata = reproduced.uns["openbio_singlecell"]
+    assert reproduced_metadata["source"] == metadata["source"]
+    assert reproduced_metadata["annotations"] == metadata["annotations"]
+    assert [entry["operation"] for entry in reproduced_metadata["analysis_history"].values()] == [
+        "snapshot_expression",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("shape", "with_raw", "message"),
+    [
+        ((1, 1), False, "requires adata.raw"),
+        ((0, 1), True, "requires at least one observation"),
+        ((1, 0), True, "requires at least one Raw feature"),
+    ],
+)
+def test_raw_snapshot_to_anndata_rejects_missing_or_empty_raw_axes(science, shape, with_raw, message):
+    adata = science.ad.AnnData(science.np.empty(shape))
+    if with_raw:
+        adata.raw = adata
+
+    with pytest.raises(ValueError, match=message):
+        _execute_raw_snapshot_to_anndata(adata)
+
+
 def test_data_node_schemas_are_current_and_reportable():
     expected_inputs = {
         OpenBioSingleCellSnapshotExpression: ["adata", "source", "overwrite_existing"],
+        OpenBioSingleCellRawSnapshotToAnnData: ["adata"],
         OpenBioSingleCellSubsetObservations: ["adata", "column", "values", "invert", "missing_policy"],
         OpenBioSingleCellMergeObservationAnnotations: [
             "adata",
@@ -673,9 +839,128 @@ def test_merge_annotations_classifies_conflicts_and_generated_code_matches(scien
     assert equivalent.obs["cell_type"].astype("string").equals(output.obs["cell_type"].astype("string"))
 
 
+@pytest.mark.parametrize("annotation_status", ["curated", "provisional"])
+def test_merge_annotations_transfers_and_redirects_annotation_provenance(science, annotation_status):
+    target, source = _annotation_inputs(science)
+    source_provenance = {
+        "schema_version": 1,
+        "operation": "map_cluster_annotations",
+        "output_column": "label",
+        "annotation_status": annotation_status,
+        "mapping": {"0": "T", "1": "B"},
+    }
+    source.uns["openbio_singlecell"]["annotations"] = {"label": source_provenance}
+
+    output, report, code = _execute_merge(
+        target,
+        source,
+        "label",
+        "subtype",
+    ).result
+
+    expected = {**source_provenance, "output_column": "subtype"}
+    assert output.uns["openbio_singlecell"]["annotations"]["subtype"] == expected
+    assert source.uns["openbio_singlecell"]["annotations"]["label"] == source_provenance
+    assert report.summary["key_results"]["annotation_provenance_status"] == "transferred"
+    assert report.summary["key_results"]["transferred_annotation_status"] == annotation_status
+
+    namespace = {}
+    exec(code, namespace)
+    reproduced = namespace["merge_observation_annotations"](target, source)
+    assert reproduced.uns["openbio_singlecell"]["annotations"]["subtype"] == expected
+
+
+def test_merge_annotations_rejects_conflicting_target_annotation_provenance(science):
+    target, source = _annotation_inputs(science)
+    source.uns["openbio_singlecell"]["annotations"] = {
+        "label": {
+            "schema_version": 1,
+            "operation": "map_cluster_annotations",
+            "output_column": "label",
+            "annotation_status": "curated",
+        }
+    }
+    _, _, code = _execute_merge(target, source, "label", "subtype").result
+    conflicting_target = target.copy()
+    conflicting_target.uns["openbio_singlecell"]["annotations"] = {
+        "subtype": {
+            "schema_version": 1,
+            "operation": "celltypist_annotation",
+            "output_column": "subtype",
+            "annotation_status": "provisional",
+        }
+    }
+
+    with pytest.raises(ValueError, match="annotation provenance.*differs"):
+        _execute_merge(
+            conflicting_target,
+            source,
+            "label",
+            "subtype",
+            conflict_policy="overwrite",
+        )
+
+    namespace = {}
+    exec(code, namespace)
+    with pytest.raises(ValueError, match="annotation provenance.*differs"):
+        namespace["merge_observation_annotations"](conflicting_target, source)
+
+
+def test_merge_annotations_preserves_normalized_equal_target_annotation_provenance(science):
+    target, source = _annotation_inputs(science)
+    source.uns["openbio_singlecell"]["annotations"] = {
+        "label": {
+            "schema_version": 1,
+            "operation": "map_cluster_annotations",
+            "output_column": "label",
+            "annotation_status": "curated",
+            "output_categories": science.np.asarray(["T", "B"]),
+        }
+    }
+    target_provenance = {
+        "schema_version": 1,
+        "operation": "map_cluster_annotations",
+        "output_column": "subtype",
+        "annotation_status": "curated",
+        "output_categories": ["T", "B"],
+    }
+    target.uns["openbio_singlecell"]["annotations"] = {"subtype": target_provenance}
+
+    output, report, code = _execute_merge(target, source, "label", "subtype").result
+
+    assert report.summary["key_results"]["annotation_provenance_status"] == "verified_equal"
+    assert report.summary["key_results"]["transferred_annotation_status"] == "curated"
+    assert output.uns["openbio_singlecell"]["annotations"]["subtype"]["output_categories"].tolist() == [
+        "T",
+        "B",
+    ]
+    namespace = {}
+    exec(code, namespace)
+    reproduced = namespace["merge_observation_annotations"](target, source)
+    assert isinstance(
+        reproduced.uns["openbio_singlecell"]["annotations"]["subtype"]["output_categories"],
+        list,
+    )
+
+
+def test_merge_annotations_without_source_annotation_provenance_continues(science):
+    target, source = _annotation_inputs(science)
+
+    output, report, code = _execute_merge(target, source, "label", "subtype").result
+
+    assert output.obs["subtype"].notna().sum() == source.obs["label"].notna().sum()
+    assert report.summary["key_results"]["annotation_provenance_status"] == "not_available"
+    assert report.summary["key_results"]["transferred_annotation_status"] is None
+    assert "annotations" not in output.uns["openbio_singlecell"]
+    namespace = {}
+    exec(code, namespace)
+    reproduced = namespace["merge_observation_annotations"](target, source)
+    assert "annotations" not in reproduced.uns["openbio_singlecell"]
+
+
 def test_merge_annotations_preserves_new_categorical_dtype_and_validates_identity(science):
     target, source = _annotation_inputs(science)
-    output, report, _ = _execute_merge(
+    output, report, code = _execute_merge(
         target,
         source,
         "label",
@@ -711,14 +996,19 @@ def test_merge_annotations_preserves_new_categorical_dtype_and_validates_identit
 
     conflicting_source = source.copy()
     ensure_metadata(conflicting_source, source={"kind": "test", "study": "different"})
-    _, conflicting_report, _ = _execute_merge(
-        target,
-        conflicting_source,
-        "label",
-        conflict_policy="keep_target",
-    ).result
-    assert conflicting_report.summary["key_results"]["provenance_status"] == "conflicting_advisory"
-    assert any("different OpenBio source" in warning for warning in conflicting_report.summary["warnings"])
+    with pytest.raises(ValueError, match="different OpenBio source provenance"):
+        _execute_merge(
+            target,
+            conflicting_source,
+            "label",
+            "new_label",
+            conflict_policy="keep_target",
+        )
+
+    namespace = {}
+    exec(code, namespace)
+    with pytest.raises(ValueError, match="different OpenBio source provenance"):
+        namespace["merge_observation_annotations"](target, conflicting_source)
 
 
 def test_merge_annotations_preserves_native_ordered_categories_and_rejects_noop_sources(science):

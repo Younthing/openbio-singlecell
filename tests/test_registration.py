@@ -49,6 +49,7 @@ EXPECTED_NODE_IDS = {
     "OpenBioSingleCellCoreStudyParameters",
     "OpenBioSingleCellAnnDataSummary",
     "OpenBioSingleCellSnapshotExpression",
+    "OpenBioSingleCellRawSnapshotToAnnData",
     "OpenBioSingleCellSubsetObservations",
     "OpenBioSingleCellMergeObservationAnnotations",
     "OpenBioSingleCellMapGeneIdsFromGTF",
@@ -238,7 +239,7 @@ def test_input_extension_loads():
     assert isinstance(extension, OpenBioSingleCellExtension)
     node_ids = [node.GET_SCHEMA().node_id for node in NODE_CLASSES]
     schemas = [node.GET_SCHEMA() for node in NODE_CLASSES]
-    assert len(node_ids) == 144
+    assert len(node_ids) == 145
     assert len(node_ids) == len(set(node_ids))
     assert set(node_ids) == EXPECTED_NODE_IDS
     assert REMOVED_NODE_IDS.isdisjoint(node_ids)
@@ -251,7 +252,7 @@ def test_input_extension_loads():
         "openbio/single-cell/clustering": 5,
         "openbio/single-cell/copy-number": 5,
         "openbio/single-cell/correction": 5,
-        "openbio/single-cell/data": 4,
+        "openbio/single-cell/data": 5,
         "openbio/single-cell/diagnostics": 4,
         "openbio/single-cell/differential-abundance": 8,
         "openbio/single-cell/differential-expression": 7,
@@ -456,6 +457,11 @@ def test_node_outputs_use_only_their_concrete_public_contracts():
             ("code", "STRING"),
         ],
         "OpenBioSingleCellSnapshotExpression": [
+            ("adata", AnnDataType.io_type),
+            ("summary", SummaryResultType.io_type),
+            ("code", "STRING"),
+        ],
+        "OpenBioSingleCellRawSnapshotToAnnData": [
             ("adata", AnnDataType.io_type),
             ("summary", SummaryResultType.io_type),
             ("code", "STRING"),
