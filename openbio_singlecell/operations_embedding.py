@@ -209,7 +209,7 @@ def _resolve_representation(adata: AnnData, use_rep: str, n_dimensions: int, ope
     return matrix, available if n_dimensions == 0 else n_dimensions
 
 
-def _validate_metric_rows(matrix: Any, *, n_dimensions: int, metric: str, operation: str) -> None:
+def _validate_metric_rows(matrix: Any, *, n_dimensions: int, metric: str, operation: str) -> list[str]:
     science = dependencies.require_scientific_dependencies()
     selected = (
         matrix[:, :n_dimensions] if science.sparse.issparse(matrix) else science.np.asarray(matrix)[:, :n_dimensions]
@@ -221,9 +221,10 @@ def _validate_metric_rows(matrix: Any, *, n_dimensions: int, metric: str, operat
             squared_norms = science.np.einsum("ij,ij->i", selected, selected, dtype=float)
         invalid = squared_norms == 0
         if bool(invalid.any()):
-            raise ValueError(
-                f"{operation} cosine metric is undefined for {int(invalid.sum())} zero-norm observation row(s)."
-            )
+            return [
+                f"{operation} cosine distance uses the backend convention for {int(invalid.sum())} "
+                "zero-norm observation row(s); these rows have no expression direction."
+            ]
     elif metric == "correlation":
         if science.sparse.issparse(selected):
             row_maximum = selected.max(axis=1)
@@ -243,6 +244,7 @@ def _validate_metric_rows(matrix: Any, *, n_dimensions: int, metric: str, operat
             raise ValueError(
                 f"{operation} correlation metric is undefined for {int(constant.sum())} constant observation row(s)."
             )
+    return []
 
 
 def _coordinate_diagnostics(coordinates: Any) -> dict[str, Any]:
@@ -435,8 +437,11 @@ def _generated_graph_helper() -> str:
                     squared_norms = np.einsum("ij,ij->i", selected, selected, dtype=float)
                 invalid = squared_norms == 0
                 if invalid.any():
-                    raise ValueError(
-                        f"{operation} cosine metric is undefined for {int(invalid.sum())} zero-norm observation row(s)."
+                    warnings.warn(
+                        f"{operation} cosine distance uses the backend convention for {int(invalid.sum())} "
+                        "zero-norm observation row(s); these rows have no expression direction.",
+                        UserWarning,
+                        stacklevel=2,
                     )
             elif metric == "correlation":
                 if sparse.issparse(selected):
@@ -892,7 +897,7 @@ class OpenBioSingleCellNeighbors:
             raise ValueError("Neighbors n_neighbors must be at least 2.")
         if metric not in {"euclidean", "cosine", "correlation", "manhattan"}:
             raise ValueError(f"Unsupported Neighbors metric: {metric!r}")
-        _validate_metric_rows(matrix, n_dimensions=used, metric=metric, operation="Neighbors")
+        metric_warnings = _validate_metric_rows(matrix, n_dimensions=used, metric=metric, operation="Neighbors")
         if method not in {"umap", "gauss", "jaccard"}:
             raise ValueError(f"Unsupported Neighbors method: {method!r}")
         key_added = key_added.strip()
@@ -995,6 +1000,7 @@ class OpenBioSingleCellNeighbors:
             results=f"The graph contains {graph.positive_edges} undirected edges in {len(graph.component_sizes)} connected component(s).",
             key_results={
                 "actual_dimensions": used,
+                "metric_row_warnings": metric_warnings,
                 "requested_n_neighbors": n_neighbors,
                 "effective_n_neighbors": effective_n_neighbors,
                 "graph": diagnostics,
@@ -1003,6 +1009,7 @@ class OpenBioSingleCellNeighbors:
             references=_neighbor_method_references(method),
             software_packages=SOFTWARE_PACKAGES + ("pynndescent", "umap-learn"),
             warnings=[
+                *metric_warnings,
                 *(
                     [
                         f"Requested n_neighbors={n_neighbors} was resolved to effective n_neighbors={effective_n_neighbors} by Scanpy."
@@ -1243,7 +1250,7 @@ class OpenBioSingleCellTSNE:
         early_exaggeration = _positive_float(early_exaggeration, "t-SNE early_exaggeration")
         if metric not in {"euclidean", "cosine", "correlation", "manhattan"}:
             raise ValueError(f"Unsupported t-SNE metric: {metric!r}")
-        _validate_metric_rows(matrix, n_dimensions=used, metric=metric, operation="t-SNE")
+        metric_warnings = _validate_metric_rows(matrix, n_dimensions=used, metric=metric, operation="t-SNE")
         learning_rate = _positive_float(learning_rate, "t-SNE learning_rate")
         key_added = key_added.strip()
         if not key_added:
@@ -1363,11 +1370,12 @@ class OpenBioSingleCellTSNE:
             operation="tsne",
             methods=f"Computed a two-dimensional t-SNE embedding from {used} dimensions of {use_rep!r} with {metric} distance.",
             results=f"Generated {key_added!r} coordinates for {adata.n_obs} observations.",
-            key_results={"actual_dimensions": used, "coordinates": diagnostics},
+            key_results={"actual_dimensions": used, "coordinates": diagnostics, "metric_row_warnings": metric_warnings},
             parameters=parameters,
             references=[TSNE_REFERENCE, SCANPY_REFERENCE],
             software_packages=SOFTWARE_PACKAGES,
             warnings=[
+                *metric_warnings,
                 *(["t-SNE perplexity is below 1; this is executable but unusually local."] if perplexity < 1 else []),
                 *(
                     [

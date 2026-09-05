@@ -459,8 +459,8 @@ def _standalone_composition_differential_plot(
         )
         lower = selected["hdi_lower"].to_numpy(dtype=float)
         upper = selected["hdi_upper"].to_numpy(dtype=float)
-        if bool(((lower > centers) | (centers > upper)).any()):
-            raise ValueError(f"{operation} stored posterior centers must lie inside their HDI intervals.")
+        if bool((lower > upper).any()):
+            raise ValueError(f"{operation} HDI lower bounds cannot exceed upper bounds.")
         credible = selected["credible_effect"].to_numpy(dtype=bool)
         figure = Figure(figsize=(8.5, max(4.8, min(22.0, 0.35 * len(selected) + 2.5))), constrained_layout=True)
         FigureCanvasAgg(figure)
@@ -470,14 +470,8 @@ def _standalone_composition_differential_plot(
             positions, centers, lower, upper, credible, strict=True
         ):
             color = "#D64A4A" if is_credible and center > 0 else "#3D6FB6" if is_credible else "#8A8A8A"
-            axis.errorbar(
-                center,
-                position,
-                xerr=np.asarray([[center - low], [high - center]]),
-                fmt="o",
-                color=color,
-                capsize=3,
-            )
+            axis.plot([low, high], [position, position], color=color, marker="|", markersize=6)
+            axis.plot(center, position, "o", color=color)
         axis.set_yticks(positions, labels)
         axis.invert_yaxis()
         axis.axvline(0.0, color="#555555", linewidth=0.8)

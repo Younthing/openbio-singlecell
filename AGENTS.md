@@ -86,6 +86,11 @@ If a material product or domain decision remains and cannot be discovered from p
 
 ## Defensive code
 
+- Scientific nodes are expert-facing wrappers. Follow the selected backend's executable input and parameter
+  behavior; do not promote its recommendations or warnings into additional hard errors. Expression-state guesses,
+  provenance confidence, recommended sample sizes, plotting preferences, and documentation completeness are
+  advisories. Verify a proposed scientific hard gate against backend behavior before adding it.
+
 - Add validation or guards only for realistic states supported by project evidence or an explicit trust boundary.
 
 - Do not add checks merely because a value could theoretically be null, missing, malformed, or unexpected.

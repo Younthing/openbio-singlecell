@@ -477,21 +477,24 @@ def test_raw_snapshot_to_anndata_materializes_filtered_raw_and_clears_derived_st
     ]
 
 
-@pytest.mark.parametrize(
-    ("shape", "with_raw", "message"),
-    [
-        ((1, 1), False, "requires adata.raw"),
-        ((0, 1), True, "requires at least one observation"),
-        ((1, 0), True, "requires at least one Raw feature"),
-    ],
-)
-def test_raw_snapshot_to_anndata_rejects_missing_or_empty_raw_axes(science, shape, with_raw, message):
-    adata = science.ad.AnnData(science.np.empty(shape))
-    if with_raw:
-        adata.raw = adata
-
-    with pytest.raises(ValueError, match=message):
+def test_raw_snapshot_to_anndata_rejects_missing_raw(science):
+    adata = science.ad.AnnData(science.np.ones((1, 1)))
+    with pytest.raises(ValueError, match="requires adata.raw"):
         _execute_raw_snapshot_to_anndata(adata)
+
+
+@pytest.mark.parametrize("shape", [(0, 1), (1, 0)])
+def test_raw_snapshot_to_anndata_preserves_empty_axes_like_anndata(science, shape):
+    adata = science.ad.AnnData(science.np.empty(shape))
+    adata.raw = adata
+    expected = adata.raw.to_adata()
+    output, _, code = _execute_raw_snapshot_to_anndata(adata).result
+    assert output.shape == expected.shape
+    science.pd.testing.assert_frame_equal(output.obs, expected.obs)
+    science.pd.testing.assert_frame_equal(output.var, expected.var)
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["raw_snapshot_to_anndata"](adata).shape == shape
 
 
 def test_data_node_schemas_are_current_and_reportable():
@@ -870,7 +873,7 @@ def test_merge_annotations_transfers_and_redirects_annotation_provenance(science
     assert reproduced.uns["openbio_singlecell"]["annotations"]["subtype"] == expected
 
 
-def test_merge_annotations_rejects_conflicting_target_annotation_provenance(science):
+def test_merge_annotations_overwrites_labels_with_different_annotation_provenance(science):
     target, source = _annotation_inputs(science)
     source.uns["openbio_singlecell"]["annotations"] = {
         "label": {
@@ -880,8 +883,8 @@ def test_merge_annotations_rejects_conflicting_target_annotation_provenance(scie
             "annotation_status": "curated",
         }
     }
-    _, _, code = _execute_merge(target, source, "label", "subtype").result
     conflicting_target = target.copy()
+    conflicting_target.obs["subtype"] = "old"
     conflicting_target.uns["openbio_singlecell"]["annotations"] = {
         "subtype": {
             "schema_version": 1,
@@ -891,19 +894,26 @@ def test_merge_annotations_rejects_conflicting_target_annotation_provenance(scie
         }
     }
 
-    with pytest.raises(ValueError, match="annotation provenance.*differs"):
-        _execute_merge(
-            conflicting_target,
-            source,
-            "label",
-            "subtype",
-            conflict_policy="overwrite",
-        )
+    output, report, code = _execute_merge(
+        conflicting_target,
+        source,
+        "label",
+        "subtype",
+        conflict_policy="overwrite",
+    ).result
+    assert output.obs["subtype"].tolist() == ["T", "B", "new", "old"]
+    provenance = output.uns["openbio_singlecell"]["annotations"]["subtype"]
+    assert provenance["operation"] == "merge_observation_annotations"
+    assert provenance["annotation_status"] == "unknown"
+    assert provenance["previous_annotation"]["annotation_status"] == "provisional"
+    assert provenance["source_annotation"]["annotation_status"] == "curated"
+    assert report.summary["key_results"]["annotation_provenance_status"] == "combined"
 
     namespace = {}
     exec(code, namespace)
-    with pytest.raises(ValueError, match="annotation provenance.*differs"):
-        namespace["merge_observation_annotations"](conflicting_target, source)
+    reproduced = namespace["merge_observation_annotations"](conflicting_target, source)
+    science.pd.testing.assert_frame_equal(reproduced.obs, output.obs)
+    assert reproduced.uns["openbio_singlecell"]["annotations"]["subtype"] == provenance
 
 
 def test_merge_annotations_preserves_normalized_equal_target_annotation_provenance(science):
@@ -943,6 +953,32 @@ def test_merge_annotations_preserves_normalized_equal_target_annotation_provenan
     )
 
 
+def test_merge_annotations_keep_target_preserves_its_annotation_provenance(science):
+    target, source = _annotation_inputs(science)
+    target.obs["cell_type"] = "old"
+    target_provenance = {
+        "schema_version": 1,
+        "operation": "map_cluster_annotations",
+        "output_column": "cell_type",
+        "annotation_status": "curated",
+    }
+    target.uns["openbio_singlecell"]["annotations"] = {"cell_type": target_provenance}
+    source.uns["openbio_singlecell"]["annotations"] = {
+        "label": {**target_provenance, "output_column": "label", "annotation_status": "provisional"}
+    }
+
+    output, report, code = _execute_merge(
+        target, source, "label", "cell_type", conflict_policy="keep_target"
+    ).result
+    assert output.obs["cell_type"].tolist() == ["old"] * 4
+    assert output.uns["openbio_singlecell"]["annotations"]["cell_type"] == target_provenance
+    assert report.summary["key_results"]["annotation_provenance_status"] == "unchanged"
+    namespace = {}
+    exec(code, namespace)
+    reproduced = namespace["merge_observation_annotations"](target, source)
+    assert reproduced.uns["openbio_singlecell"]["annotations"]["cell_type"] == target_provenance
+
+
 def test_merge_annotations_without_source_annotation_provenance_continues(science):
     target, source = _annotation_inputs(science)
 
@@ -956,6 +992,53 @@ def test_merge_annotations_without_source_annotation_provenance_continues(scienc
     exec(code, namespace)
     reproduced = namespace["merge_observation_annotations"](target, source)
     assert "annotations" not in reproduced.uns["openbio_singlecell"]
+
+
+def test_merge_annotations_external_labels_do_not_inherit_target_curation(science):
+    target, source = _annotation_inputs(science)
+    target.obs["cell_type"] = "old"
+    target.uns["openbio_singlecell"]["annotations"] = {
+        "cell_type": {
+            "schema_version": 1,
+            "operation": "map_cluster_annotations",
+            "output_column": "cell_type",
+            "annotation_status": "curated",
+        }
+    }
+    output, report, code = _execute_merge(
+        target, source, "label", "cell_type", conflict_policy="overwrite"
+    ).result
+    assert output.obs["cell_type"].tolist() == ["T", "B", "new", "old"]
+    provenance = output.uns["openbio_singlecell"]["annotations"]["cell_type"]
+    assert provenance["annotation_status"] == "unknown"
+    assert provenance["previous_annotation"]["annotation_status"] == "curated"
+    assert provenance["source_annotation"] == {}
+    assert report.summary["key_results"]["transferred_annotation_status"] is None
+    namespace = {}
+    exec(code, namespace)
+    reproduced = namespace["merge_observation_annotations"](target, source)
+    assert reproduced.uns["openbio_singlecell"]["annotations"]["cell_type"] == provenance
+
+
+def test_merge_annotations_retained_external_labels_are_not_declared_curated(science):
+    target, source = _annotation_inputs(science)
+    source.uns["openbio_singlecell"]["annotations"] = {
+        "label": {
+            "schema_version": 1,
+            "operation": "map_cluster_annotations",
+            "output_column": "label",
+            "annotation_status": "curated",
+        }
+    }
+    output, _, code = _execute_merge(target, source, "label", "cell_type", "overwrite").result
+    provenance = output.uns["openbio_singlecell"]["annotations"]["cell_type"]
+    assert provenance["annotation_status"] == "unknown"
+    assert provenance["previous_annotation"] == {}
+    assert provenance["source_annotation"]["annotation_status"] == "curated"
+    namespace = {}
+    exec(code, namespace)
+    reproduced = namespace["merge_observation_annotations"](target, source)
+    assert reproduced.uns["openbio_singlecell"]["annotations"]["cell_type"] == provenance
 
 
 def test_merge_annotations_preserves_new_categorical_dtype_and_validates_identity(science):
@@ -996,19 +1079,21 @@ def test_merge_annotations_preserves_new_categorical_dtype_and_validates_identit
 
     conflicting_source = source.copy()
     ensure_metadata(conflicting_source, source={"kind": "test", "study": "different"})
-    with pytest.raises(ValueError, match="different OpenBio source provenance"):
-        _execute_merge(
-            target,
-            conflicting_source,
-            "label",
-            "new_label",
-            conflict_policy="keep_target",
-        )
+    merged, conflicting_report, _ = _execute_merge(
+        target,
+        conflicting_source,
+        "label",
+        "new_label",
+        conflict_policy="keep_target",
+    ).result
+    science.pd.testing.assert_frame_equal(merged.obs, output.obs)
+    assert conflicting_report.summary["key_results"]["provenance_status"] == "conflicting_advisory"
+    assert any("different OpenBio source" in warning for warning in conflicting_report.summary["warnings"])
 
     namespace = {}
     exec(code, namespace)
-    with pytest.raises(ValueError, match="different OpenBio source provenance"):
-        namespace["merge_observation_annotations"](target, conflicting_source)
+    reproduced = namespace["merge_observation_annotations"](target, conflicting_source)
+    science.pd.testing.assert_frame_equal(reproduced.obs, output.obs)
 
 
 def test_merge_annotations_preserves_native_ordered_categories_and_rejects_noop_sources(science):

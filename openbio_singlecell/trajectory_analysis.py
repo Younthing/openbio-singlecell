@@ -23,7 +23,7 @@ _TA_DPT_SCHEMA = "openbio-singlecell/dpt/v1"
 _TA_DIFFMAP_PROVENANCE_KEY = "openbio_diffusion_map"
 _TA_PAGA_PROVENANCE_KEY = "openbio_paga"
 _TA_DPT_PROVENANCE_KEY = "openbio_dpt"
-_TA_MAX_PAGA_GROUPS = 256
+_TA_PAGA_GROUP_WARNING_THRESHOLD = 256
 _TA_MAX_PAGA_SUMMARY_EDGES = 2_000
 _TA_MAX_GRAPH_COMPONENT_SIZES = 100
 _TA_MAX_DIFFMAP_COMPONENT_SUMMARIES = 100
@@ -514,8 +514,6 @@ def _ta_validate_diffmap_bundle(adata, *, graph, numpy):
     if bool(numpy.any(numpy.diff(eigenvalues.astype(float)) > 1e-6)):
         raise ValueError("DPT Diffusion Map eigenvalues are not in non-increasing order.")
     provenance = adata.uns.get(_TA_DIFFMAP_PROVENANCE_KEY)
-    if not isinstance(provenance, Mapping) or provenance.get("schema") != _TA_DIFFMAP_SCHEMA:
-        raise ValueError("DPT requires OpenBio Diffusion Map provenance; a bare or external matrix is insufficient.")
     expected = {
         "neighbors_key": graph["neighbors_key"],
         "graph_fingerprint_sha256": graph["graph_fingerprint_sha256"],
@@ -523,9 +521,14 @@ def _ta_validate_diffmap_bundle(adata, *, graph, numpy):
         "n_comps": n_comps,
         "output_fingerprint_sha256": _ta_diffmap_output_fingerprint(coordinates, eigenvalues, numpy=numpy),
     }
-    for key, value in expected.items():
-        if provenance.get(key) != value:
-            raise ValueError(f"DPT Diffusion Map provenance mismatch for {key!r}; recompute Diffusion Map.")
+    if provenance is None:
+        provenance = expected
+    else:
+        if not isinstance(provenance, Mapping) or provenance.get("schema") != _TA_DIFFMAP_SCHEMA:
+            raise ValueError("DPT Diffusion Map provenance has an unsupported schema.")
+        for key, value in expected.items():
+            if provenance.get(key) != value:
+                raise ValueError(f"DPT Diffusion Map provenance mismatch for {key!r}; recompute Diffusion Map.")
     validation = _ta_validate_diffmap_eigenpairs(graph["connectivities"], coordinates, eigenvalues, numpy=numpy)
     return coordinates, eigenvalues, dict(provenance), validation
 
@@ -778,8 +781,6 @@ def _ta_partition(adata, *, groupby, operation, pandas, numpy):
     represented_counts = [int(value) for value, used in zip(counts.tolist(), used_mask, strict=True) if used]
     if len(represented) < 2:
         raise ValueError(f"{operation} requires at least two represented groups.")
-    if len(represented) > _TA_MAX_PAGA_GROUPS:
-        raise ValueError(f"{operation} supports at most {_TA_MAX_PAGA_GROUPS} represented groups per run.")
     category_codes = numpy.asarray(series.cat.codes, dtype="<i8")
     digest = hashlib.sha256()
     category_payload = json.dumps(
@@ -972,6 +973,11 @@ def _ta_run_paga(
         scipy_sparse=scipy_sparse,
         scipy_csgraph=scipy_csgraph,
     )
+    groupby = _ta_clean_text(groupby, label=f"{operation} groupby")
+    if groupby in adata.obs and not isinstance(adata.obs[groupby].dtype, pandas.CategoricalDtype):
+        grouping = adata.obs[[groupby]].copy()
+        adata.strings_to_categoricals(grouping)
+        adata.obs[groupby] = grouping[groupby]
     partition = _ta_partition(adata, groupby=groupby, operation=operation, pandas=pandas, numpy=numpy)
     overwrite_existing = _ta_boolean(overwrite_existing, label="PAGA overwrite_existing")
     sizes_key = f"{partition['groupby']}_sizes"
@@ -1115,6 +1121,11 @@ def _ta_run_paga(
         )
     )
     report_warnings = _ta_warning_messages(caught)
+    if len(partition["categories"]) > _TA_PAGA_GROUP_WARNING_THRESHOLD:
+        report_warnings.append(
+            f"PAGA retains {len(partition['categories'])} represented groups; a large group-level graph "
+            "can be costly to compute and difficult to interpret."
+        )
     if partition["unused_categories"]:
         report_warnings.append(
             f"Removed {len(partition['unused_categories'])} globally unused categorical level(s) on the output copy."
@@ -1133,7 +1144,7 @@ def _ta_run_paga(
         "model": "v1.2",
         "use_rna_velocity": False,
         "copy": False,
-        "max_supported_groups": _TA_MAX_PAGA_GROUPS,
+        "group_count_warning_threshold": _TA_PAGA_GROUP_WARNING_THRESHOLD,
         "max_summary_edges": _TA_MAX_PAGA_SUMMARY_EDGES,
     }
     key_results = {
@@ -1259,7 +1270,7 @@ def _ta_select_root(adata, *, root_mode, root_cell_id, root_column, root_value, 
     }
 
 
-def _ta_expected_dpt_pseudotime(coordinates, eigenvalues, *, root_index, n_dcs, numpy):
+def _ta_expected_dpt_pseudotime(coordinates, eigenvalues, *, root_index, n_dcs, reachable, numpy):
     squared = numpy.zeros(coordinates.shape[0], dtype=float)
     for component in range(n_dcs):
         value = float(eigenvalues[component])
@@ -1268,7 +1279,8 @@ def _ta_expected_dpt_pseudotime(coordinates, eigenvalues, *, root_index, n_dcs, 
             delta = (value / (1.0 - value)) * delta
         squared += delta**2
     distances = numpy.sqrt(squared)
-    maximum = float(distances.max())
+    distances[~reachable] = numpy.inf
+    maximum = float(distances[reachable].max())
     if not numpy.isfinite(maximum) or maximum <= 0:
         raise ValueError("DPT diffusion distances are degenerate and cannot define a relative ordering.")
     return distances / maximum
@@ -1320,14 +1332,10 @@ def _ta_run_dpt(
         scipy_sparse=scipy_sparse,
         scipy_csgraph=scipy_csgraph,
     )
-    if len(graph["component_sizes"]) != 1:
-        raise ValueError(
-            "Diffusion Pseudotime supports one connected graph component; subset the nominated biological lineage first."
-        )
     coordinates, eigenvalues, diffusion_provenance, diffusion_validation = _ta_validate_diffmap_bundle(
         adata, graph=graph, numpy=numpy
     )
-    n_dcs = _ta_integer(n_dcs, label="DPT n_dcs", minimum=2, maximum=4096)
+    n_dcs = _ta_integer(n_dcs, label="DPT n_dcs", minimum=1, maximum=4096)
     if n_dcs > coordinates.shape[1]:
         raise ValueError(
             f"DPT n_dcs={n_dcs} exceeds the graph-bound Diffusion Map basis ({coordinates.shape[1]} components)."
@@ -1343,6 +1351,9 @@ def _ta_run_dpt(
         n_dcs=n_dcs,
         numpy=numpy,
     )
+    reachable = graph["component_labels"] == graph["component_labels"][root_index]
+    reachable_count = int(reachable.sum())
+    unreachable_count = len(graph["obs_names"]) - reachable_count
     collisions = []
     for container_name, container, key in (
         ("obs", adata.obs, "dpt_pseudotime"),
@@ -1413,13 +1424,18 @@ def _ta_run_dpt(
         or not bool(numpy.array_equal(post_eigenvalues, eigenvalues))
     ):
         raise RuntimeError("DPT backend modified the graph-bound Diffusion Map bundle.")
-    pseudotime = _ta_validate_dense_float(
-        output.obs.get("dpt_pseudotime"),
-        shape=(len(graph["obs_names"]),),
+    pseudotime = numpy.asarray(output.obs.get("dpt_pseudotime"))
+    if pseudotime.shape != (len(graph["obs_names"]),):
+        raise RuntimeError("DPT pseudotime must align to the current observations.")
+    finite_pseudotime = _ta_validate_dense_float(
+        pseudotime[reachable],
+        shape=(reachable_count,),
         label="DPT pseudotime",
         numpy=numpy,
     )
-    if bool((pseudotime < -1e-7).any()) or bool((pseudotime > 1.0 + 1e-7).any()):
+    if not bool(numpy.isposinf(pseudotime[~reachable]).all()):
+        raise RuntimeError("DPT must mark cells outside the root component with positive infinity.")
+    if bool((finite_pseudotime < -1e-7).any()) or bool((finite_pseudotime > 1.0 + 1e-7).any()):
         raise RuntimeError("DPT backend returned pseudotime values outside [0, 1].")
     if not bool(numpy.isclose(pseudotime[root_index], 0.0, rtol=0.0, atol=1e-7)):
         raise RuntimeError("DPT backend did not assign zero pseudotime to the selected root cell.")
@@ -1428,6 +1444,7 @@ def _ta_run_dpt(
         eigenvalues,
         root_index=root_index,
         n_dcs=n_dcs,
+        reachable=reachable,
         numpy=numpy,
     )
     if not bool(numpy.allclose(pseudotime, expected_pseudotime, rtol=2e-6, atol=2e-7)):
@@ -1454,6 +1471,22 @@ def _ta_run_dpt(
     }
     output.uns[_TA_DPT_PROVENANCE_KEY] = provenance
     report_warnings = _ta_warning_messages(caught)
+    if n_dcs == 1:
+        report_warnings.append(
+            "DPT n_dcs=1 uses only the stationary diffusion component; its executable ordering does not "
+            "capture informative diffusion geometry."
+        )
+    if unreachable_count:
+        report_warnings.append(
+            f"DPT retained {unreachable_count} cells unreachable from the selected root with Scanpy's positive-infinity "
+            "pseudotime sentinel; numeric summaries and ordering cover only the root component."
+        )
+    source_provenance_available = diffusion_provenance.get("schema") == _TA_DIFFMAP_SCHEMA
+    if not source_provenance_available:
+        report_warnings.append(
+            "OpenBio Diffusion Map provenance was unavailable; the supplied coordinates and eigenvalues "
+            "were checked against the selected graph, but their original computation settings are unverified."
+        )
     parameters = {
         "neighbors_key": graph["neighbors_key"],
         "root_mode": root["mode"],
@@ -1475,16 +1508,19 @@ def _ta_run_dpt(
         "graph": _ta_graph_diagnostics(graph, numpy=numpy),
         "diffusion": {
             "n_available_components": int(coordinates.shape[1]),
+            "source_provenance_available": source_provenance_available,
             "n_dcs_used": n_dcs,
             "graph_fingerprint_sha256": graph_fingerprint,
             "output_fingerprint_sha256": diffusion_fingerprint,
             "scientific_validation": diffusion_validation,
         },
         "pseudotime": {
-            **_ta_numeric_summary(pseudotime, numpy=numpy),
+            **_ta_numeric_summary(finite_pseudotime, numpy=numpy),
+            "unreachable_cells": unreachable_count,
+            "unreachable_value": "positive_infinity",
             "root_value": float(pseudotime[root_index]),
-            "cells_at_or_before_0_05": int(numpy.sum(pseudotime <= 0.05)),
-            "cells_at_or_after_0_95": int(numpy.sum(pseudotime >= 0.95)),
+            "cells_at_or_before_0_05": int(numpy.sum(finite_pseudotime <= 0.05)),
+            "cells_at_or_after_0_95": int(numpy.sum(finite_pseudotime >= 0.95)),
             "output_key": "dpt_pseudotime",
             "provenance_key": _TA_DPT_PROVENANCE_KEY,
             "output_fingerprint_sha256": output_fingerprint,
@@ -1493,7 +1529,10 @@ def _ta_run_dpt(
                 "comparison_rtol": 2e-6,
                 "comparison_atol": 2e-7,
             },
-            "stable_ordering": _ta_dpt_ordering(pseudotime, graph["obs_names"]),
+            "stable_ordering": _ta_dpt_ordering(
+                finite_pseudotime,
+                tuple(name for name, included in zip(graph["obs_names"], reachable, strict=True) if included),
+            ),
         },
     }
     summary = _ta_summary(
@@ -1501,11 +1540,11 @@ def _ta_run_dpt(
         methods=(
             f"Computed single-root Diffusion Pseudotime with scanpy.tl.dpt {scanpy_version}, n_dcs={n_dcs}, "
             f"n_branchings=0, from exact root cell {root['root_cell_id']!r}. The named graph and upstream "
-            "Diffusion Map provenance were verified before and after execution."
+            "Diffusion Map eigenpairs were verified before and after execution."
         ),
         results=(
-            f"Relative pseudotime ranged from {float(pseudotime.min()):.6g} to {float(pseudotime.max()):.6g} "
-            f"across {len(pseudotime)} cells, with root {root['root_cell_id']!r} fixed at zero."
+            f"Relative pseudotime ranged from {float(finite_pseudotime.min()):.6g} to {float(finite_pseudotime.max()):.6g} "
+            f"across {reachable_count} reachable cells, with root {root['root_cell_id']!r} fixed at zero."
         ),
         key_results=key_results,
         parameters=parameters,
@@ -1688,7 +1727,7 @@ def paga_code(*, groupby: str, neighbors_key: str, overwrite_existing: bool) -> 
             helpers=_TA_PAGA_STANDALONE_HELPERS,
             declarations=f"""_TA_PAGA_SCHEMA = {_TA_PAGA_SCHEMA!r}
 _TA_PAGA_PROVENANCE_KEY = {_TA_PAGA_PROVENANCE_KEY!r}
-_TA_MAX_PAGA_GROUPS = {_TA_MAX_PAGA_GROUPS!r}
+_TA_PAGA_GROUP_WARNING_THRESHOLD = {_TA_PAGA_GROUP_WARNING_THRESHOLD!r}
 _TA_MAX_PAGA_SUMMARY_EDGES = {_TA_MAX_PAGA_SUMMARY_EDGES!r}
 _TA_MAX_GRAPH_COMPONENT_SIZES = {_TA_MAX_GRAPH_COMPONENT_SIZES!r}
 _TA_RUNTIME_LOCK = threading.RLock()

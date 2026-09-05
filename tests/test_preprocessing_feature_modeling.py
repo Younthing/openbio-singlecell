@@ -195,6 +195,44 @@ def _assert_preserved(actual, original, science):
         science.np.testing.assert_allclose(_dense(actual.raw.X, science), _dense(original.raw.X, science))
 
 
+@pytest.mark.parametrize(
+    ("operation", "function_name", "source_field"),
+    [
+        (_normalize_to_layer, "normalize_expression_to_layer", "source_layer"),
+        (_pearson, "pearson_residuals_to_layer", "source_layer"),
+        (_scale, "scale_expression_to_layer", "layer_name"),
+    ],
+)
+@pytest.mark.parametrize("replace_source", [False, True])
+def test_derived_layers_honor_counts_name_and_explicit_source_overwrite(
+    science, operation, function_name, source_field, replace_source
+):
+    original = _adata(science, sparse=False)
+    if not replace_source:
+        del original.layers["counts"]
+    source = {"source": "layer", source_field: "counts"} if replace_source else {"source": "X"}
+    expected, _, _ = operation(original, source=source, output_layer="comparison").result
+
+    output, report, code = operation(
+        original, source=source, output_layer="counts", overwrite_existing=replace_source
+    ).result
+
+    science.np.testing.assert_allclose(output.layers["counts"], expected.layers["comparison"])
+    science.np.testing.assert_array_equal(output.X, original.X)
+    science.np.testing.assert_array_equal(output.raw.X, original.raw.X)
+    assert report.summary["key_results"]["source_preserved"] is (not replace_source)
+    assert report.summary["key_results"]["replaced_existing_layer"] is replace_source
+    generated = _run_code(code, function_name, original.copy())
+    science.np.testing.assert_allclose(generated.layers["counts"], expected.layers["comparison"])
+    science.np.testing.assert_array_equal(generated.X, original.X)
+    science.np.testing.assert_array_equal(generated.raw.X, original.raw.X)
+    with pytest.raises(ValueError, match="already exists"):
+        operation(output, source=source, output_layer="counts", overwrite_existing=False)
+    if not replace_source:
+        with pytest.raises(ValueError, match="already exists"):
+            _run_code(code, function_name, output.copy())
+
+
 def test_feature_modeling_schemas_expose_primary_summary_and_code():
     pearson = OpenBioSingleCellPearsonResidualsToLayer.define_schema()
     hvg = OpenBioSingleCellHighlyVariableGenes.define_schema()
@@ -276,17 +314,22 @@ def test_pearson_residuals_matches_scanpy_preserves_source_and_code(science, mod
     _assert_preserved(generated, original, science)
 
 
-def test_pearson_residuals_warns_for_fractional_counts_and_rejects_undefined_inputs(science):
+@pytest.mark.parametrize(
+    ("source_value", "expected_warning"), [(1.5, "fractional non-negative"), (-0.25, "negative values")]
+)
+def test_pearson_residuals_warns_for_expert_expression_and_rejects_undefined_inputs(
+    science, source_value, expected_warning
+):
     noninteger = _adata(science, sparse=False)
-    noninteger.layers["counts"][0, 0] = 1.5
+    noninteger.layers["counts"][0, 0] = source_value
     output, report, code = _pearson(
         noninteger,
         source={"source": "layer", "source_layer": "counts"},
     ).result
     assert science.np.isfinite(output.layers["analytic_pearson_residuals"]).all()
     assert report.summary["key_results"]["input_integer_like"] is False
-    assert any("fractional non-negative" in warning for warning in report.summary["warnings"])
-    with pytest.warns(UserWarning, match="fractional non-negative"):
+    assert any(expected_warning in warning for warning in report.summary["warnings"])
+    with pytest.warns(UserWarning, match=expected_warning):
         generated = _run_code(code, "pearson_residuals_to_layer", noninteger)
     science.np.testing.assert_allclose(
         generated.layers["analytic_pearson_residuals"],
@@ -414,6 +457,33 @@ def test_hvg_ignores_external_scanpy_log_marker(science):
     assert "source_state_evidence" not in report.summary["key_results"]
     generated = _run_code(code, "select_highly_variable_genes", external)
     science.np.testing.assert_array_equal(generated.var["highly_variable"], output.var["highly_variable"])
+
+
+@pytest.mark.parametrize("flavor", ["seurat", "cell_ranger", "seurat_v3", "seurat_v3_paper", "pearson_residuals"])
+def test_hvg_preserves_signed_expression_and_zero_total_cells_when_scanpy_runs(science, flavor):
+    if flavor in {"seurat_v3", "seurat_v3_paper"}:
+        pytest.importorskip("skmisc.loess")
+    rng = science.np.random.default_rng(7)
+    matrix = rng.poisson(science.np.linspace(1, 20, 80), size=(50, 80)).astype(float)
+    matrix[0, :] = 0.0
+    matrix[1, 0] = -0.25
+    if flavor in {"seurat", "cell_ranger"}:
+        matrix = science.np.log1p(matrix)
+    original = science.ad.AnnData(matrix)
+    expected = original.copy()
+    backend = science.sc.experimental.pp if flavor == "pearson_residuals" else science.sc.pp
+    backend.highly_variable_genes(expected, flavor=flavor, n_top_genes=12, check_values=False)
+
+    with pytest.warns(UserWarning):
+        output, report, code = _hvg(original, n_top_genes=12, flavor=flavor, source={"source": "X"}).result
+
+    science.np.testing.assert_array_equal(output.X, original.X)
+    science.np.testing.assert_array_equal(output.var["highly_variable"], expected.var["highly_variable"])
+    assert any("negative" in warning for warning in report.summary["warnings"])
+    assert any("zero total" in warning for warning in report.summary["warnings"])
+    with pytest.warns(UserWarning):
+        generated = _run_code(code, "select_highly_variable_genes", original.copy())
+    science.np.testing.assert_array_equal(generated.var["highly_variable"], expected.var["highly_variable"])
 
 
 def test_hvg_honors_explicit_sources_and_enforces_structural_contracts(science):
@@ -600,6 +670,22 @@ def test_hvg_allows_oversized_request_and_pearson_singleton_group(science):
         generated_singleton.var["highly_variable"],
         output.var["highly_variable"],
     )
+
+
+def test_scale_accepts_negative_upper_clip_like_scanpy(science):
+    original = science.ad.AnnData(science.np.asarray([[-2.0, 1.0], [-1.0, 2.0], [1.0, 3.0], [2.0, 4.0]]))
+    expected = original.copy()
+    science.sc.pp.scale(expected, zero_center=False, max_value=-1.0)
+
+    with pytest.warns(UserWarning, match="negative clipping bound"):
+        output, report, code = _scale(
+            original, source={"source": "X"}, zero_center=False, custom_max_value=-1.0
+        ).result
+
+    science.np.testing.assert_allclose(output.layers["scaled"], expected.X)
+    assert report.summary["parameters"]["resolved_max_value"] == -1.0
+    generated = _run_code(code, "scale_expression_to_layer", original.copy())
+    science.np.testing.assert_allclose(generated.layers["scaled"], expected.X)
 
 
 @pytest.mark.parametrize("zero_center", [False, True])

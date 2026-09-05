@@ -397,7 +397,7 @@ def _strict_provenance(
             ):
                 raise ValueError(f"SCENIC binary {name} is invalid.")
         seed = result["random_seed"]
-        if isinstance(seed, bool) or not isinstance(seed, int) or not 1 <= seed <= 2**31 - 1:
+        if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 2**31 - 1:
             raise ValueError("SCENIC binary random_seed is invalid.")
         if result["algorithm"] != "pyscenic-0.12.1-hdt-compatible-single-worker":
             raise ValueError("SCENIC binary algorithm provenance is invalid.")

@@ -415,7 +415,7 @@ def test_schist_runs_exact_reviewed_model_and_generated_code_is_equivalent(scien
     [
         ({"random_seed": 0}, ValueError, "zero leaves graph-tool unseeded"),
         ({"random_seed": True}, TypeError, "random_seed"),
-        ({"posterior_samples": 99}, ValueError, "at least 100"),
+        ({"posterior_samples": 0}, ValueError, "at least 1"),
         ({"posterior_samples": True}, TypeError, "posterior_samples"),
         ({"degree_correction": 1}, TypeError, "degree_correction"),
         ({"overwrite_existing": 1}, TypeError, "overwrite_existing"),
@@ -556,6 +556,26 @@ def test_equivalent_sparse_graph_formats_have_one_canonical_fingerprint(science,
         science.np.testing.assert_array_equal(matrix.indptr, passed_matrices[0].indptr)
         science.np.testing.assert_array_equal(matrix.indices, passed_matrices[0].indices)
         science.np.testing.assert_array_equal(matrix.data, passed_matrices[0].data)
+
+
+def test_low_schist_posterior_sampling_is_preserved_with_code_parity(science, monkeypatch):
+    _install_fake_schist(science, monkeypatch)
+    adata = _graph_adata(science)
+    parameters = {
+        "neighbors_key": "custom_neighbors", "posterior_samples": 10, "random_seed": 19,
+        "key_added": "hierarchy", "degree_correction": True, "overwrite_existing": False,
+        "max_working_memory_gib": 1.0, "openbio_version": "test",
+    }
+    reproduction_input = adata.copy()
+    output, summary = run_schist_nested_model(adata, **parameters)
+    assert summary["parameters"]["posterior_samples"] == 10
+    assert any("fewer than 100" in warning for warning in summary["warnings"])
+    namespace = {}
+    exec(schist_nested_model_code(**parameters), namespace)
+    reproduced, reproduced_summary = namespace["run_schist_nsbm"](reproduction_input)
+    science.pd.testing.assert_frame_equal(reproduced.obs, output.obs)
+    assert reproduced_summary["parameters"] == summary["parameters"]
+    assert reproduced_summary["warnings"] == summary["warnings"]
 
 
 def test_disconnected_named_graph_is_preserved_and_disclosed(science, monkeypatch):

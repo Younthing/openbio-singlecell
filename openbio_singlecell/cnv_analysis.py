@@ -253,8 +253,6 @@ def _cnv_reference_design(
     for key, role in ((reference_key, "reference"), (sample_key, "biological Sample")):
         if key not in adata.obs:
             raise ValueError(f"Infer CNV {role} column not found in obs[{key!r}].")
-    if not isinstance(adata.obs[reference_key].dtype, pandas.CategoricalDtype):
-        raise TypeError("Infer CNV reference annotations must be explicitly categorical.")
     references = _cnv_canonical_string_series(
         adata.obs[reference_key], label="Infer CNV reference annotations", pandas=pandas
     )
@@ -262,7 +260,7 @@ def _cnv_reference_design(
         adata.obs[sample_key], label="Infer CNV biological Sample annotations", pandas=pandas
     )
     requested = _cnv_csv(reference_categories, label="Infer CNV reference_categories")
-    available = tuple(str(value) for value in adata.obs[reference_key].cat.categories)
+    available = tuple(dict.fromkeys(references))
     if any(not value or value != value.strip() for value in available):
         raise ValueError("Infer CNV reference categories contain blank or noncanonical labels.")
     missing = [value for value in requested if value not in available]
@@ -270,12 +268,8 @@ def _cnv_reference_design(
         raise ValueError(f"Infer CNV reference categories were not found exactly: {missing!r}.")
     mask = tuple(value in requested for value in references)
     reference_count = sum(mask)
-    if reference_count < minimum_reference_cells:
-        raise ValueError(
-            f"Infer CNV requires at least {minimum_reference_cells} reference cells; found {reference_count}."
-        )
-    if reference_count == len(references):
-        raise ValueError("Infer CNV requires at least one non-reference cell in addition to the background cells.")
+    if reference_count == 0:
+        raise ValueError("Infer CNV requires at least one observed reference cell.")
     category_counts = [
         {"category": value, "cells": sum(label == value for label in references)} for value in requested
     ]
@@ -296,6 +290,7 @@ def _cnv_reference_design(
         "sample_key": sample_key,
         "reference_mask": mask,
         "reference_cells": reference_count,
+        "below_requested_minimum": reference_count < minimum_reference_cells,
         "non_reference_cells": len(references) - reference_count,
         "category_counts": category_counts,
         "sample_counts": sample_counts,
@@ -349,18 +344,12 @@ def _cnv_coordinates(
     excluded_counts = {key: value for key, value in counts.items() if key in effective_exclusions}
     if not retained_counts:
         raise ValueError("Infer CNV chromosome exclusions remove every annotated feature.")
-    too_short = {key: value for key, value in retained_counts.items() if value < window_size}
-    if too_short:
-        raise ValueError(
-            f"Infer CNV retained chromosomes must each contain at least window_size={window_size} genes; "
-            f"too short: {too_short!r}. Exclude those chromosomes or reduce the window deliberately."
-        )
     ordered = list(natsort.natsorted(retained_counts))
     windows = []
     offset = 0
     for chromosome in ordered:
         gene_count = retained_counts[chromosome]
-        window_count = int(math.ceil((gene_count - window_size + 1) / step))
+        window_count = max(1, int(math.ceil((gene_count - window_size + 1) / step)))
         windows.append(
             {
                 "chromosome": chromosome,
@@ -370,8 +359,6 @@ def _cnv_coordinates(
             }
         )
         offset += window_count
-    if offset < 2:
-        raise ValueError("Infer CNV requires at least two genomic windows after exclusions.")
     coordinate_records = [
         [gene, chromosome, int(start), int(end)]
         for gene, chromosome, start, end in zip(
@@ -781,10 +768,8 @@ def _cnv_run_infer(
         ),
     )
     obs_names, var_names = _cnv_axes(adata, operation=operation)
-    if len(obs_names) < 2:
-        raise ValueError("Infer CNV requires at least two cells.")
-    window_size = _cnv_int(window_size, label="Infer CNV window_size", minimum=2, maximum=10000)
-    step = _cnv_int(step, label="Infer CNV step", minimum=1, maximum=window_size)
+    window_size = _cnv_int(window_size, label="Infer CNV window_size", minimum=1, maximum=10000)
+    step = _cnv_int(step, label="Infer CNV step", minimum=1, maximum=10000)
     lfc_clip = _cnv_float(lfc_clip, label="Infer CNV lfc_clip", minimum=1e-12)
     dynamic_threshold = _cnv_float(
         dynamic_threshold, label="Infer CNV dynamic_threshold", minimum=0.0
@@ -792,8 +777,8 @@ def _cnv_run_infer(
     minimum_reference_cells = _cnv_int(
         minimum_reference_cells,
         label="Infer CNV minimum_reference_cells",
-        minimum=2,
-        maximum=len(obs_names) - 1,
+        minimum=1,
+        maximum=2**31 - 1,
     )
     chunksize = _cnv_int(chunksize, label="Infer CNV chunksize", minimum=1, maximum=2**31 - 1)
     n_jobs = _cnv_int(n_jobs, label="Infer CNV n_jobs", minimum=1, maximum=256)
@@ -1008,6 +993,11 @@ def _cnv_run_infer(
         artifact, numpy=numpy, scipy_sparse=scipy_sparse, _owned=_worker_owned
     )
     report_warnings = _cnv_warning_messages(caught)
+    if design["below_requested_minimum"]:
+        report_warnings.append(
+            f"The selected {design['reference_cells']} reference cells are below minimum_reference_cells="
+            f"{minimum_reference_cells}; the explicit reference was retained."
+        )
     if coordinates["implicit_chrM_added"]:
         report_warnings.append(
             "infercnvpy 0.6.1 always omits chrM; it was added to the effective exclusion set and disclosed."
@@ -1041,6 +1031,7 @@ def _cnv_run_infer(
             "key": design["reference_key"],
             "categories": list(design["reference_categories"]),
             "reference_cells": design["reference_cells"],
+            "below_requested_minimum": design["below_requested_minimum"],
             "non_reference_cells": design["non_reference_cells"],
             "category_counts": design["category_counts"],
             "sample_key": design["sample_key"],
@@ -1292,15 +1283,14 @@ def _cnv_partition(adata, *, groupby, pandas, numpy):
     if groupby not in adata.obs:
         raise ValueError(f"CNV Score groupby column not found in obs[{groupby!r}].")
     series = adata.obs[groupby]
-    if not isinstance(series.dtype, pandas.CategoricalDtype):
-        raise TypeError("CNV Score groupby must be explicitly categorical.")
     if bool(series.isna().any()):
         raise ValueError("CNV Score groupby contains missing labels.")
     categories = []
     displays = []
     counts = series.value_counts(sort=False)
     unused = []
-    for index, value in enumerate(series.cat.categories):
+    category_values = series.cat.categories if isinstance(series.dtype, pandas.CategoricalDtype) else series.unique()
+    for value in category_values:
         if hasattr(value, "item"):
             value = value.item()
         if isinstance(value, bool):
@@ -1318,12 +1308,10 @@ def _cnv_partition(adata, *, groupby, pandas, numpy):
         if record["display"] in displays:
             raise ValueError("CNV Score group categories collide after display rendering.")
         displays.append(record["display"])
-        if int(counts.iloc[index]) > 0:
+        if int(counts.loc[value]) > 0:
             categories.append(record)
         else:
             unused.append(record)
-    if len(categories) < 2:
-        raise ValueError("CNV Score requires at least two represented groups.")
     observed_records = []
     for value in series.astype(object).tolist():
         if hasattr(value, "item"):

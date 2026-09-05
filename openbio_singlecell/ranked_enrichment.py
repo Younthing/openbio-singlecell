@@ -155,7 +155,10 @@ def _standalone_ranked_gsea_summary(diagnostics):
             "doi": "10.1111/j.2517-6161.1995.tb02031.x",
         },
         {
-            "citation": (f"{metadata['name']} {metadata['version']} ({metadata['date']}): {metadata['citation']}"),
+            "citation": (
+                f"{metadata.get('name', 'Gene-set resource')} {metadata.get('version', '')} "
+                f"({metadata.get('date', 'date not supplied')}): {metadata.get('citation', 'citation not supplied')}"
+            ),
             "url": f"urn:sha256:{resource['sha256']}",
             "kind": "resource",
             "doi": None,
@@ -350,7 +353,8 @@ def _standalone_run_ranked_gsea(
         resource = preloaded_resource
     for identity_field in ("organism", "identifier_namespace"):
         upstream_identity = upstream_parameters.get(identity_field)
-        if upstream_identity is not None and upstream_identity != resource["metadata"][identity_field]:
+        resource_identity = resource["metadata"].get(identity_field)
+        if upstream_identity is not None and resource_identity and upstream_identity != resource_identity:
             runtime_provenance_warnings.append(
                 f"{operation} resource {identity_field} conflicts with upstream evidence: "
                 f"{resource['metadata'][identity_field]!r} != {upstream_identity!r}. Exact identifier matching "
@@ -621,6 +625,7 @@ def _standalone_run_ranked_gsea(
         "result_fingerprint": result_sha256(evidence),
     }
     warnings = [
+        *resource.get("warnings", []),
         *runtime_provenance_warnings,
         "Resource organism, namespace, scope, license, and citation are caller declarations; SHA-256 identifies exact bytes but not biological suitability.",
         "The backend reports adjusted empirical permutation p-values; no raw p-value or leading-edge column is available from this interface.",

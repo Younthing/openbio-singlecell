@@ -107,6 +107,21 @@ def _install_fake_scrublet(monkeypatch, science, *, include_threshold=True):
     return calls
 
 
+def test_mad_zero_multiplier_uses_the_median_as_the_selected_cutoff(science):
+    value = _adata_with_obs(science, [0.0, 1.0, 2.0])
+
+    output, report, code = mark_mad_outliers_owned(
+        value, metrics="metric", batch_key="", nmads=0.0, direction="upper"
+    )
+
+    assert output.obs["outlier"].tolist() == [False, False, True]
+    assert report.summary["parameters"]["nmads"] == 0.0
+    namespace = {}
+    exec(code, namespace)
+    generated = namespace["mark_mad_outliers"](_adata_with_obs(science, [0.0, 1.0, 2.0]))
+    assert generated.obs["outlier"].equals(output.obs["outlier"])
+
+
 def test_mad_normal_scaling_uses_scipy_normal_convention_and_code_matches(science):
     value = _adata_with_obs(science, [0.0, 1.0, 2.0])
 
@@ -170,7 +185,7 @@ def test_mad_is_grouped_by_sample_and_reports_thresholds(science):
 
 def test_mad_validates_group_labels_metrics_and_small_groups(science):
     finite = _adata_with_obs(science, [1.0, 2.0, 3.0], samples=["a", "a", "a"])
-    with pytest.raises(ValueError, match="greater than zero"):
+    with pytest.raises(ValueError, match="finite"):
         mark_mad_outliers_owned(finite, metrics="metric", nmads=science.np.nan)
 
     missing_group = _adata_with_obs(science, [1.0, 2.0, 3.0], samples=["a", None, "a"])
@@ -356,12 +371,12 @@ def test_scrublet_warns_on_advisory_inputs_and_rejects_computational_contracts(m
     negative = value.copy()
     negative.layers["counts"] = negative.layers["counts"].copy()
     negative.layers["counts"].data[0] = -1
-    with pytest.raises(ValueError, match="negative expression"):
-        scrublet_owned(
-            negative,
-            n_prin_comps=2,
-            source={"source": "layer", "source_layer": "counts"},
-        )
+    _, negative_report, _ = scrublet_owned(
+        negative,
+        n_prin_comps=2,
+        source={"source": "layer", "source_layer": "counts"},
+    )
+    assert any("negative expression" in warning for warning in negative_report.warnings)
 
     nonfinite = value.copy()
     nonfinite.layers["counts"] = nonfinite.layers["counts"].copy()
@@ -380,13 +395,13 @@ def test_scrublet_warns_on_advisory_inputs_and_rejects_computational_contracts(m
     all_negative = value.copy()
     all_negative.layers["counts"] = all_negative.layers["counts"].copy()
     all_negative.layers["counts"].data[:] = -science.np.abs(all_negative.layers["counts"].data)
-    with pytest.raises(ValueError, match="negative expression"):
+    with pytest.raises(ValueError, match="no positive expression"):
         scrublet_owned(
             all_negative,
             n_prin_comps=2,
             source={"source": "layer", "source_layer": "counts"},
         )
-    with pytest.raises(ValueError, match="negative expression"):
+    with pytest.raises(ValueError, match="no positive expression"):
         namespace["run_scrublet"](all_negative)
 
     with pytest.raises(ValueError, match="requires at least 4 cells"):
@@ -531,6 +546,9 @@ def test_filter_doublets_rejects_missing_and_reports_all_true_predictions(scienc
 
 
 def test_correction_node_schema_prefixes_are_current():
+    nmads = next(item for item in _MAD_SCHEMA.define_schema().inputs if item.id == "nmads")
+    assert nmads.min == 0.0
+    assert nmads.max is None
     assert [item.id for item in _MAD_SCHEMA.define_schema().inputs[:7]] == [
         "adata",
         "metrics",

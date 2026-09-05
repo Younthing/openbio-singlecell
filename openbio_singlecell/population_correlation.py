@@ -344,9 +344,6 @@ def analyze_population_centroid_correlation(
         )
     selected = science.np.asarray(representation[:, :resolved_dimensions], dtype=float)
     informative_dimensions = int((science.np.ptp(selected, axis=0) > 0).sum())
-    if informative_dimensions < 2:
-        raise ValueError("Population centroid correlation requires at least two nonconstant dimensions.")
-
     counts = {category: labels.count(category) for category in categories}
     centroids = science.np.vstack([selected[science.np.asarray(labels) == category].mean(axis=0) for category in categories])
     expected_matrix = science.pd.DataFrame(centroids, index=categories).T.corr(method=correlation_method).to_numpy()

@@ -39,20 +39,16 @@ def render_hvg_selection_plot(adata):
         else []
     )
     recorded_input_genes = int(hvg_history[-1]["input_genes"]) if hvg_history else None
-    if recorded_input_genes is not None and recorded_input_genes != int(adata.n_vars):
-        raise ValueError(
-            f"HVG Selection Plot feature axis recorded {recorded_input_genes:,} input genes, but the current "
-            f"AnnData has {int(adata.n_vars):,}; stored HVG evidence was feature-sliced."
-        )
     feature_axis_validation = "verified" if recorded_input_genes is not None else "unverified"
     base_variability_column, selection_variability_column = flavor_columns[flavor]
+    origin_columns = ("highly_variable_algorithm", "highly_variable_forced")
+    has_selection_origin = any(column in adata.var for column in origin_columns)
     required_columns = (
         "means",
         base_variability_column,
         selection_variability_column,
         "highly_variable",
-        "highly_variable_algorithm",
-        "highly_variable_forced",
+        *(origin_columns if has_selection_origin else ()),
     )
     missing_columns = [column for column in required_columns if column not in adata.var]
     if missing_columns:
@@ -74,34 +70,48 @@ def render_hvg_selection_plot(adata):
         metric_values[column] = values
     means = metric_values["means"]
     selection_values = {}
-    for column in ("highly_variable_algorithm", "highly_variable_forced", "highly_variable"):
+    for column in ("highly_variable", *(origin_columns if has_selection_origin else ())):
         series = adata.var[column]
         if not is_bool_dtype(series.dtype) or bool(series.isna().any()):
             raise ValueError(f"HVG Selection Plot requires complete boolean evidence in adata.var[{column!r}].")
         selection_values[column] = np.asarray(series, dtype=bool)
-    algorithm = selection_values["highly_variable_algorithm"]
-    forced_mask = selection_values["highly_variable_forced"]
     final = selection_values["highly_variable"]
-    if not np.array_equal(final, algorithm | forced_mask):
-        raise ValueError(
-            "HVG Selection Plot selection masks are inconsistent: highly_variable must equal "
-            "highly_variable_algorithm OR highly_variable_forced."
-        )
-    forced = forced_mask & ~algorithm
     unselected = ~final
-    if not bool(np.isfinite(metric_values[selection_variability_column][algorithm]).all()):
-        raise ValueError(
-            "HVG Selection Plot algorithm-selected features require finite selection evidence in "
-            f"adata.var[{selection_variability_column!r}]."
+    if has_selection_origin:
+        algorithm = selection_values["highly_variable_algorithm"]
+        forced_mask = selection_values["highly_variable_forced"]
+        if not np.array_equal(final, algorithm | forced_mask):
+            raise ValueError(
+                "HVG Selection Plot selection masks are inconsistent: highly_variable must equal "
+                "highly_variable_algorithm OR highly_variable_forced."
+            )
+        forced = forced_mask & ~algorithm
+        if not bool(np.isfinite(metric_values[selection_variability_column][algorithm]).all()):
+            raise ValueError(
+                "HVG Selection Plot algorithm-selected features require finite selection evidence in "
+                f"adata.var[{selection_variability_column!r}]."
+            )
+        categories = (
+            (unselected, "Unselected", "#BDBDBD"),
+            (algorithm, "Algorithm-selected", "#0072B2"),
+            (forced, "Forced", "#D55E00"),
         )
+        selection_counts = {
+            "algorithm_selected": int(algorithm.sum()),
+            "forced": int(forced.sum()),
+            "unselected": int(unselected.sum()),
+        }
+    else:
+        categories = ((unselected, "Unselected", "#BDBDBD"), (final, "Selected", "#0072B2"))
+        selection_counts = {
+            "selected": int(final.sum()),
+            "algorithm_selected": None,
+            "forced": None,
+            "unselected": int(unselected.sum()),
+        }
     figure = Figure(figsize=(10.0, 4.2))
     FigureCanvasAgg(figure)
     axes = figure.subplots(1, 2)
-    categories = (
-        (unselected, "Unselected", "#BDBDBD"),
-        (algorithm, "Algorithm-selected", "#0072B2"),
-        (forced, "Forced", "#D55E00"),
-    )
     plot_warnings = (
         []
         if recorded_input_genes is not None
@@ -110,6 +120,17 @@ def render_hvg_selection_plot(adata):
             "highly_variable_genes history is available."
         ]
     )
+    if recorded_input_genes is not None and recorded_input_genes != int(adata.n_vars):
+        feature_axis_validation = "different_from_recorded"
+        plot_warnings.append(
+            f"HVG Selection Plot history recorded {recorded_input_genes:,} input genes, while the current "
+            f"AnnData has {int(adata.n_vars):,}; only the current stored features are displayed."
+        )
+    if not has_selection_origin:
+        plot_warnings.append(
+            "HVG selection origin is unavailable; displayed the stored highly_variable mask without "
+            "classifying features as algorithm-selected or forced."
+        )
     plotted_points_by_panel = {}
     omitted_features_by_panel = {}
     for axis, column in zip(axes, (selection_variability_column, base_variability_column), strict=True):
@@ -140,11 +161,7 @@ def render_hvg_selection_plot(adata):
         "flavor": flavor,
         "mean_column": "means",
         "variability_columns": [selection_variability_column, base_variability_column],
-        "selection_counts": {
-            "algorithm_selected": int(algorithm.sum()),
-            "forced": int(forced.sum()),
-            "unselected": int(unselected.sum()),
-        },
+        "selection_counts": selection_counts,
         "input_features": int(adata.n_vars),
         "plotted_points_by_panel": plotted_points_by_panel,
         "omitted_features_by_panel": omitted_features_by_panel,

@@ -142,6 +142,21 @@ def test_marker_dense_and_sparse_results_agree(science):
     science.pd.testing.assert_frame_equal(dense_table, sparse_table, check_exact=False, rtol=1e-6, atol=1e-8)
 
 
+def test_marker_caps_oversized_gene_request_to_available_features(science):
+    adata = _logged_adata(science)
+    expected, _, _, _ = _rank(adata)
+
+    table, universe, report, code = _rank(adata, n_genes=100)
+
+    science.pd.testing.assert_frame_equal(table.table, expected.table)
+    assert report.summary["key_results"]["requested_n_genes"] == 100
+    assert report.summary["key_results"]["actual_n_genes_per_group"] == adata.n_vars
+    assert report.summary["key_results"]["total_output_rows"] == len(table.table) + len(universe.table)
+    generated_table, generated_universe = _run_code(code, "rank_marker_genes", adata)
+    science.pd.testing.assert_frame_equal(generated_table, table.table)
+    science.pd.testing.assert_frame_equal(generated_universe, universe.table)
+
+
 def test_marker_recomputes_bh_over_complete_family_including_constants(science):
     adata = _logged_adata(science, sparse_matrix=False)
     logged = science.np.asarray(adata.layers["log1p_norm"]).copy()
@@ -379,8 +394,25 @@ def test_marker_rejects_invalid_grouping(science):
     adata = _logged_adata(science)
     adata.obs = adata.obs.assign(cluster=["A"] * adata.n_obs)
 
-    with pytest.raises(TypeError, match="must be categorical"):
+    with pytest.raises(ValueError, match="at least two observed groups"):
         _rank(adata, n_genes=3)
+
+
+def test_marker_accepts_string_grouping_in_scanpy_order_without_mutation(science):
+    adata = _logged_adata(science)
+    adata.obs["cluster"] = ["A10"] * 6 + ["A2"] * 6
+    original = adata.obs.copy()
+    expected = adata.copy()
+    science.sc.tl.rank_genes_groups(expected, "cluster", method="wilcoxon", tie_correct=True, use_raw=False)
+
+    table, universe, _, code = _rank(adata, n_genes=3)
+
+    assert table.table["group"].drop_duplicates().tolist() == expected.obs["cluster"].cat.categories.tolist()
+    science.pd.testing.assert_frame_equal(adata.obs, original)
+    generated_table, generated_universe = _run_code(code, "rank_marker_genes", adata)
+    science.pd.testing.assert_frame_equal(generated_table, table.table)
+    science.pd.testing.assert_frame_equal(generated_universe, universe.table)
+    science.pd.testing.assert_frame_equal(adata.obs, original)
 
 
 def test_marker_numeric_disclosures_do_not_infer_expression_state(science):
@@ -413,7 +445,27 @@ def test_marker_numeric_disclosures_do_not_infer_expression_state(science):
     science.pd.testing.assert_frame_equal(generated_universe, universe.table)
 
 
-def test_marker_rejects_logreg_irrelevant_tie_policy_and_output_budget(science):
+def test_marker_ignores_tie_correction_for_t_test_like_scanpy(science):
+    adata = _logged_adata(science)
+    parameters = {
+        "groupby": "cluster",
+        "method": "t-test",
+        "source": {"source": "layer", "layer_name": "log1p_norm"},
+        "n_genes": 3,
+    }
+    expected, _, _, _ = marker_genes_owned(adata, tie_correct=False, **parameters)
+
+    table, universe, report, code = marker_genes_owned(adata, tie_correct=True, **parameters)
+
+    science.pd.testing.assert_frame_equal(table.table, expected.table)
+    assert report.summary["parameters"]["tie_correct"] is True
+    assert any("ignored" in warning for warning in report.warnings)
+    generated_table, generated_universe = _run_code(code, "rank_marker_genes", adata)
+    science.pd.testing.assert_frame_equal(generated_table, table.table)
+    science.pd.testing.assert_frame_equal(generated_universe, universe.table)
+
+
+def test_marker_rejects_logreg_and_output_budget(science):
     adata = _logged_adata(science)
     common = {
         "adata": adata,
@@ -424,8 +476,6 @@ def test_marker_rejects_logreg_irrelevant_tie_policy_and_output_budget(science):
     }
     with pytest.raises(ValueError, match="Unsupported Marker Genes method"):
         marker_genes_owned(method="logreg", tie_correct=False, **common)
-    with pytest.raises(ValueError, match="only applicable to the Wilcoxon"):
-        marker_genes_owned(method="t-test", tie_correct=True, **common)
     with pytest.raises(ValueError, match="exceeding max_output_rows"):
         marker_genes_owned(
             adata,
@@ -510,6 +560,21 @@ def test_filter_inclusive_thresholds_preserve_order_rank_universe_and_provenance
 
     with pytest.raises(ValueError, match="requires table operation.*marker_genes"):
         filter_marker_genes_owned(filtered, universe, -100.0, 0.0, 1.0, 1.0)
+
+
+@pytest.mark.parametrize("minimum_fraction", [-0.1, 1.1])
+def test_filter_preserves_extreme_finite_analyst_thresholds(science, minimum_fraction):
+    table, universe, _, _ = _rank(_logged_adata(science))
+    filtered, _, report, code = filter_marker_genes_owned(
+        table, universe, -1000.0, minimum_fraction, 1.1, 1.1
+    )
+
+    assert len(filtered.table) == (len(table.table) if minimum_fraction < 0 else 0)
+    assert report.summary["parameters"]["min_fraction_in_group"] == minimum_fraction
+    assert report.summary["parameters"]["max_fraction_reference"] == 1.1
+    assert report.summary["parameters"]["max_p_adjusted"] == 1.1
+    generated_table, _ = _run_code(code, "filter_marker_genes", table.table, universe.table)
+    science.pd.testing.assert_frame_equal(generated_table, filtered.table)
 
 
 def test_filter_rejects_same_size_different_universe_and_tampered_content(science):
@@ -628,9 +693,9 @@ def science_duplicate(frame):
     "threshold,value,error",
     [
         ("min_log2_fold_change", True, "finite number"),
-        ("min_fraction_in_group", -0.1, "between 0 and 1"),
+        ("min_fraction_in_group", float("nan"), "finite"),
         ("max_fraction_reference", float("inf"), "finite"),
-        ("max_p_adjusted", 1.1, "between 0 and 1"),
+        ("max_p_adjusted", "0.05", "finite number"),
     ],
 )
 def test_filter_rejects_invalid_thresholds_before_table_values(science, threshold, value, error):

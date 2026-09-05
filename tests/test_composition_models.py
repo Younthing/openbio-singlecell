@@ -178,10 +178,13 @@ def test_sccoda_rejects_extra_condition_before_backend_work():
 
 
 class _FlatFakeBackend:
+    expected_formula = "1 + __openbio_condition_comparison"
+    expected_sample_count = 4
+
     def fit_sccoda(self, context):
-        assert context["design"]["formula"] == "1 + __openbio_condition_comparison"
+        assert context["design"]["formula"] == self.expected_formula
         assert context["design"]["focal_column"] == "__openbio_condition_comparison"
-        assert context["count_matrix"].shape == (4, 2)
+        assert context["count_matrix"].shape == (self.expected_sample_count, 2)
         assert context["resolved_reference"] == "T"
         draws = context["num_samples"]
         effects = np.zeros((draws, 2), dtype=float)
@@ -560,7 +563,7 @@ def test_adjustment_list_is_strict_json_and_role_disjoint(value, error, match):
         )
 
 
-def test_sample_metadata_replication_and_rank_fail_before_backend_and_preserve_input():
+def test_conflicting_sample_metadata_fails_before_backend_and_preserves_input():
     class BackendMustNotRun:
         def fit_sccoda(self, context):  # pragma: no cover - a call is the failure
             raise AssertionError("backend must not run")
@@ -572,22 +575,65 @@ def test_sample_metadata_replication_and_rank_fail_before_backend_and_preserve_i
         _run_flat(conflicting, BackendMustNotRun())
     pd.testing.assert_frame_equal(conflicting.obs, before)
 
-    insufficient = _composition_adata()
-    insufficient = insufficient[insufficient.obs["sample"] != "B2"].copy()
-    with pytest.raises(ValueError, match="at least two biological Samples per Condition"):
-        _run_flat(insufficient, BackendMustNotRun())
 
-    confounded = _composition_adata()
-    confounded.obs["condition_copy"] = (confounded.obs["condition"] == "B").astype(float)
-    with pytest.raises(ValueError, match="rank deficient or perfectly confounded"):
-        _run_flat(
-            confounded,
-            BackendMustNotRun(),
-            adjustment_covariate_keys_json='["condition_copy"]',
+@pytest.mark.parametrize("design_choice", ["unreplicated", "confounded", "constant"])
+def test_bayesian_composition_preserves_expert_design_with_advisories_and_code_parity(design_choice):
+    adata = _composition_adata()
+
+    class DesignBackend(_FlatFakeBackend):
+        pass
+
+    parameters = _flat_parameters()
+    if design_choice == "unreplicated":
+        adata = adata[adata.obs["sample"].isin(["A1", "B1"])].copy()
+        DesignBackend.expected_sample_count = 2
+    else:
+        adata.obs["adjustment"] = (adata.obs["condition"] == "B").astype(float) if design_choice == "confounded" else 1.0
+        parameters["adjustment_covariate_keys_json"] = '["adjustment"]'
+        DesignBackend.expected_formula += " + __openbio_adjustment_0"
+    reproduction_input = adata.copy()
+    table, summary, _ = run_sccoda_differential_composition(adata, _backend=DesignBackend(), **parameters)
+    if design_choice == "unreplicated":
+        assert summary["input"]["samples_per_condition"] == {"A": 1, "B": 1}
+        assert summary["design"]["residual_degrees_of_freedom"] == 0
+        assert any("no residual degrees of freedom" in warning for warning in summary["warnings"])
+    else:
+        assert summary["design"]["full_rank"] is False
+        assert any("rank deficient" in warning for warning in summary["warnings"])
+    namespace = {}
+    exec(sccoda_differential_composition_code(**parameters), namespace)
+    generated_table, generated_summary, _ = namespace["run_sccoda_differential_composition"](
+        reproduction_input, _backend=DesignBackend()
+    )
+    pd.testing.assert_frame_equal(generated_table, table)
+    assert generated_summary == summary
+
+
+@pytest.mark.parametrize("categories", [["x", "y"], ["x", "y", "unused"], ["x"]])
+def test_composition_accepts_unordered_unused_and_constant_categorical_adjustments(categories):
+    adata = _composition_adata()
+    values = adata.obs["batch"].astype(object) if len(categories) > 1 else ["x"] * adata.n_obs
+    adata.obs["batch"] = pd.Categorical(values, categories=categories, ordered=False)
+
+    class CategoricalBackend(_FlatFakeBackend):
+        expected_formula = "1 + __openbio_condition_comparison" + "".join(
+            f" + __openbio_adjustment_0_{i}" for i in range(1, len(categories))
         )
 
+    parameters = {**_flat_parameters(), "adjustment_covariate_keys_json": '["batch"]'}
+    reproduction_input = adata.copy()
+    table, summary, _ = run_sccoda_differential_composition(adata, _backend=CategoricalBackend(), **parameters)
+    assert summary["design"]["adjustments"][0]["categories"] == categories
+    namespace = {}
+    exec(sccoda_differential_composition_code(**parameters), namespace)
+    generated_table, generated_summary, _ = namespace["run_sccoda_differential_composition"](
+        reproduction_input, _backend=CategoricalBackend()
+    )
+    pd.testing.assert_frame_equal(generated_table, table)
+    assert generated_summary == summary
 
-def test_paired_subject_like_adjustment_is_rejected_without_random_effect_semantics():
+
+def test_paired_subject_adjustment_is_preserved_with_generated_code_parity():
     rows = []
     for pair in range(3):
         for condition in ["A", "B"]:
@@ -606,12 +652,24 @@ def test_paired_subject_like_adjustment_is_rejected_without_random_effect_semant
     obs["subject"] = pd.Categorical(obs["subject"], categories=["P0", "P1", "P2"], ordered=True)
     adata = AnnData(np.zeros((len(obs), 1)), obs=obs, var=pd.DataFrame(index=["g1"]))
 
-    with pytest.raises(ValueError, match="paired/repeated-Sample pattern"):
-        _run_flat(
-            adata,
-            _FlatFakeBackend(),
-            adjustment_covariate_keys_json='["subject"]',
+    class PairedBackend(_FlatFakeBackend):
+        expected_formula = (
+            "1 + __openbio_condition_comparison + __openbio_adjustment_0_1 + __openbio_adjustment_0_2"
         )
+        expected_sample_count = 6
+
+    parameters = {**_flat_parameters(), "adjustment_covariate_keys_json": '["subject"]'}
+    reproduction_input = adata.copy()
+    table, summary, _ = run_sccoda_differential_composition(adata, _backend=PairedBackend(), **parameters)
+    assert summary["design"]["adjustments"][0]["categories"] == ["P0", "P1", "P2"]
+    assert summary["design"]["rank"] == 4
+    namespace = {}
+    exec(sccoda_differential_composition_code(**parameters), namespace)
+    generated_table, generated_summary, _ = namespace["run_sccoda_differential_composition"](
+        reproduction_input, _backend=PairedBackend()
+    )
+    pd.testing.assert_frame_equal(generated_table, table)
+    assert generated_summary == summary
 
 
 def test_expected_fdr_uses_strict_inequality_and_official_fallback():

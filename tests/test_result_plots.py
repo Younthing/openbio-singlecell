@@ -204,6 +204,81 @@ def test_embedding_categorical_missing_order_summary_code_and_immutability(plot_
     _assert_adata_unchanged(plot_adata, snapshot, science)
 
 
+def test_embedding_allows_more_categories_than_palette_entries(plot_adata, science):
+    labels = [f"group_{index}" for index in range(12)]
+    plot_adata.obs["cluster"] = science.pd.Categorical(labels, categories=labels)
+    plotted, summary, code = embedding_plot_owned(
+        plot_adata,
+        embedding_key="custom_umap",
+        color={"color": "obs", "obs_key": "cluster", "color_mode": "categorical"},
+        categorical_palette="tab10",
+    )
+
+    colors = summary.summary["key_results"]["color"]["category_colors"]
+    assert list(colors) == labels
+    assert colors["group_0"] == colors["group_1"] == "#1f77b4ff"
+    assert colors["group_10"] == colors["group_11"] == "#17becfff"
+    assert any("duplicate" in warning for warning in summary.summary["warnings"])
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_embedding"](plot_adata) == plotted.png
+
+
+def test_embedding_preserves_duplicate_category_and_missing_colors(plot_adata, science):
+    import matplotlib
+    from matplotlib.colors import ListedColormap
+
+    palette_name = "openbio_test_expert_reused_colors"
+    matplotlib.colormaps.register(ListedColormap(["red", "red", "blue"], name=palette_name))
+    try:
+        plot_adata.obs.loc[plot_adata.obs_names[0], "cluster"] = None
+        before = plot_adata.copy()
+        plotted, summary, code = embedding_plot_owned(
+            plot_adata,
+            embedding_key="custom_umap",
+            color={"color": "obs", "obs_key": "cluster", "color_mode": "categorical"},
+            categorical_palette=palette_name,
+            missing_color="red",
+        )
+
+        color = summary.summary["key_results"]["color"]
+        assert plotted.png.startswith(PNG_SIGNATURE)
+        assert color["category_colors"] == {"C": "#ff0000ff", "A": "#ff0000ff", "B": "#0000ffff"}
+        assert color["missing_color"] == "#ff0000ff"
+        assert any("duplicate" in warning for warning in summary.summary["warnings"])
+        namespace = {}
+        exec(code, namespace)
+        assert namespace["plot_embedding"](plot_adata) == plotted.png
+        _assert_adata_unchanged(plot_adata, before, science)
+    finally:
+        matplotlib.colormaps.unregister(palette_name)
+
+
+def test_embedding_masks_unreachable_pseudotime_without_changing_stored_values(science):
+    adata = science.ad.AnnData(science.np.zeros((4, 1)))
+    adata.obsm["X_umap"] = science.np.arange(8, dtype=float).reshape(4, 2)
+    adata.obs["dpt_pseudotime"] = [0.0, 1.0, science.np.inf, science.np.inf]
+    before = adata.copy()
+
+    plotted, summary, code = embedding_plot_owned(
+        adata, color={"color": "obs", "obs_key": "dpt_pseudotime", "color_mode": "continuous"},
+    )
+
+    color = summary.summary["key_results"]["color"]
+    assert plotted.png.startswith(PNG_SIGNATURE)
+    assert color["observed_range"] == [0.0, 1.0]
+    assert color["finite_count"] == 2
+    assert color["infinite_count"] == 2
+    assert color["missing_count"] == 0
+    assert color["masked_nonfinite_count"] == 2
+    assert any("infinite" in warning for warning in summary.summary["warnings"])
+    json.dumps(summary.summary, allow_nan=False)
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_embedding"](adata) == plotted.png
+    _assert_adata_unchanged(adata, before, science)
+
+
 def test_embedding_continuous_missing_sorting_range_and_constant_disclosure(plot_adata, science):
     plot_adata.obs["score"] = [3.0, 1.0, science.np.nan, 2.0, 4.0, 5.0, 8.0, 7.0, 6.0, 0.0, 9.0, 10.0]
     _, summary, _ = embedding_plot_owned(
@@ -867,6 +942,26 @@ def test_marker_dendrogram_uses_exact_selected_layer_panel_and_resolved_order(pl
     assert fake.calls[0][2]["categories_order"] == ["B", "A", "C"]
 
 
+def test_marker_dendrogram_allows_two_observed_groups_with_generated_parity(plot_adata, science):
+    adata = plot_adata[plot_adata.obs["cluster"].isin(["A", "B"])].copy()
+    snapshot = adata.copy()
+    plotted, summary, code = marker_expression_plot_owned(
+        adata,
+        genes="G1,G2,G3",
+        groupby="cluster",
+        plot={"plot": "matrixplot", "standard_scale": "none"},
+        source={"source": "layer", "layer_name": "log1p_norm"},
+        group_order="dendrogram",
+    )
+
+    assert plotted.png.startswith(PNG_SIGNATURE)
+    assert set(summary.summary["key_results"]["resolved_group_order"]) == {"A", "B"}
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_marker_expression"](adata) == plotted.png
+    _assert_adata_unchanged(adata, snapshot, science)
+
+
 def test_marker_backend_failure_restores_scanpy_state_closes_figures_and_preserves_input(plot_adata, science):
     import matplotlib.pyplot as plt
 
@@ -1071,6 +1166,47 @@ def test_marker_raw_source_ignores_history_and_does_not_infer_state(plot_adata, 
     namespace = {}
     exec(code, namespace)
     assert namespace["plot_marker_expression"](adata).startswith(PNG_SIGNATURE)
+
+
+def test_marker_matrixplot_allows_expert_panel_above_fifty_genes(science):
+    genes = [f"G{index:02d}" for index in range(51)]
+    adata = science.ad.AnnData(
+        science.np.arange(204, dtype=float).reshape(4, 51),
+        obs=science.pd.DataFrame({"cluster": science.pd.Categorical(["A", "A", "B", "B"])}, index=list("abcd")),
+        var=science.pd.DataFrame(index=genes),
+    )
+    plotted, summary, code = marker_expression_plot_owned(
+        adata,
+        genes=",".join(genes),
+        groupby="cluster",
+        plot={"plot": "matrixplot", "standard_scale": "none"},
+        source={"source": "X"},
+    )
+
+    assert plotted.png.startswith(PNG_SIGNATURE)
+    assert summary.summary["key_results"]["genes"] == genes
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_marker_expression"](adata) == plotted.png
+
+
+def test_marker_log_violin_preserves_zero_expression_and_generated_behavior(plot_adata, science):
+    snapshot = plot_adata.copy()
+    plotted, summary, code = marker_expression_plot_owned(
+        plot_adata,
+        genes="G1,G4",
+        groupby="cluster",
+        plot={"plot": "violin", "density_norm": "width", "show_cells": True, "y_scale": "log"},
+        source={"source": "layer", "layer_name": "log1p_norm"},
+    )
+
+    assert plotted.png.startswith(PNG_SIGNATURE)
+    assert summary.summary["key_results"]["selected_panel_range"][0] == 0.0
+    assert any("nonpositive" in warning for warning in summary.summary["warnings"])
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_marker_expression"](plot_adata) == plotted.png
+    _assert_adata_unchanged(plot_adata, snapshot, science)
 
 
 def test_marker_violin_seed_is_deterministic_and_restores_numpy_rng(plot_adata, science):

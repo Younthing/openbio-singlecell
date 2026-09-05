@@ -119,9 +119,9 @@ class OpenBioSingleCellFilterMarkerGenes(io.ComfyNode):
                 TableResultType.Input("table"),
                 TableResultType.Input("universe"),
                 io.Float.Input("min_log2_fold_change", default=1.0, step=0.1),
-                io.Float.Input("min_fraction_in_group", default=0.25, min=0.0, max=1.0, step=0.05),
-                io.Float.Input("max_fraction_reference", default=0.5, min=0.0, max=1.0, step=0.05),
-                io.Float.Input("max_p_adjusted", default=0.05, min=0.0, max=1.0, step=0.01),
+                io.Float.Input("min_fraction_in_group", default=0.25, step=0.05),
+                io.Float.Input("max_fraction_reference", default=0.5, step=0.05),
+                io.Float.Input("max_p_adjusted", default=0.05, step=0.01),
             ],
             outputs=analysis_outputs(
                 TableResultType.Output(display_name="table"), TableResultType.Output(display_name="universe")

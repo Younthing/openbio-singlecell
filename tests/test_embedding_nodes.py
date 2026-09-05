@@ -469,7 +469,6 @@ def test_tsne_subunit_perplexity_runs_with_warning(science):
     ("metric", "malformation", "match"),
     [
         ("correlation", "constant", "constant observation"),
-        ("cosine", "zero", "zero-norm observation"),
     ],
 )
 @pytest.mark.parametrize("sparse_input", [False, True])
@@ -523,6 +522,31 @@ def test_neighbors_metric_degeneracy_is_rejected_before_backend(
         with pytest.raises(ValueError, match=match):
             runner(invalid)
     assert backend_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("operation", "parameters", "function_name"),
+    [
+        (neighbors, {"n_neighbors": 5}, "compute_neighbors"),
+        (tsne, {"perplexity": 5.0}, "run_tsne"),
+    ],
+)
+def test_cosine_zero_rows_follow_backend_convention_with_warning(science, operation, parameters, function_name):
+    adata = _embedding_input(science)
+    adata.obsm["X_pca"][0] = 0.0
+    with pytest.warns(UserWarning, match="zero-norm"):
+        output, report, code = _run(operation, adata, metric="cosine", random_seed=3, **parameters)
+
+    assert any("zero-norm" in warning for warning in report.summary["warnings"])
+    namespace = {}
+    exec(code, namespace)
+    with pytest.warns(UserWarning, match="zero-norm"):
+        generated = namespace[function_name](adata)
+    if operation is neighbors:
+        science.np.testing.assert_allclose(generated.obsp["connectivities"].toarray(), output.obsp["connectivities"].toarray())
+    else:
+        science.np.testing.assert_allclose(generated.obsm["X_tsne"], output.obsm["X_tsne"])
+    science.np.testing.assert_array_equal(adata.obsm["X_pca"][0], 0.0)
 
 
 def test_umap_discloses_and_executes_fixed_hidden_optimizer_policy(science, monkeypatch):

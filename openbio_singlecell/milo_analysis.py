@@ -344,10 +344,6 @@ def _standalone_milo_differential_abundance_impl(
         comparison_condition: [sample for sample in sample_order if sample_to_condition[sample] == comparison_condition],
     }
     insufficient = {condition: len(samples) for condition, samples in samples_by_condition.items() if len(samples) < 3}
-    if insufficient:
-        raise ValueError(
-            f"{operation} requires at least 3 independent Samples per Condition; observed {insufficient}."
-        )
 
     sample_cell_counts = {sample: selected_sample_values.count(sample) for sample in sample_order}
     condition_cell_counts = {
@@ -1038,6 +1034,11 @@ def _standalone_milo_differential_abundance_impl(
 
     excluded_conditions = [condition for condition in present_conditions if condition not in {reference_condition, comparison_condition}]
     warnings = []
+    if insufficient:
+        warnings.append(
+            f"Some Conditions have fewer than three declared biological Samples: {insufficient}. "
+            "The estimable design was retained; assess power and stability for this replication."
+        )
     if excluded_conditions:
         warnings.append(
             f"Excluded {int((~selected_mask).sum())} cells from non-compared Conditions {excluded_conditions} before graph construction."
@@ -1051,7 +1052,7 @@ def _standalone_milo_differential_abundance_impl(
     if condition_cell_imbalance_ratio >= 4.0 or sample_cell_imbalance_ratio >= 4.0:
         warnings.append(
             "Selected cell counts are at least 4-fold imbalanced across Conditions or Samples; "
-            "review representation coverage and neighborhood-count sensitivity even though biological replication is adequate."
+            "review representation coverage, neighborhood-count sensitivity and biological replication."
         )
     parameters = {
         "sample_key": sample_key,
@@ -1169,7 +1170,7 @@ def _standalone_milo_differential_abundance_impl(
             "contrast_vector": design["contrast_vector"],
             "categorical_covariates": design["categorical_covariates"],
             "continuous_covariates": design["continuous_covariates"],
-            "minimum_samples_per_condition_policy": 3,
+            "samples_below_three": insufficient,
             "full_rank_verified": True,
             "contrast_estimable": True,
         },
@@ -1198,7 +1199,7 @@ def _standalone_milo_differential_abundance_impl(
         "limitations": [
             "Milo findings are overlapping local graph regions, not independent cell populations or cell-type-wide tests.",
             "The result depends on the supplied representation, k, neighborhood proportion and random seed.",
-            "Three independent Samples per Condition is a conservative minimum policy, not a power guarantee.",
+            "Biological replication is user-declared; sample counts alone do not establish independence or power.",
             "Cell counts do not increase the biological replicate n; the model rows are independent Samples.",
             "Paired, longitudinal or repeated-donor Samples require a dedicated repeated-measures model and are outside this independent-Sample interface.",
             "Neighborhood annotation is descriptive and does not enter the abundance model.",

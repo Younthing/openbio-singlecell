@@ -275,7 +275,9 @@ def mark_mad_outliers_owned(
         raise ValueError("MAD outlier marking requires at least one cell and one gene.")
     selected_metrics = _comma_separated_metrics(_string(parameters["metrics"], name="MAD metrics"))
     batch_key = _string(parameters["batch_key"], name="MAD batch_key", allow_empty=True)
-    nmads = _number(parameters["nmads"], name="MAD multiplier", positive=True)
+    nmads = _number(parameters["nmads"], name="MAD multiplier")
+    if nmads < 0:
+        raise ProtocolError("MAD multiplier must be non-negative.")
     direction = _string(parameters["direction"], name="MAD direction")
     if direction not in {"both", "upper", "lower"}:
         raise ProtocolError(f"Unsupported MAD direction: {direction!r}")
@@ -641,6 +643,8 @@ def _scrublet_code(expression: ExpressionSource, parameters: dict[str, Any]) -> 
     use_raw = expression.kind == "raw"
     return dedent(
         f"""
+        import warnings
+
         import numpy as np
         import pandas as pd
         import scanpy as sc
@@ -725,10 +729,15 @@ def _scrublet_code(expression: ExpressionSource, parameters: dict[str, Any]) -> 
             values = np.asarray(matrix.data if sparse.issparse(matrix) else np.asarray(matrix).ravel())
             if not np.isfinite(values).all():
                 raise ValueError("Selected Scrublet source contains non-finite expression values.")
-            if (values < 0).any():
-                raise ValueError("Selected Scrublet source contains negative expression values and cannot be used as counts.")
             if values.size == 0 or not (values > 0).any():
                 raise ValueError("Selected Scrublet source contains no positive expression values.")
+            if (values < 0).any():
+                warnings.warn(
+                    "Selected Scrublet source contains negative expression values; the selected expression was retained, "
+                    "but it is not a conventional unnormalized count matrix.",
+                    UserWarning,
+                    stacklevel=2,
+                )
             work_obs = adata.obs.copy()
             if not adata.obs_names.is_unique:
                 work_obs.index = [f"__openbio_scrublet_row_{{index}}" for index in range(adata.n_obs)]
@@ -893,7 +902,9 @@ def scrublet_owned(
             f"Scrublet n_prin_comps={n_prin_comps} must be smaller than the selected source feature count "
             f"({matrix.shape[1]})."
         )
-    warnings.extend(validate_count_expression(matrix, source_label=source_label, require_positive=True))
+    warnings.extend(
+        validate_count_expression(matrix, source_label=source_label, require_positive=True, require_nonnegative=False)
+    )
     work_obs = adata.obs.copy()
     if duplicate_cell_ids:
         work_obs.index = [f"__openbio_scrublet_row_{index}" for index in range(cells)]

@@ -200,14 +200,44 @@ def test_hvg_selection_plot_allows_all_selected_evidence(
     assert report.summary["key_results"]["feature_axis_validation"] == expected_validation
 
 
-def test_hvg_selection_plot_rejects_partial_feature_slice_using_openbio_history(science):
+def test_hvg_selection_plot_discloses_partial_feature_slice_and_preserves_generated_behavior(science):
     adata = _hvg_adata(science, "seurat", "dispersions", "dispersions_norm")
     record_history(adata, "highly_variable_genes", {}, adata.n_obs, adata.n_vars)
     sliced = adata[:, :5].copy()
     assert bool((~sliced.var["highly_variable"].to_numpy()).any())
 
-    with pytest.raises(ValueError, match="feature axis.*6.*5.*sliced"):
-        hvg_selection_plot_owned(sliced)
+    plotted, report, code = hvg_selection_plot_owned(sliced)
+
+    assert plotted.png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert report.summary["key_results"]["input_features"] == 5
+    assert report.summary["key_results"]["feature_axis_validation"] == "different_from_recorded"
+    assert any("6" in warning and "5" in warning for warning in plotted.warnings)
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_hvg_selection"](sliced) == plotted.png
+
+
+def test_hvg_selection_plot_accepts_native_scanpy_selection_without_inventing_origin(science):
+    adata = _hvg_adata(science, "seurat", "dispersions", "dispersions_norm")
+    adata.var.drop(columns=["highly_variable_algorithm", "highly_variable_forced"], inplace=True)
+    original = adata.copy()
+
+    plotted, report, code = hvg_selection_plot_owned(adata)
+
+    assert plotted.png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert report.summary["key_results"]["selection_counts"] == {
+        "selected": 3,
+        "algorithm_selected": None,
+        "forced": None,
+        "unselected": 3,
+    }
+    assert "3 selected and 3 unselected" in report.summary["results"]
+    assert any("selection origin" in warning for warning in plotted.warnings)
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_hvg_selection"](adata) == plotted.png
+    science.pd.testing.assert_frame_equal(adata.var, original.var)
+    assert adata.uns == original.uns
 
 
 def test_hvg_selection_plot_marks_external_feature_axis_unverified(science):

@@ -86,8 +86,6 @@ def _standalone_dgidb_json_sha256(value):
 def _standalone_validate_dgidb_metadata(value):
     import json
     from collections.abc import Mapping
-    from datetime import date
-    from urllib.parse import urlparse
 
     metadata_fields = (
         "name",
@@ -132,39 +130,14 @@ def _standalone_validate_dgidb_metadata(value):
 
     if not isinstance(parsed, dict):
         raise TypeError("DGIdb resource metadata must decode to an object.")
-    expected = set(metadata_fields)
-    actual = set(parsed)
-    if actual != expected:
-        raise ValueError(
-            "DGIdb resource metadata schema mismatch; "
-            f"missing={sorted(expected - actual)}, unknown={sorted(actual - expected)}."
-        )
-    metadata = {}
-    for field in metadata_fields:
-        item = parsed[field]
-        if not isinstance(item, str) or not item.strip():
-            raise ValueError(f"DGIdb resource metadata field {field!r} must be a nonblank string.")
-        if item != item.strip():
-            raise ValueError(f"DGIdb resource metadata field {field!r} has surrounding whitespace.")
+    metadata = dict.fromkeys(metadata_fields, "")
+    metadata.update(parsed)
+    for field, item in metadata.items():
+        if not isinstance(item, str):
+            raise ValueError(f"DGIdb resource metadata field {field!r} must be a string.")
         if "\x00" in item:
             raise ValueError(f"DGIdb resource metadata field {field!r} contains a NUL character.")
-        metadata[field] = item
 
-    if "dgidb" not in metadata["name"].casefold():
-        raise ValueError("DGIdb resource metadata name must identify DGIdb.")
-    try:
-        parsed_date = date.fromisoformat(metadata["release_date"])
-    except ValueError as exc:
-        raise ValueError("DGIdb release_date must be an ISO 8601 calendar date (YYYY-MM-DD).") from exc
-    if parsed_date.isoformat() != metadata["release_date"]:
-        raise ValueError("DGIdb release_date must use canonical YYYY-MM-DD form.")
-    parsed_url = urlparse(metadata["download_url"])
-    if parsed_url.scheme not in {"https", "http"} or not parsed_url.netloc:
-        raise ValueError("DGIdb download_url must be an absolute HTTP(S) URL.")
-    if metadata["organism"] != "Homo sapiens":
-        raise ValueError("DGIdb downstream analysis currently requires organism 'Homo sapiens'.")
-    if metadata["gene_identifier_namespace"] != "HGNC symbol":
-        raise ValueError("DGIdb downstream analysis currently requires gene namespace 'HGNC symbol'.")
     return metadata
 
 
@@ -836,6 +809,10 @@ def _standalone_build_dgidb_resource_summary(payload, openbio_version):
     warnings = [
         "Source-license review and biological suitability are caller attestations; SHA-256 proves exact bytes, not legal clearance or scientific validity.",
     ]
+    missing_metadata = [field for field, value in metadata.items() if not value.strip()]
+    key_results["resource"]["metadata_not_supplied"] = missing_metadata
+    if missing_metadata:
+        warnings.append(f"Resource metadata not supplied: {', '.join(missing_metadata)}.")
     if metadata["license"].casefold() in {"unknown", "none", "n/a", "na", "unreviewed"}:
         warnings.append(
             "The caller-declared license is a placeholder or explicitly unreviewed; downstream use and redistribution require an independent source-license review."
@@ -857,14 +834,14 @@ def _standalone_build_dgidb_resource_summary(payload, openbio_version):
         "node_id": "OpenBioSingleCellDGIdbAnnotation",
         "methods": (
             "Loaded one caller-described local DGIdb CSV/TSV snapshot without network access; validated the exact "
-            "schema and ten-field release/license metadata, streamed SHA-256 before and after strict logical-row "
+            "table schema, retained optional caller metadata, streamed SHA-256 before and after strict logical-row "
             "parsing, trimmed only surrounding identifier whitespace, rejected normalization collisions, and "
             "collapsed exact drug-gene duplicates while preserving source/evidence values."
         ),
         "results": (
             f"Validated DGIdb resource {metadata['version']!r} ({metadata['release_date']}) with "
             f"{accounting['canonical_pairs']:,} canonical drug-gene pairs, {accounting['drug_count']:,} drugs, "
-            f"and {accounting['gene_count']:,} unique HGNC genes."
+            f"and {accounting['gene_count']:,} unique gene identifiers."
         ),
         "key_results": key_results,
         "parameters": parameters,
@@ -872,7 +849,7 @@ def _standalone_build_dgidb_resource_summary(payload, openbio_version):
         "limitations": [
             "DGIdb edges are aggregated interaction claims and do not establish efficacy, therapeutic direction, dose, safety, population relevance, or a treatment recommendation.",
             "The DGIdb software license does not automatically license every contributing source; users must independently review and honor source-specific terms rather than relying on caller metadata as legal clearance.",
-            "Only Homo sapiens HGNC symbols are accepted; this loader does not map aliases, normalize drug names, or infer clinical direction.",
+            "Organism and gene namespace are caller declarations; this loader does not map identifiers or infer biological compatibility.",
         ],
         "references": [
             {
@@ -888,8 +865,8 @@ def _standalone_build_dgidb_resource_summary(payload, openbio_version):
                 "kind": "software",
             },
             {
-                "citation": f"{metadata['name']} {metadata['version']}: {metadata['citation']}",
-                "url": metadata["download_url"],
+                "citation": metadata["citation"] or metadata["name"] or "Local drug-gene resource; citation not supplied.",
+                "url": metadata["download_url"] or f"urn:sha256:{artifact['raw_file_sha256']}",
                 "doi": None,
                 "kind": "resource_snapshot",
             },

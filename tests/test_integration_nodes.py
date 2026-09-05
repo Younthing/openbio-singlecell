@@ -746,7 +746,7 @@ def test_scvi_fake_backend_reporting_code_and_private_model_state(integration_ad
     zero_cell.layers["counts"] = science.np.vstack(
         [science.np.zeros((1, zero_cell.n_vars)), science.np.asarray(zero_cell.layers["counts"])[1:]]
     )
-    with pytest.raises(ValueError, match="cells with zero total counts"):
+    with pytest.warns(UserWarning, match="cells with zero total counts"):
         namespace["run_scvi_integration"](zero_cell)
 
 
@@ -900,12 +900,6 @@ def test_scvi_runtime_and_generated_code_reject_untrained_backend(integration_ad
             ),
             "non-finite",
         ),
-        (
-            lambda adata, np: adata.layers.__setitem__(
-                "counts", np.vstack([np.zeros((1, adata.n_vars)), np.asarray(adata.layers["counts"])[1:]])
-            ),
-            "zero total counts",
-        ),
         (lambda adata, np: adata.obsm.__setitem__("X_scVI", np.ones((adata.n_obs, 2))), "already exists"),
     ],
 )
@@ -953,6 +947,22 @@ def test_scvi_advisory_noninformative_covariates_run_and_disclose(
     science.np.testing.assert_allclose(generated.obsm["X_scVI"], output.obsm["X_scVI"])
 
 
+def test_scvi_preserves_explicit_reused_observation_roles(integration_adata, science, monkeypatch):
+    fake_scvi, fake_class = _fake_scvi(science)
+    monkeypatch.setitem(sys.modules, "scvi", fake_scvi)
+    output, _, report, code = _run_scvi(integration_adata, categorical_covariates="batch", n_latent=3)
+
+    assert fake_class.setup_calls[-1][1]["batch_key"] == "batch"
+    assert fake_class.setup_calls[-1][1]["categorical_covariate_keys"] == ["batch"]
+    assert report.summary["key_results"]["reused_observation_roles"] == ["batch"]
+    assert any("reused" in warning for warning in report.summary["warnings"])
+    namespace = {}
+    exec(code, namespace)
+    with pytest.warns(UserWarning, match="reused"):
+        generated, _ = namespace["run_scvi_integration"](integration_adata)
+    science.np.testing.assert_allclose(generated.obsm["X_scVI"], output.obsm["X_scVI"])
+
+
 @pytest.mark.parametrize(
     ("train_size", "train_warning"),
     [
@@ -972,6 +982,7 @@ def test_scvi_open_expert_architecture_and_count_advisories_have_generated_parit
     monkeypatch.setitem(sys.modules, "scvi", fake_scvi)
     selected = science.np.asarray(integration_adata.layers["counts"], dtype=float).copy() + 0.5
     selected[:, 0] = 0.0
+    selected[0, :] = 0.0
     integration_adata.layers["counts"] = selected
     original = selected.copy()
 
@@ -988,6 +999,7 @@ def test_scvi_open_expert_architecture_and_count_advisories_have_generated_parit
 
     expected_warning_texts = (
         "non-integer values",
+        "cells with zero total counts",
         "all-zero gene",
         "overcomplete architecture",
         "unusually deep architecture",
@@ -998,6 +1010,7 @@ def test_scvi_open_expert_architecture_and_count_advisories_have_generated_parit
         assert any(text in warning for warning in report.summary["warnings"])
     results = report.summary["key_results"]
     assert results["count_source_integer_like"] is False
+    assert results["zero_total_cells"] == 1
     assert results["zero_total_genes"] == 1
     assert results["constant_latent_dimensions"] == 10
     assert results["constant_latent_dimension_indices"] == list(range(10))

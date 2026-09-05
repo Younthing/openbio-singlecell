@@ -169,6 +169,7 @@ def _fake_pertpy(science, *, backend_mutator=None, native_evidence=True):
                     ),
                     "n_obs": int(input.n_obs),
                     "n_vars": int(input.n_vars),
+                    "expression": input.X.copy(),
                 }
             )
             loaded = input.copy()
@@ -850,6 +851,7 @@ def test_augur_exact_backend_calls_summary_and_input_immutability(augur_adata, s
         "source": "raw.X",
         "selection": "explicit",
         "integer_like": True,
+        "contains_negative_values": False,
     }
     assert summary["key_results"]["prediction_label_encoding"] == {
         "negative_label": 0,
@@ -1071,7 +1073,6 @@ def test_augur_rejects_malformed_prediction_evidence(augur_adata, science, mutat
     ("mutate", "source_kind", "message"),
     [
         (lambda adata: setattr(adata, "raw", None), "raw", "Raw snapshot"),
-        (lambda adata: adata.raw.X.__setitem__((0, 0), -1), "raw", "negative"),
         (lambda adata: _set_raw_value(adata, float("nan")), "raw", "non-finite"),
     ],
 )
@@ -1113,6 +1114,63 @@ def test_augur_preserves_expert_selected_noninteger_sources(
     if source_kind != "raw":
         assert summary["key_results"]["raw_snapshot_features"] is None
         assert summary["key_results"]["raw_snapshot_fingerprint_sha256"] is None
+
+
+def test_augur_preserves_signed_expression_and_seed_zero_with_generated_code_parity(augur_adata, science):
+    augur_adata.X = -augur_adata.X.astype(float) - 0.5
+    result = _run(augur_adata, science, source_kind="X", random_seed=0)
+    assert result.summary["parameters"]["random_seed"] == 0
+    assert result.summary["key_results"]["count_source"]["contains_negative_values"] is True
+    assert any("negative" in warning for warning in result.summary["warnings"])
+    namespace = {}
+    exec(augur_core.augur_code(**result.summary["parameters"]), namespace)
+    tables, summary = namespace["run_augur_prioritization"](augur_adata, pertpy_module=_fake_pertpy(science))
+    for view in AUGUR_VIEWS:
+        science.pd.testing.assert_frame_equal(tables[view], result.table(view))
+    assert summary == result.summary
+
+
+@pytest.mark.parametrize("sparse_source", [False, True])
+def test_augur_passes_signed_near_integer_values_to_backend_without_truncation(augur_adata, science, sparse_source):
+    matrix = science.np.full(augur_adata.shape, 2.0, dtype=science.np.float64)
+    matrix[0, 0] = -0.999999999
+    augur_adata.X = science.sparse.csr_matrix(matrix) if sparse_source else matrix
+    fake = _fake_pertpy(science)
+    result = _run(augur_adata, science, source_kind="X", pertpy_module=fake)
+    assert result.summary["key_results"]["count_source"]["integer_like"] is True
+    received = next(call["expression"] for call in fake.calls if call["operation"] == "load")
+    assert received[0, 0] == -0.999999999
+    assert received.dtype == matrix.dtype
+    namespace = {}
+    exec(augur_core.augur_code(**result.summary["parameters"]), namespace)
+    generated_fake = _fake_pertpy(science)
+    tables, summary = namespace["run_augur_prioritization"](augur_adata, pertpy_module=generated_fake)
+    generated_received = next(call["expression"] for call in generated_fake.calls if call["operation"] == "load")
+    assert generated_received[0, 0] == -0.999999999
+    for view in AUGUR_VIEWS:
+        science.pd.testing.assert_frame_equal(tables[view], result.table(view))
+    assert summary == result.summary
+
+
+@pytest.mark.parametrize("sparse_source", [False, True])
+def test_augur_source_fingerprints_distinguish_near_integer_values_and_dtype(augur_adata, science, sparse_source):
+    fingerprint_keys = ("selected_source_fingerprint_sha256", "analysis_count_fingerprint_sha256")
+    fingerprints = {key: [] for key in fingerprint_keys}
+    for value, dtype in [(-0.999999999, "float64"), (0.0, "float64"), (0.0, "float32")]:
+        matrix = science.np.full(augur_adata.shape, 2.0, dtype=dtype)
+        matrix[0, 0] = value
+        augur_adata.X = science.sparse.csr_matrix(matrix) if sparse_source else matrix
+        result = _run(augur_adata, science, source_kind="X")
+        for key in fingerprint_keys:
+            fingerprints[key].append(result.summary["key_results"][key])
+        namespace = {}
+        exec(augur_core.augur_code(**result.summary["parameters"]), namespace)
+        _, generated_summary = namespace["run_augur_prioritization"](
+            augur_adata, pertpy_module=_fake_pertpy(science)
+        )
+        assert generated_summary == result.summary
+    for key in fingerprint_keys:
+        assert len(set(fingerprints[key])) == 3, key
 
 
 @pytest.mark.parametrize(
@@ -1203,7 +1261,7 @@ def test_augur_discloses_population_specific_perfect_batch_confounding(augur_ada
     ("overrides", "exception", "message"),
     [
         ({"classifier": "random_forest_regressor"}, ValueError, "classifier-only"),
-        ({"random_seed": 0}, ValueError, "random_seed"),
+        ({"random_seed": -1}, ValueError, "random_seed"),
         ({"folds": 4, "subsample_size": 3}, ValueError, "cannot exceed"),
         ({"max_result_rows": 5}, ValueError, "estimated result size"),
         ({"max_result_mib": 0.0001}, MemoryError, "estimated canonical result memory"),

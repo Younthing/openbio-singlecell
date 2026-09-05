@@ -45,8 +45,8 @@ def _standalone_validate_settings(
         )
     if isinstance(posterior_samples, bool) or not isinstance(posterior_samples, int):
         raise TypeError("Schist posterior_samples must be an integer.")
-    if not 100 <= posterior_samples <= 2**31 - 1:
-        raise ValueError("Schist posterior_samples must be at least 100 and no greater than 2**31 - 1.")
+    if not 1 <= posterior_samples <= 2**31 - 1:
+        raise ValueError("Schist posterior_samples must be at least 1 and no greater than 2**31 - 1.")
     if not isinstance(degree_correction, bool):
         raise TypeError("Schist degree_correction must be a boolean.")
     if not isinstance(overwrite_existing, bool):
@@ -908,6 +908,11 @@ def _standalone_summary(
     import json
 
     warnings = []
+    if settings["posterior_samples"] < 100:
+        warnings.append(
+            "The selected posterior_samples is fewer than 100; Schist permits this, but marginal estimates "
+            "may be unstable at this sampling depth."
+        )
     if graph["connected_components"] > 1:
         warnings.append(
             "The selected named graph is disconnected; components were preserved and modeled without artificial edges."

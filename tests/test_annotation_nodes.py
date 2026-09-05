@@ -647,31 +647,31 @@ def test_celltypist_model_load_failure_discloses_pickle_trust_boundary(science, 
     assert fake.calls == []
 
 
-def test_celltypist_rejects_contradictory_expression_state_before_backend(science, tmp_path, monkeypatch):
+def test_celltypist_normalizes_user_declared_fractional_counts(science, tmp_path, monkeypatch):
     model_path = tmp_path / "fake.pkl"
     model_path.write_bytes(b"trusted fake model")
     fake = _fake_celltypist(science, model_path)
     monkeypatch.setitem(sys.modules, "celltypist", fake)
 
-    logged = _annotation_adata(science, logged=True)
-    with pytest.raises(ValueError, match="verified_counts.*non-integer"):
-        celltypist_owned(
-            logged,
-            expression_state="verified_counts",
-            model=str(model_path),
-        )
-    counts = _annotation_adata(science, logged=False)
-    with pytest.raises(ValueError, match="verified_cp10k_log1p"):
-        celltypist_owned(
-            counts,
-            expression_state="verified_cp10k_log1p",
-            model=str(model_path),
-        )
-    assert fake.calls == []
-    assert fake.loads == []
+    counts = _annotation_adata(science)
+    counts.X.data += 0.25
+    original = _matrix_values(counts.X, science).copy()
+    output, report, code = celltypist_owned(
+        counts.copy(),
+        expression_state="verified_counts",
+        model=str(model_path),
+    )
+    science.np.testing.assert_allclose(fake.calls[0]["inverse_totals"], 10_000.0)
+    science.np.testing.assert_array_equal(_matrix_values(output.X, science), original)
+    assert any("non-integer" in warning for warning in report.summary["warnings"])
+    namespace = {}
+    exec(code, namespace)
+    reproduced, reproduced_summary = namespace["run_celltypist_annotation"](counts)
+    science.pd.testing.assert_series_equal(reproduced.obs["celltypist_cell_type"], output.obs["celltypist_cell_type"])
+    assert reproduced_summary == report.summary
 
 
-def test_celltypist_cp10k_validation_uses_official_absolute_one_count_boundary(science, tmp_path, monkeypatch):
+def test_celltypist_preserves_declared_logged_input_with_advisory_library_totals(science, tmp_path, monkeypatch):
     model_path = tmp_path / "fake.pkl"
     model_path.write_bytes(b"trusted fake model")
     fake = _fake_celltypist(science, model_path)
@@ -682,16 +682,21 @@ def test_celltypist_cp10k_validation_uses_official_absolute_one_count_boundary(s
     science.sc.pp.normalize_total(invalid, target_sum=9_950.0, inplace=True)
     science.sc.pp.log1p(invalid)
     invalid_values = _matrix_values(invalid.X, science).copy()
-    with pytest.raises(ValueError, match="every cell must be within 1 count of 10,000"):
-        celltypist_owned(
-            invalid,
-            expression_state="verified_cp10k_log1p",
-            model=str(model_path),
-        )
+    output, report, code = celltypist_owned(
+        invalid.copy(),
+        expression_state="verified_cp10k_log1p",
+        model=str(model_path),
+    )
     science.np.testing.assert_array_equal(_matrix_values(invalid.X, science), invalid_values)
     assert "celltypist" not in invalid.uns
-    assert fake.loads == []
-    assert fake.calls == []
+    science.np.testing.assert_allclose(fake.calls[0]["inverse_totals"], 9_950.0, rtol=1e-6)
+    assert any("inverse-transformed" in warning for warning in report.summary["warnings"])
+    assert report.summary["key_results"]["expression_transform"] == "none"
+    namespace = {}
+    exec(code, namespace)
+    reproduced, reproduced_summary = namespace["run_celltypist_annotation"](invalid)
+    science.pd.testing.assert_series_equal(reproduced.obs["celltypist_cell_type"], output.obs["celltypist_cell_type"])
+    assert reproduced_summary == report.summary
 
     valid = _annotation_adata(science)
     valid.X = valid.X.astype(science.np.float32)
@@ -705,6 +710,32 @@ def test_celltypist_cp10k_validation_uses_official_absolute_one_count_boundary(s
     assert report.summary["parameters"]["target_sum"] is None
     assert report.summary["key_results"]["expression_transform"] == "none"
     assert output.uns["celltypist"]["expression"]["target_sum"] == 10_000.0
+
+
+@pytest.mark.parametrize("case", ["logged_zero", "counts_zero", "backend_upper_bound"])
+def test_celltypist_keeps_backend_supported_expression_choices(science, tmp_path, monkeypatch, case):
+    adata = _annotation_adata(science, logged=case != "counts_zero")
+    adata.X = adata.X.toarray()
+    if case == "backend_upper_bound":
+        adata.X[0, 0] = 9.215
+    else:
+        adata.X[0] = 0
+    model_path = tmp_path / "fake.pkl"
+    model_path.write_bytes(b"trusted fake model")
+    monkeypatch.setitem(sys.modules, "celltypist", _fake_celltypist(science, model_path))
+    output, report, code = celltypist_owned(
+        adata.copy(),
+        expression_state="verified_counts" if case == "counts_zero" else "verified_cp10k_log1p",
+        model=str(model_path),
+    )
+    science.np.testing.assert_array_equal(output.X, adata.X)
+    assert output.n_obs == adata.n_obs
+    assert any("zero total" in warning or "inverse-transformed" in warning for warning in report.summary["warnings"])
+    namespace = {}
+    exec(code, namespace)
+    reproduced, reproduced_summary = namespace["run_celltypist_annotation"](adata)
+    science.pd.testing.assert_frame_equal(reproduced.obs, output.obs)
+    assert reproduced_summary == report.summary
 
 
 def test_celltypist_feature_overlap_model_provenance_and_collision_preflight(science, tmp_path, monkeypatch):
@@ -834,6 +865,7 @@ def test_celltypist_overwrite_removes_only_verified_stale_optional_artifacts(sci
         min_prop=0.6,
         store_decision_matrix=True,
     )
+    first.obs["celltypist_cell_type_v2"] = "user-owned"
     first_obs = first.obs.copy(deep=True)
     first_uns = copy.deepcopy(first.uns)
     first_obsm = {key: science.np.asarray(value).copy() for key, value in first.obsm.items() if key is not None}
@@ -856,6 +888,7 @@ def test_celltypist_overwrite_removes_only_verified_stale_optional_artifacts(sci
     assert "celltypist_majority_label" not in second.obs
     assert "celltypist_majority_support" not in second.obs
     assert "celltypist_cell_type_v2" in second.obs
+    assert set(second.obs["celltypist_cell_type_v2"]) == {"A", "B"}
     assert "celltypist_confidence_v2" in second.obs
     assert "celltypist_probabilities" not in second.obsm
     assert "celltypist_probabilities_v2" in second.obsm
@@ -925,7 +958,7 @@ def test_celltypist_overwrite_removes_only_verified_stale_optional_artifacts(sci
     assert len(fake.calls) == calls_before
 
 
-def test_celltypist_overwrite_refuses_unowned_collisions_before_backend(science, tmp_path, monkeypatch):
+def test_celltypist_explicit_overwrite_accepts_outputs_without_prior_provenance(science, tmp_path, monkeypatch):
     adata = _annotation_adata(science)
     adata.obs["celltypist_cell_type"] = "user-owned"
     original_obs = adata.obs.copy(deep=True)
@@ -935,17 +968,21 @@ def test_celltypist_overwrite_refuses_unowned_collisions_before_backend(science,
     fake = _fake_celltypist(science, model_path)
     monkeypatch.setitem(sys.modules, "celltypist", fake)
 
-    with pytest.raises(ValueError, match="ownership of existing outputs could not be verified"):
-        celltypist_owned(
-            adata.copy(),
-            expression_state="verified_counts",
-            model=str(model_path),
-            overwrite_existing=True,
-        )
+    output, report, code = celltypist_owned(
+        adata.copy(),
+        expression_state="verified_counts",
+        model=str(model_path),
+        overwrite_existing=True,
+    )
+    assert set(output.obs["celltypist_cell_type"]) == {"A", "B"}
+    assert report.summary["key_results"]["artifact_replacement"]["prior_artifact_verified"] is False
+    namespace = {}
+    exec(code, namespace)
+    reproduced, reproduced_summary = namespace["run_celltypist_annotation"](adata.copy())
+    science.pd.testing.assert_frame_equal(reproduced.obs, output.obs)
+    assert reproduced_summary == report.summary
     science.pd.testing.assert_frame_equal(adata.obs, original_obs)
     assert adata.uns == original_uns
-    assert fake.loads == []
-    assert fake.calls == []
 
 
 def test_celltypist_majority_preflight_and_malformed_backend_are_atomic(science, tmp_path, monkeypatch):
@@ -1401,10 +1438,8 @@ def test_marker_ora_retains_groups_without_selected_markers_as_unresolved(scienc
 @pytest.mark.parametrize(
     ("metadata", "message"),
     [
-        ("{}", "exactly the required fields"),
         (_resource_metadata().replace('"name"', '"name": "duplicate", "name"', 1), "duplicate key"),
-        (_resource_metadata().replace('"human"', "null"), "must be a nonblank string"),
-        (_resource_metadata()[:-1] + ',"unknown":"x"}', "unknown=.*unknown"),
+        (_resource_metadata().replace('"human"', "null"), "must be a string"),
     ],
 )
 def test_marker_ora_resource_metadata_is_strict_before_backend(
@@ -1425,6 +1460,53 @@ def test_marker_ora_resource_metadata_is_strict_before_backend(
             min_targets=2,
         )
     assert fake.calls == []
+
+
+@pytest.mark.parametrize("metadata", ["{}", '{"name":"custom sets","notes":"expert supplied"}'])
+def test_marker_ora_accepts_optional_resource_documentation(science, comfy_directories, monkeypatch, metadata):
+    input_dir, _, _ = comfy_directories
+    _write_ora_resource(input_dir)
+    marker, universe = _marker_artifacts(science)
+    monkeypatch.setitem(sys.modules, "decoupler", _fake_decoupler(science))
+    result, report, code = _marker_ora_owned(
+        marker, universe, resource_csv="ora_resource.csv", resource_metadata_json=metadata, min_targets=2
+    )
+    assert report.summary["key_results"]["resource"]["metadata"] == json.loads(metadata)
+    assert any("not supplied" in warning for warning in report.summary["warnings"])
+    namespace = {}
+    exec(code, namespace)
+    reproduced, reproduced_summary = namespace["run_marker_ora_evidence"](marker, universe)
+    science.pd.testing.assert_frame_equal(reproduced, result.table)
+    assert reproduced_summary == report.summary
+
+
+@pytest.mark.parametrize("identity,value", [("organism", "mouse"), ("identifier_namespace", "custom symbols")])
+def test_marker_ora_warns_on_declared_resource_identity_conflicts(
+    science, comfy_directories, monkeypatch, identity, value
+):
+    input_dir, _, _ = comfy_directories
+    _write_ora_resource(input_dir)
+    marker, universe = _marker_artifacts(science)
+    parameters = {**marker.parameters, identity: value}
+    marker = replace(marker, parameters=parameters, source={**marker.source, "parameters": parameters})
+    fake = _fake_decoupler(science)
+    monkeypatch.setitem(sys.modules, "decoupler", fake)
+    result, report, code = _marker_ora_owned(
+        marker,
+        universe,
+        resource_csv="ora_resource.csv",
+        resource_metadata_json=_resource_metadata(),
+        min_targets=2,
+    )
+    assert fake.calls[0]["features"] == ["G1", "G2", "G3"]
+    assert result.table.loc[(result.table["group"] == "A") & (result.table["source"] == "TypeA"), "a"].item() == 2
+    assert any(identity in warning and "conflicts" in warning for warning in report.summary["warnings"])
+    assert report.summary["key_results"]["resource"]["metadata"] == json.loads(_resource_metadata())
+    namespace = {}
+    exec(code, namespace)
+    reproduced, reproduced_summary = namespace["run_marker_ora_evidence"](marker, universe)
+    science.pd.testing.assert_frame_equal(reproduced, result.table)
+    assert reproduced_summary == report.summary
 
 
 def test_marker_ora_resource_fingerprint_includes_exact_bytes(comfy_directories):

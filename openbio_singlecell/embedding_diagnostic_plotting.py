@@ -42,9 +42,6 @@ def _standalone_pca_loadings_plot(adata, *, component=1, n_genes=20, _return_det
     n_genes = int(n_genes)
     if n_genes < 1:
         raise ValueError(f"{operation} n_genes must be positive.")
-    if n_genes > 50:
-        raise ValueError(f"{operation} supports at most 50 genes in one readable static plot.")
-
     values = np.asarray(loadings[:, component - 1], dtype=float)
     plotted_count = min(n_genes, int(adata.n_vars))
     order = np.argsort(-np.abs(values), kind="stable")[:plotted_count]

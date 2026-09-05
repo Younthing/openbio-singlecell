@@ -299,7 +299,7 @@ class OpenBioSingleCellDGIdbAnnotation(io.ComfyNode):
             node_id="OpenBioSingleCellDGIdbAnnotation",
             display_name="Load DGIdb Resource",
             category=CATEGORY,
-            description="Load and validate one reviewed, pinned local DGIdb snapshot without network access.",
+            description="Load a local DGIdb-format drug-gene snapshot with optional caller metadata.",
             inputs=[
                 io.String.Input("resource_file", default="openbio-singlecell/dgidb.tsv"),
                 io.String.Input("resource_metadata_json", default="{}"),

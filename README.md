@@ -216,12 +216,15 @@ feature count, grouping columns, labels, comparison groups, and output names. In
   `Subset Observations`, replace the deliberately empty cluster mapping after reviewing marker and resolution
   evidence, and adjust PCA dimensions and the final Leiden resolution for the selected population. Do not use its
   fixed Snapshot/Normalize path when Raw instead contains normalized or log-transformed values.
-- Every consumer declares its expression source. Count-model methods enforce the numeric domain their algorithms
-  require; QC, filtering, and normalization nodes that support broader finite expert inputs disclose signed or
-  non-count-like values as warnings rather than imposing a universal count gate. For conventional practice, select
+- Every consumer declares its expression source. Nodes follow the selected backend's executable domain; expression
+  state, recommended Sample support, and provenance confidence are advisories rather than additional runtime gates.
+  Supported signed, fractional, or zero-total inputs remain the expert's choice. For conventional practice, select
   a non-negative count representation. When counts live in `layers["counts"]`, select that layer directly on each
   count-dependent node. Each consumer uses the source selected on that node. The clustering template reads counts
   into `log1p_norm` without overwriting `X` or existing layers.
+- Merge Observation Annotations applies the chosen value-conflict policy even when source metadata differs.
+  Mixed annotation histories remain recorded without assigning one source's curation claim to the whole column.
+  Raw Snapshot to AnnData preserves empty axes, as native AnnData does.
 - The two bundled scVI templates explicitly set `technical_batch_key="batch"`, so their input data require
   `adata.obs["batch"]`; another workflow may declare a different Technical batch key. The downstream contrast
   requires the grouping column and labels shown on that node. Install the optional `scvi-tools` dependency in the
@@ -412,11 +415,12 @@ and a working local database connection.
   counts while keeping Condition as grouping metadata rather than an inference unit. HVG Selection Plot reads the
   stored flavor-specific selection evidence, PCA Variance Plot reads stored explained variance without recomputing
   PCA, and QC Plots can render either the existing overview or source-coherent distributions by one observation group.
-- CellTypist Annotation produces provisional per-cell model labels and score evidence from an explicitly verified
-  count or CP10K/log1p source. A selected model must already exist locally; execution does not enumerate or download
-  the model catalog. Marker ORA Evidence consumes a direct filtered-marker table plus its pinned universe and an
-  explicitly licensed resource CSV, but does not assign cell types. Map Cluster Annotations is the separate reviewed
-  commitment step and records whether labels are provisional or curated.
+- CellTypist Annotation produces provisional per-cell model labels and score evidence from a caller-declared
+  count or log1p source. CP10K and integer-count recommendations are advisory. A selected model must already exist
+  locally; execution does not enumerate or download the model catalog. Marker ORA Evidence consumes a direct
+  filtered-marker table plus its pinned universe and an explicit resource CSV; release and citation metadata are
+  optional. It does not assign cell types. Map Cluster Annotations is the separate reviewed commitment step and
+  records whether labels are provisional or curated.
 - Dataset-specific condition, tumor, cluster, and cell-type values are never supplied as defaults; nodes that need them require an explicit value.
 - Load H5AD and Load 10x H5 accept a browser file selection or a file dropped directly onto the node; uploads are
   stored under `ComfyUI/input/openbio-singlecell` and the node keeps the resulting relative path.

@@ -443,7 +443,7 @@ def test_paga_real_backend_unused_categories_report_and_standalone_code(science)
 
 def test_paga_partition_and_collision_guards(science):
     adata = _trajectory_input(science)
-    adata.obs["plain"] = adata.obs["state"].astype(str)
+    adata.obs["plain"] = range(adata.n_obs)
     with pytest.raises(TypeError, match="categorical"):
         analyze_paga(adata, groupby="plain")
 
@@ -464,6 +464,22 @@ def test_paga_partition_and_collision_guards(science):
         analyze_paga(first, groupby="state")
     replaced, _ = analyze_paga(first, groupby="state", overwrite_existing=True)
     assert replaced.uns["paga"]["groups"] == "state"
+
+
+def test_paga_uses_native_string_category_conversion(science):
+    adata = _trajectory_input(science)
+    adata.obs["state"] = adata.obs["state"].astype(str)
+    expected = adata.copy()
+    science.sc.tl.paga(expected, groups="state")
+
+    output, _, code = paga_owned(adata.copy(), groupby="state")
+    science.pd.testing.assert_series_equal(output.obs["state"], expected.obs["state"])
+    _assert_sparse_equal(science, output.uns["paga"]["connectivities"], expected.uns["paga"]["connectivities"])
+    assert not isinstance(adata.obs["state"].dtype, science.pd.CategoricalDtype)
+    namespace = {}
+    exec(code, namespace)
+    generated, _ = namespace["run_paga"](adata)
+    science.pd.testing.assert_series_equal(generated.obs["state"], expected.obs["state"])
 
 
 def test_paga_rejects_backend_tree_or_size_tampering(science, monkeypatch):
@@ -572,12 +588,54 @@ def _diffmapped(science):
     return output
 
 
-def test_dpt_requires_graph_bound_diffusion_provenance_and_detects_staleness(science):
+def test_dpt_accepts_external_scanpy_diffusion_map_with_disclosed_provenance(science):
     bare = _trajectory_input(science)
     science.sc.tl.diffmap(bare, n_comps=7, neighbors_key="neighbors", random_state=19)
-    with pytest.raises(ValueError, match="OpenBio Diffusion Map provenance"):
-        analyze_dpt(bare, root_cell_id="cell_000", n_dcs=5)
+    expected = bare.copy()
+    expected.uns["iroot"] = 0
+    science.sc.tl.dpt(expected, n_dcs=5, neighbors_key="neighbors")
 
+    output, report, code = dpt_owned(
+        bare.copy(), root_mode={"root_mode": "cell_id", "root_cell_id": "cell_000"}, n_dcs=5
+    )
+    science.np.testing.assert_allclose(output.obs["dpt_pseudotime"], expected.obs["dpt_pseudotime"])
+    assert report.summary["key_results"]["diffusion"]["source_provenance_available"] is False
+    assert any("provenance" in warning for warning in report.summary["warnings"])
+    namespace = {}
+    exec(code, namespace)
+    generated, summary = namespace["run_dpt"](bare)
+    science.np.testing.assert_allclose(generated.obs["dpt_pseudotime"], expected.obs["dpt_pseudotime"])
+    assert summary["key_results"]["diffusion"]["source_provenance_available"] is False
+
+
+def test_paga_large_user_partition_runs_without_group_cap(science):
+    n_groups = 257
+    n_obs = 2 * n_groups
+    adata = science.ad.AnnData(science.np.ones((n_obs, 2)))
+    adata.obs["group"] = science.pd.Categorical([f"g{index // 2}" for index in range(n_obs)])
+    matrix = science.sparse.diags(
+        [science.np.ones(n_obs - 1), science.np.ones(n_obs - 1)], [-1, 1], format="csr"
+    )
+    adata.obsp["connectivities"] = matrix
+    adata.obsp["distances"] = matrix.copy()
+    adata.uns["neighbors"] = {
+        "connectivities_key": "connectivities",
+        "distances_key": "distances",
+        "params": {"n_neighbors": 3, "method": "umap"},
+    }
+    expected = adata.copy()
+    science.sc.tl.paga(expected, groups="group")
+    output, report, code = paga_owned(adata.copy(), groupby="group")
+    _assert_sparse_equal(science, output.uns["paga"]["connectivities"], expected.uns["paga"]["connectivities"])
+    assert report.summary["key_results"]["partition"]["represented_groups"] == n_groups
+    assert any("257" in warning for warning in report.summary["warnings"])
+    namespace = {}
+    exec(code, namespace)
+    generated, _ = namespace["run_paga"](adata)
+    _assert_sparse_equal(science, generated.uns["paga"]["connectivities"], expected.uns["paga"]["connectivities"])
+
+
+def test_dpt_detects_stale_recorded_diffusion_provenance(science):
     stale = _diffmapped(science)
     connectivity_key = stale.uns["neighbors"]["connectivities_key"]
     connectivity = stale.obsp[connectivity_key].tolil(copy=True)
@@ -589,13 +647,14 @@ def test_dpt_requires_graph_bound_diffusion_provenance_and_detects_staleness(sci
         analyze_dpt(stale, root_cell_id="cell_000", n_dcs=5)
 
 
-def test_dpt_exact_cell_root_report_and_standalone_code(science):
+@pytest.mark.parametrize("n_dcs", [1, 5])
+def test_dpt_exact_cell_root_report_and_standalone_code(science, n_dcs):
     adata = _diffmapped(science)
     output, report, code = dpt_owned(
         adata.copy(),
         neighbors_key="neighbors",
         root_mode={"root_mode": "cell_id", "root_cell_id": "cell_004"},
-        n_dcs=5,
+        n_dcs=n_dcs,
     )
 
     assert "dpt_pseudotime" not in adata.obs
@@ -604,6 +663,8 @@ def test_dpt_exact_cell_root_report_and_standalone_code(science):
     assert output.obs["dpt_pseudotime"].between(0, 1).all()
     assert report.summary["key_results"]["root"]["root_cell_id"] == "cell_004"
     assert report.summary["parameters"]["scanpy_fixed_arguments"]["n_branchings"] == 0
+    if n_dcs == 1:
+        assert any("stationary" in warning for warning in report.summary["warnings"])
     assert len(report.summary["references"]) >= 2
     json.dumps(report.summary, allow_nan=False)
     assert "openbio_singlecell" not in code
@@ -808,7 +869,7 @@ def test_paga_and_dpt_preserve_numpy_process_state(science):
     assert science.np.get_printoptions() == print_before
 
 
-def test_dpt_rejects_disconnected_named_graph_even_with_valid_diffmap(science):
+def test_dpt_preserves_disconnected_cells_with_scanpy_unreachable_sentinel(science):
     n_obs = 12
     adata = science.ad.AnnData(science.np.random.default_rng(3).normal(size=(n_obs, 4)))
     adata.obs_names = [f"d{index}" for index in range(n_obs)]
@@ -829,8 +890,26 @@ def test_dpt_rejects_disconnected_named_graph_even_with_valid_diffmap(science):
     }
     diffmapped, summary = analyze_diffusion_map(adata, neighbors_key="block", n_comps=5)
     assert summary["key_results"]["graph"]["connected_components"] == 2
-    with pytest.raises(ValueError, match="one connected graph component"):
-        analyze_dpt(diffmapped, neighbors_key="block", root_cell_id="d0", n_dcs=4)
+    expected = diffmapped.copy()
+    expected.uns["iroot"] = 0
+    science.sc.tl.dpt(expected, neighbors_key="block", n_dcs=4)
+    output, report, code = dpt_owned(
+        diffmapped.copy(),
+        neighbors_key="block",
+        root_mode={"root_mode": "cell_id", "root_cell_id": "d0"},
+        n_dcs=4,
+    )
+    science.np.testing.assert_allclose(output.obs["dpt_pseudotime"], expected.obs["dpt_pseudotime"])
+    assert science.np.isposinf(output.obs["dpt_pseudotime"].iloc[6:]).all()
+    assert report.summary["key_results"]["pseudotime"]["unreachable_cells"] == 6
+    assert report.summary["key_results"]["pseudotime"]["n"] == 6
+    assert any("unreachable" in warning for warning in report.summary["warnings"])
+    json.dumps(report.summary, allow_nan=False)
+    namespace = {}
+    exec(code, namespace)
+    generated, generated_summary = namespace["run_dpt"](diffmapped)
+    science.np.testing.assert_allclose(generated.obs["dpt_pseudotime"], expected.obs["dpt_pseudotime"])
+    assert generated_summary["key_results"]["pseudotime"]["unreachable_cells"] == 6
 
 
 def test_trajectory_schemas_have_atomic_three_output_contracts():

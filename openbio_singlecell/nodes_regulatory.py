@@ -275,7 +275,7 @@ class OpenBioSingleCellSCENICActivityBinarization(io.ComfyNode):
             ),
             inputs=[
                 SCENICResultArtifactType.Input("scenic_result"),
-                io.Int.Input("random_seed", default=1, min=1, max=2**31 - 1),
+                io.Int.Input("random_seed", default=1, min=0, max=2**31 - 1),
                 TableResultType.Input("threshold_overrides", optional=True),
                 io.Int.Input("max_dense_bytes", default=1_073_741_824, min=1, max=2**63 - 1, advanced=True),
             ],

@@ -523,7 +523,47 @@ def test_real_poisson_gsva_requires_numeric_counts_without_inferred_state(scienc
         )
 
 
-def test_real_scanpy_one_panel_exact_arguments_and_generated_parity(science, comfy_directories):
+@pytest.mark.parametrize("method", ["panel", "aucell", "gsva"])
+@pytest.mark.parametrize("zero_cells", [1, 16])
+def test_scoring_preserves_all_zero_observations(science, comfy_directories, method, zero_cells):
+    if method != "panel":
+        pytest.importorskip("decoupler")
+    input_dir, _, _ = comfy_directories
+    _write_resource(input_dir / "sets.csv")
+    adata = _logged_adata(science)
+    values = adata.X.toarray()
+    values[:zero_cells] = 0
+    adata.X = science.sparse.csr_matrix(values)
+    runner, function_name = {
+        "panel": (_panel, "score_gene_panel"),
+        "aucell": (_aucell, "score_aucell"),
+        "gsva": (_gsva, "score_gsva"),
+    }[method]
+    parameters = {"panel": "panel_x", "n_bins": 5} if method == "panel" else {"min_targets": 3}
+    if method == "gsva" and zero_cells == adata.n_obs:
+        parameters["kernel"] = "empirical"
+    output, report, code = runner(
+        adata,
+        gene_sets_file="sets.csv",
+        resource_metadata_json=_metadata_json(),
+        output_key="zero_cell_scores",
+        **parameters,
+    )
+    scores = output.obs["zero_cell_scores"] if method == "panel" else output.obsm["zero_cell_scores"]
+    assert scores.index.equals(adata.obs_names)
+    assert science.np.isfinite(scores.to_numpy()).all()
+    assert report.summary["key_results"]["expression"]["zero_observations"] == zero_cells
+    assert any("all-zero" in warning for warning in report.summary["warnings"])
+    namespace = {}
+    exec(code, namespace)
+    reproduced, reproduced_summary = namespace[function_name](adata)
+    reproduced_scores = reproduced.obs["zero_cell_scores"] if method == "panel" else reproduced.obsm["zero_cell_scores"]
+    science.np.testing.assert_allclose(reproduced_scores, scores)
+    assert reproduced_summary == report.summary
+
+
+@pytest.mark.parametrize("resource_metadata", [_metadata_json(), "{}"])
+def test_real_scanpy_one_panel_exact_arguments_and_generated_parity(science, comfy_directories, resource_metadata):
     input_dir, _, _ = comfy_directories
     _write_resource(input_dir / "sets.csv")
     adata = _logged_adata(science)
@@ -532,7 +572,7 @@ def test_real_scanpy_one_panel_exact_arguments_and_generated_parity(science, com
         _panel(
             adata,
             gene_sets_file="sets.csv",
-            resource_metadata_json=_metadata_json(),
+            resource_metadata_json=resource_metadata,
             panel="panel_x",
             source={"source": "X"},
             output_key="panel_test",
@@ -544,6 +584,9 @@ def test_real_scanpy_one_panel_exact_arguments_and_generated_parity(science, com
     assert "panel_test" in output.obs
     assert science.np.isfinite(output.obs["panel_test"].to_numpy(dtype=float)).all()
     assert report.summary["parameters"]["panel"] == "panel_x"
+    assert report.summary["key_results"]["resource"]["metadata"] == json.loads(resource_metadata)
+    if resource_metadata == "{}":
+        assert any("not supplied" in warning for warning in report.summary["warnings"])
     assert report.summary["parameters"]["resolved_ctrl_size"] == 7
     assert report.summary["parameters"]["scanpy_fixed_arguments"] == {
         "ctrl_as_ref": False,
@@ -963,6 +1006,27 @@ def test_pathway_contrast_reports_batch_confounding_and_sample_batch_multiplicit
     assert "sample_spans_multiple_technical_batches" in audit["formal_interpretation_invalid_reasons"]
     namespace = {}
     exec(compile(code, "<pathway-score-batch-multiplicity>", "exec"), namespace)
+    generated_table, generated_summary = namespace["contrast_pathway_scores"](adata)
+    science.pd.testing.assert_frame_equal(generated_table, result.table)
+    assert generated_summary == report.summary
+
+
+def test_pathway_contrast_accepts_sample_identity_as_technical_batch(science):
+    adata = _pathway_adata_with_artifact(science)
+    result, report, code = pathway_score_ttest_owned(
+        adata,
+        population="T",
+        condition_a="control",
+        condition_b="treated",
+        score_key="scores",
+        technical_batch_key="sample",
+    )
+    assert result.table["n_samples_a"].eq(4).all()
+    assert result.table["n_samples_b"].eq(4).all()
+    assert report.summary["key_results"]["role_aliases"] == {"sample": ["sample_key", "technical_batch_key"]}
+    assert any("roles" in warning for warning in report.summary["warnings"])
+    namespace = {}
+    exec(code, namespace)
     generated_table, generated_summary = namespace["contrast_pathway_scores"](adata)
     science.pd.testing.assert_frame_equal(generated_table, result.table)
     assert generated_summary == report.summary

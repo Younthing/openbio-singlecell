@@ -5,6 +5,8 @@ import json
 import uuid
 from pathlib import Path
 
+import pytest
+
 from openbio_singlecell.artifact_codecs import ANNDATA_PAYLOAD, read_anndata, write_anndata
 from openbio_singlecell.contracts import ensure_metadata
 from openbio_singlecell.operations_correction import filter_doublets, mark_mad_outliers, scrublet
@@ -92,6 +94,44 @@ def test_scrublet_uses_algorithm_workspace_and_writes_scores_back(tmp_path, scie
     assert scored.obs["predicted_doublet"].dtype == bool
     assert "scrublet" in scored.uns
     assert records[1]["value"]["summary"]["node_id"] == "OpenBioSingleCellScrublet"
+
+
+def test_scrublet_preserves_signed_expression_when_scanpy_returns_valid_scores(tmp_path, science):
+    rng = science.np.random.default_rng(7)
+    matrix = rng.poisson(science.np.linspace(1, 20, 80), size=(50, 80)).astype(float)
+    matrix[0, 0] = -0.25
+    adata = science.ad.AnnData(matrix)
+    expected = adata.copy()
+    with pytest.warns(RuntimeWarning, match="invalid value encountered"):
+        science.sc.pp.scrublet(
+            expected, n_prin_comps=5, n_neighbors=3, threshold=0.25, random_state=123, verbose=False
+        )
+    with pytest.warns(Warning):
+        scored, records = _run(
+            tmp_path,
+            "signed-scrublet",
+            scrublet,
+            adata,
+            {
+                "batch_key": "",
+                "random_seed": 123,
+                "expected_doublet_rate": 0.05,
+                "threshold_mode": "manual",
+                "threshold": 0.25,
+                "sim_doublet_ratio": 2.0,
+                "n_prin_comps": 5,
+                "n_neighbors": 3,
+                "source": {"source": "X"},
+            },
+        )
+    science.np.testing.assert_array_equal(scored.X, adata.X)
+    science.np.testing.assert_allclose(scored.obs["doublet_score"], expected.obs["doublet_score"])
+    assert any("negative expression" in warning for warning in records[1]["value"]["summary"]["warnings"])
+    namespace = {}
+    exec(records[2]["value"], namespace)
+    with pytest.warns(Warning):
+        generated = namespace["run_scrublet"](adata.copy())
+    science.np.testing.assert_allclose(generated.obs["doublet_score"], expected.obs["doublet_score"])
 
 
 def test_filter_doublets_materializes_the_scientific_subset(tmp_path, science):

@@ -836,8 +836,9 @@ def test_membership_is_bounded_schema_stable_and_generated_equivalent(pyscenic_b
     assert summary == generated_summary
 
 
+@pytest.mark.parametrize("random_seed", [0, 11])
 def test_binarization_overrides_strict_comparison_rng_and_generated_parity(
-    pyscenic_bundle, science
+    pyscenic_bundle, science, random_seed
 ):
     adata, manifest_path = pyscenic_bundle
     _output, artifact, _summary = import_pyscenic_bundle(adata, manifest_path)
@@ -848,7 +849,7 @@ def test_binarization_overrides_strict_comparison_rng_and_generated_parity(
     state_before = copy.deepcopy(science.np.random.get_state())
     binary, thresholds, summary = binarize_scenic_activity(
         artifact,
-        random_seed=11,
+        random_seed=random_seed,
         threshold_overrides=overrides,
         max_dense_bytes=10_000,
     )
@@ -865,7 +866,7 @@ def test_binarization_overrides_strict_comparison_rng_and_generated_parity(
 
     code = scenic_binarization_code(
         parameters={
-            "random_seed": 11,
+            "random_seed": random_seed,
             "max_dense_bytes": 10_000,
             "openbio_version": PLUGIN_VERSION,
         }
@@ -884,7 +885,7 @@ def test_binarization_overrides_strict_comparison_rng_and_generated_parity(
 
     derived_binary, derived_thresholds, derived_summary = binarize_scenic_activity(
         artifact,
-        random_seed=11,
+        random_seed=random_seed,
         max_dense_bytes=1_000_000,
     )
     assert derived_summary["key_results"]["estimated_peak_dense_bytes"] == (
@@ -892,7 +893,7 @@ def test_binarization_overrides_strict_comparison_rng_and_generated_parity(
     )
     derived_code = scenic_binarization_code(
         parameters={
-            "random_seed": 11,
+            "random_seed": random_seed,
             "max_dense_bytes": 1_000_000,
             "openbio_version": PLUGIN_VERSION,
         }
@@ -911,7 +912,7 @@ def test_binarization_rejects_bad_seed_memory_and_adversarial_backend(pyscenic_b
     adata, manifest_path = pyscenic_bundle
     _output, artifact, _summary = import_pyscenic_bundle(adata, manifest_path)
     with pytest.raises(ValueError, match="random_seed"):
-        binarize_scenic_activity(artifact, random_seed=0)
+        binarize_scenic_activity(artifact, random_seed=-1)
     with pytest.raises(ValueError, match="dense working bytes"):
         binarize_scenic_activity(artifact, max_dense_bytes=1)
     partial_override = pd.DataFrame(

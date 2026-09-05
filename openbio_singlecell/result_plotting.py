@@ -309,13 +309,8 @@ def _plot_embedding_impl(
                 raise ValueError(f"Unknown Matplotlib categorical palette: {categorical_palette!r}.")
             palette = matplotlib.colormaps[categorical_palette]
             if resolved_category_colors is None:
-                if isinstance(palette, ListedColormap):
+                if isinstance(palette, ListedColormap) and len(categories) <= len(palette.colors):
                     available = list(palette.colors)
-                    if len(categories) > len(available):
-                        raise ValueError(
-                            f"Categorical palette {categorical_palette!r} provides {len(available)} distinct "
-                            f"entries but {len(categories)} categories are present."
-                        )
                     colors = [to_hex(value, keep_alpha=True) for value in available[: len(categories)]]
                 else:
                     positions = np.linspace(0.0, 1.0, max(len(categories), 1))
@@ -335,9 +330,9 @@ def _plot_embedding_impl(
                     except (TypeError, ValueError) as error:
                         raise ValueError(f"Invalid resolved color for Embedding category {category!r}.") from error
             if len(set(category_colors.values())) != len(category_colors):
-                raise ValueError("Embedding categorical palette assigns duplicate rendered colors.")
+                warnings.append("The selected categorical palette assigns duplicate rendered colors to different labels.")
             if bool(missing_mask.any()) and missing_hex in set(category_colors.values()):
-                raise ValueError("Embedding missing_color duplicates a categorical palette color.")
+                warnings.append("The selected missing_color duplicates a categorical palette color.")
             if categorical_palette not in qualitative_palettes:
                 warnings.append(
                     f"Palette {categorical_palette!r} is not a recognized qualitative Matplotlib palette; "
@@ -388,7 +383,10 @@ def _plot_embedding_impl(
             missing_mask = pd.isna(numeric)
             infinity_mask = ~finite_mask & ~missing_mask
             if bool(infinity_mask.any()):
-                raise ValueError(f"Embedding continuous color target {color!r} contains infinite values.")
+                warnings.append(
+                    f"Rendered {int(infinity_mask.sum()):,} observations with infinite continuous color values "
+                    f"using the explicit special color {missing_hex}; stored values were left unchanged."
+                )
             if not bool(finite_mask.any()):
                 raise ValueError(f"Embedding continuous color target {color!r} contains no finite values.")
             if bool(missing_mask.any()):
@@ -421,12 +419,14 @@ def _plot_embedding_impl(
             if sort_order:
                 finite_indices = finite_indices[np.argsort(numeric[finite_indices], kind="stable")]
             quantiles = np.quantile(finite_values, [0.0, 0.25, 0.5, 0.75, 1.0])
-            continuous_payload = (numeric, missing_mask, finite_indices, float(vmin), float(vmax))
+            continuous_payload = (numeric, ~finite_mask, finite_indices, float(vmin), float(vmax))
             color_details.update(
                 {
                     "effective_mode": "continuous",
                     "dtype": str(dtype),
                     "missing_count": int(missing_mask.sum()),
+                    "infinite_count": int(infinity_mask.sum()),
+                    "masked_nonfinite_count": int((~finite_mask).sum()),
                     "missing_color": missing_hex,
                     "finite_count": int(finite_mask.sum()),
                     "observed_range": [observed_min, observed_max],
@@ -441,9 +441,9 @@ def _plot_embedding_impl(
                     "colormap": continuous_color_map,
                     "sort_order": sort_order,
                     "draw_order": (
-                        "missing values first, then finite values in stable ascending order"
+                        "non-finite color values first, then finite values in stable ascending order"
                         if sort_order
-                        else "missing values first, then finite values in observation order"
+                        else "non-finite color values first, then finite values in observation order"
                     ),
                 }
             )
@@ -709,7 +709,6 @@ def _marker_expression_plot_impl(
     sparse = _science.sparse
 
     png_signature = b"\x89PNG\r\n\x1a\n"
-    max_genes = 50
     max_stat_rows = 10_000
     max_plot_bytes = 1024**3
 
@@ -920,8 +919,6 @@ def _marker_expression_plot_impl(
     gene_names = list(dict.fromkeys(item.strip() for item in genes.split(",") if item.strip()))
     if not gene_names:
         raise ValueError("Marker Expression Plot requires at least one comma-separated gene.")
-    if len(gene_names) > max_genes:
-        raise ValueError(f"Marker Expression Plot supports at most {max_genes} genes per panel.")
     groupby = strict_string(groupby, "Marker Expression groupby")
     group_order = strict_string(group_order, "Marker Expression group_order")
     if group_order not in {"observed", "dendrogram"}:
@@ -1035,9 +1032,12 @@ def _marker_expression_plot_impl(
     panel = np.asarray(panel, dtype=float)
     if panel.shape != (n_obs, len(gene_names)) or not bool(np.isfinite(panel).all()):
         raise RuntimeError("Marker Expression selected panel could not be materialized as a finite matrix.")
-    if mode["plot"] == "violin" and mode["y_scale"] == "log" and bool((panel <= 0).any()):
-        raise ValueError("Marker Expression violin log y_scale requires every selected expression value to be positive.")
     warnings = []
+    if mode["plot"] == "violin" and mode["y_scale"] == "log" and bool((panel <= 0).any()):
+        warnings.append(
+            "The selected panel contains nonpositive expression values that cannot be displayed on the log axis; "
+            "the original values were passed to Scanpy unchanged."
+        )
     dendrogram_details = {
         "enabled": group_order == "dendrogram",
         "source_matches_panel": True,
@@ -1047,8 +1047,8 @@ def _marker_expression_plot_impl(
     }
     resolved_order = list(observed_order)
     if group_order == "dendrogram":
-        if len(observed_order) < 3:
-            raise ValueError("Marker Expression dendrogram group order requires at least three observed groups.")
+        if len(observed_order) < 2:
+            raise ValueError("Marker Expression dendrogram group order requires at least two observed groups.")
         if len(gene_names) < 2:
             raise ValueError("Marker Expression dendrogram group order requires at least two selected genes.")
         group_means = np.vstack([panel[groups == label].mean(axis=0) for label in observed_order])

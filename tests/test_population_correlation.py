@@ -277,8 +277,25 @@ def test_population_correlation_rejects_complex_representation(correlation_adata
 
 def test_population_correlation_rejects_undefined_constant_centroids(correlation_adata, science):
     correlation_adata.obsm["X_pca"] = science.np.tile(science.np.asarray([1.0, 1.0, 1.0, 1.0]), (9, 1))
-    with pytest.raises(ValueError, match="nonconstant dimensions"):
+    with pytest.raises(ValueError, match="correlation is undefined"):
         _run(correlation_adata)
+
+
+def test_population_correlation_accepts_one_varying_dimension(correlation_adata, science):
+    correlation_adata.obsm["X_pca"] = science.np.column_stack(
+        [science.np.repeat([1.0, 2.0, 3.0], 3), science.np.zeros(9), science.np.full(9, 4.0)]
+    )
+    table, plot, report, code = population_correlation_owned(correlation_adata)
+    assert table.table.shape[0] == 3
+    assert science.np.isfinite(table.table["correlation"]).all()
+    namespace = {}
+    exec(code, namespace)
+    reproduced_table, reproduced_png, reproduced_summary = namespace["population_centroid_correlation"](
+        correlation_adata
+    )
+    science.pd.testing.assert_frame_equal(reproduced_table, table.table)
+    assert reproduced_png == plot.png
+    assert reproduced_summary == report.summary
 
 
 def test_population_correlation_guards_and_visual_parameters(correlation_adata):

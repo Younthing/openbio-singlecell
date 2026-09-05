@@ -532,11 +532,13 @@ def test_resource_loader_rejects_malformed_rows_metadata_and_changed_hash(tmp_pa
         load_gene_set_resource(str(good), duplicate_metadata, "source", "target", ["G1"], 1)
 
 
-def test_ranked_gsea_runtime_generated_parity_and_complete_family(science, tmp_path):
+@pytest.mark.parametrize("resource_metadata", [_metadata_json(), "{}"])
+def test_ranked_gsea_runtime_generated_parity_and_complete_family(science, tmp_path, resource_metadata):
     resource_path = _write_resource(tmp_path / "sets.csv")
     table, universe = _generic_artifacts(science, purpose="ranked")
     provenance = _provenance(science, table, universe, purpose="ranked")
     parameters = _base_parameters(provenance, resource_path, purpose="ranked")
+    parameters["resource_metadata_json"] = resource_metadata
     backend = _fake_decoupler(science)
     before_table = table.table.copy(deep=True)
     before_universe = universe.table.copy(deep=True)
@@ -553,6 +555,7 @@ def test_ranked_gsea_runtime_generated_parity_and_complete_family(science, tmp_p
     assert backend.gsea_calls[0]["seed"] == 17
     assert backend.gsea_calls[0]["raw"] is False
     assert summary["node_id"] == "OpenBioSingleCellRankedGSEA"
+    assert summary["key_results"]["resource"]["metadata"] == json.loads(resource_metadata)
     json.dumps(summary, ensure_ascii=False, allow_nan=False)
     science.pd.testing.assert_frame_equal(table.table, before_table)
     science.pd.testing.assert_frame_equal(universe.table, before_universe)
@@ -571,11 +574,13 @@ def test_ranked_gsea_runtime_generated_parity_and_complete_family(science, tmp_p
     assert summary == generated_summary
 
 
-def test_generic_ora_runtime_generated_parity_and_contingencies(science, tmp_path):
+@pytest.mark.parametrize("resource_metadata", [_metadata_json(), "{}"])
+def test_generic_ora_runtime_generated_parity_and_contingencies(science, tmp_path, resource_metadata):
     resource_path = _write_resource(tmp_path / "sets.csv")
     table, universe = _generic_artifacts(science, purpose="selected")
     provenance = _provenance(science, table, universe, purpose="selected")
     parameters = _base_parameters(provenance, resource_path, purpose="selected")
+    parameters["resource_metadata_json"] = resource_metadata
     backend = _fake_decoupler(science)
     evidence, diagnostics = run_generic_ora_evidence(
         table, universe, **parameters, decoupler_module=backend
@@ -590,6 +595,7 @@ def test_generic_ora_runtime_generated_parity_and_contingencies(science, tmp_pat
     assert backend.ora_calls[0]["n_bg"] == 8
     assert backend.ora_calls[0]["ha_corr"] == 0.5
     assert summary["node_id"] == "OpenBioSingleCellGeneSetOverrepresentation"
+    assert summary["key_results"]["resource"]["metadata"] == json.loads(resource_metadata)
     json.dumps(summary, ensure_ascii=False, allow_nan=False)
 
     generated = generic_ora_code(

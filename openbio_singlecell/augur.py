@@ -157,26 +157,29 @@ def _count_matrix_fingerprint(
     numpy: Any,
 ) -> str:
     digest = hashlib.sha256()
+    value_dtype = numpy.dtype(matrix.dtype).newbyteorder("<")
     header = {
-        "schema": "openbio-singlecell/augur-count-matrix/v1",
+        "schema": "openbio-singlecell/augur-count-matrix/v2",
         "shape": [len(observation_names), len(feature_names)],
         "observations": list(observation_names),
         "features": list(feature_names),
+        "dtype": value_dtype.str,
+        "storage": "csr" if sparse.issparse(matrix) else "dense",
     }
     digest.update(
         json.dumps(header, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     )
     if sparse.issparse(matrix):
-        canonical = sparse.csr_matrix(matrix, dtype=numpy.int64, copy=True)
+        canonical = sparse.csr_matrix(matrix, copy=True)
         canonical.sum_duplicates()
         canonical.eliminate_zeros()
         canonical.sort_indices()
-        for array in (canonical.indptr, canonical.indices, canonical.data):
-            values = numpy.ascontiguousarray(array, dtype="<i8")
+        for array, dtype in ((canonical.indptr, "<i8"), (canonical.indices, "<i8"), (canonical.data, value_dtype)):
+            values = numpy.ascontiguousarray(array, dtype=dtype)
             digest.update(int(values.size).to_bytes(8, "little", signed=False))
             digest.update(values.tobytes(order="C"))
     else:
-        values = numpy.ascontiguousarray(matrix, dtype="<i8")
+        values = numpy.ascontiguousarray(matrix, dtype=value_dtype)
         digest.update(values.tobytes(order="C"))
     return digest.hexdigest()
 
@@ -1168,7 +1171,7 @@ def _run_augur_artifact_owned(
     subsample_size = _validate_integer(subsample_size, name="subsample_size", minimum=2)
     folds = _validate_integer(folds, name="folds", minimum=2)
     n_threads = _validate_integer(n_threads, name="n_threads", minimum=1)
-    random_seed = _validate_integer(random_seed, name="random_seed", minimum=1)
+    random_seed = _validate_integer(random_seed, name="random_seed", minimum=0)
     max_result_rows = _validate_integer(max_result_rows, name="max_result_rows", minimum=1)
     if folds > subsample_size:
         raise ValueError("Augur folds cannot exceed per-Condition subsample_size.")
@@ -1208,23 +1211,17 @@ def _run_augur_artifact_owned(
     ):
         raise ValueError("Augur selected source requires unique canonical feature identifiers.")
     values = np.asarray(source_matrix.data) if sparse.issparse(source_matrix) else np.asarray(source_matrix).ravel()
-    if np.issubdtype(values.dtype, np.bool_) or not np.issubdtype(values.dtype, np.number):
-        raise TypeError("Augur selected expression source must be numeric and non-boolean.")
+    if values.dtype.kind not in "iuf":
+        raise TypeError("Augur selected expression source must be real numeric and non-boolean.")
     numeric = values.astype(float, copy=False)
     if numeric.size and not bool(np.isfinite(numeric).all()):
         raise ValueError("Augur selected expression source contains non-finite values.")
-    if numeric.size and bool((numeric < 0).any()):
-        raise ValueError("Augur selected expression source contains negative values.")
-    if not numeric.size or not bool((numeric > 0).any()):
-        raise ValueError("Augur selected expression source contains no positive values.")
+    contains_negative_values = bool((numeric < 0).any())
     integer_like = bool(np.allclose(numeric, np.rint(numeric), rtol=0.0, atol=1e-8))
-    if integer_like and float(numeric.max(initial=0.0)) > np.iinfo(np.int64).max:
-        raise OverflowError("Augur Raw counts exceed the supported int64 range.")
-    target_dtype = np.int64 if integer_like else np.float64
     counts = (
-        source_matrix.astype(target_dtype).tocsr()
+        source_matrix.tocsr(copy=True)
         if sparse.issparse(source_matrix)
-        else np.asarray(source_matrix, dtype=target_dtype)
+        else np.array(source_matrix, copy=True)
     )
 
     sample_labels, sample_order = _canonical_labels(adata.obs[sample_key], label="Sample labels", pandas=pd)
@@ -1680,9 +1677,14 @@ def _run_augur_artifact_owned(
         "Feature importance is classifier- and sampled-feature-dependent; it is not causal evidence or a differential-expression effect.",
     ]
     report_warnings.extend(f"Pertpy warning: {warning.message}" for warning in caught)
+    if contains_negative_values:
+        report_warnings.append(
+            "The selected expression contains negative values; they were retained for Pertpy Augur, "
+            "whose variance selection supports signed expression."
+        )
     if not integer_like:
         report_warnings.append(
-            "The explicitly selected expression source is nonnegative but not integer-like; it was preserved "
+            "The explicitly selected expression source is not integer-like; it was preserved "
             "without coercion. Confirm that this input is appropriate for Pertpy Augur normalization."
         )
     if not sample_condition_mapping_valid:
@@ -1804,6 +1806,7 @@ def _run_augur_artifact_owned(
                 "source": source_label,
                 "selection": "explicit",
                 "integer_like": integer_like,
+                "contains_negative_values": contains_negative_values,
             },
             "selected_source_fingerprint_sha256": selected_source_fingerprint,
             "raw_snapshot_fingerprint_sha256": (

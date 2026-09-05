@@ -28,7 +28,7 @@ def _standalone_load_gene_set_resource(
     expected_sha256=None,
     operation="Gene-set resource",
 ):
-    """Load one provenance-complete local gene-set resource.
+    """Load one local gene-set resource with caller-supplied documentation.
 
     The returned mapping is owned by the caller.  Its network has canonical
     ``source``/``target`` columns and contains only sources that meet
@@ -111,21 +111,12 @@ def _standalone_load_gene_set_resource(
         )
     except json.JSONDecodeError as exc:
         raise ValueError(f"{operation} resource metadata is invalid JSON ({exc.msg}).") from exc
-    required_metadata = set(metadata_fields)
-    if not isinstance(metadata, dict) or set(metadata) != required_metadata:
-        actual = set(metadata) if isinstance(metadata, dict) else set()
-        raise ValueError(
-            f"{operation} resource metadata must contain exactly the required fields; "
-            f"missing={sorted(required_metadata - actual)}, unknown={sorted(actual - required_metadata)}."
-        )
-    for field in metadata_fields:
-        value = metadata[field]
+    if not isinstance(metadata, dict):
+        raise TypeError(f"{operation} resource metadata must be a JSON object.")
+    for field, value in metadata.items():
         if not isinstance(value, str):
             raise TypeError(f"{operation} resource metadata field {field!r} must be a string.")
-        if not value.strip():
-            raise ValueError(f"{operation} resource metadata field {field!r} cannot be blank.")
-        if value != value.strip():
-            raise ValueError(f"{operation} resource metadata field {field!r} cannot contain surrounding whitespace.")
+    missing_metadata_fields = [field for field in metadata_fields if not metadata.get(field, "").strip()]
 
     if not isinstance(path, str) or not path.strip():
         raise ValueError(f"{operation} resource path cannot be empty.")
@@ -261,6 +252,7 @@ def _standalone_load_gene_set_resource(
         for index, source in enumerate(source_order)
     ]
     accounting = {
+        "missing_metadata_fields": missing_metadata_fields,
         "extension": extension,
         "logical_data_rows": logical_rows,
         "input_pairs": len(pairs),
@@ -279,6 +271,10 @@ def _standalone_load_gene_set_resource(
     }
     json.dumps({"metadata": metadata, "accounting": accounting}, ensure_ascii=False, allow_nan=False)
     return {
+        "warnings": (
+            [f"{operation} resource documentation was not supplied for: {', '.join(missing_metadata_fields)}."]
+            if missing_metadata_fields else []
+        ),
         "network": network,
         "metadata": dict(metadata),
         "resolved_path": resolved_path,

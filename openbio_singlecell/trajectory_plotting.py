@@ -10,7 +10,6 @@ from .trajectory_analysis import (
     _TA_DIFFMAP_SCHEMA,
     _TA_DPT_PROVENANCE_KEY,
     _TA_DPT_SCHEMA,
-    _TA_MAX_PAGA_GROUPS,
     _TA_PAGA_PROVENANCE_KEY,
     _TA_PAGA_SCHEMA,
     _ta_clean_text,
@@ -271,7 +270,6 @@ _TA_DPT_SCHEMA = {_TA_DPT_SCHEMA!r}
 _TA_DIFFMAP_PROVENANCE_KEY = {_TA_DIFFMAP_PROVENANCE_KEY!r}
 _TA_PAGA_PROVENANCE_KEY = {_TA_PAGA_PROVENANCE_KEY!r}
 _TA_DPT_PROVENANCE_KEY = {_TA_DPT_PROVENANCE_KEY!r}
-_TA_MAX_PAGA_GROUPS = {_TA_MAX_PAGA_GROUPS!r}
 
 {implementation}
 """
@@ -328,19 +326,20 @@ def _standalone_validate_diffusion_plot_input(adata):
         "output_fingerprint_sha256",
         "scanpy_version",
     }
-    if not isinstance(provenance, dict) or set(provenance) != expected_fields:
-        raise ValueError(f"{operation} requires exact OpenBio Diffusion Map provenance.")
-    if provenance["schema"] != _TA_DIFFMAP_SCHEMA:
-        raise ValueError(f"{operation} producer schema is unsupported.")
+    if provenance is not None:
+        if not isinstance(provenance, dict) or set(provenance) != expected_fields:
+            raise ValueError(f"{operation} requires exact OpenBio Diffusion Map provenance when present.")
+        if provenance["schema"] != _TA_DIFFMAP_SCHEMA:
+            raise ValueError(f"{operation} producer schema is unsupported.")
     graph = _ta_graph(
         adata,
-        neighbors_key=provenance["neighbors_key"],
+        neighbors_key=provenance["neighbors_key"] if provenance is not None else "neighbors",
         operation=operation,
         numpy=np,
         scipy_sparse=sparse,
         scipy_csgraph=csgraph,
     )
-    if (
+    if provenance is not None and (
         provenance["connectivities_key"] != graph["connectivities_key"]
         or provenance["distances_key"] != graph["distances_key"]
     ):
@@ -403,6 +402,7 @@ def _standalone_diffusion_spectrum_plot(adata, *, _return_details=False):
         "observation_fingerprint_sha256": provenance["observation_fingerprint_sha256"],
         "output_fingerprint_sha256": provenance["output_fingerprint_sha256"],
         "scientific_validation": validation,
+        "source_provenance_available": provenance.get("schema") == _TA_DIFFMAP_SCHEMA,
         "title": "Graph-bound Diffusion Map spectrum",
     }
     if _return_details:
@@ -468,7 +468,7 @@ def _standalone_validate_dpt_plot_input(adata):
     ):
         raise ValueError(f"{operation} graph, observation, or diffusion provenance is stale.")
     n_dcs = provenance["n_dcs"]
-    if isinstance(n_dcs, bool) or not isinstance(n_dcs, int) or not 2 <= n_dcs <= coordinates.shape[1]:
+    if isinstance(n_dcs, bool) or not isinstance(n_dcs, int) or not 1 <= n_dcs <= coordinates.shape[1]:
         raise ValueError(f"{operation} n_dcs does not match the graph-bound diffusion component axis.")
     root_index = provenance["root_index"]
     if isinstance(root_index, bool) or not isinstance(root_index, int) or not 0 <= root_index < int(adata.n_obs):
@@ -490,12 +490,14 @@ def _standalone_validate_dpt_plot_input(adata):
     if "dpt_pseudotime" not in adata.obs:
         raise ValueError(f"{operation} canonical pseudotime column is missing.")
     pseudotime = adata.obs["dpt_pseudotime"].to_numpy()
+    reachable = graph["component_labels"] == graph["component_labels"][root_index]
     if (
         pseudotime.shape != (int(adata.n_obs),)
         or not np.issubdtype(pseudotime.dtype, np.floating)
-        or not bool(np.isfinite(pseudotime).all())
-        or bool((pseudotime < -1e-7).any())
-        or bool((pseudotime > 1.0 + 1e-7).any())
+        or not bool(np.isfinite(pseudotime[reachable]).all())
+        or not bool(np.isposinf(pseudotime[~reachable]).all())
+        or bool((pseudotime[reachable] < -1e-7).any())
+        or bool((pseudotime[reachable] > 1.0 + 1e-7).any())
         or not np.isclose(pseudotime[root_index], 0.0, rtol=0.0, atol=1e-7)
     ):
         raise ValueError(f"{operation} pseudotime axis is invalid or misoriented at the stored root.")
@@ -588,12 +590,21 @@ def _standalone_dpt_gene_trend_plot(
     expression = np.asarray(selected.toarray() if sparse.issparse(selected) else selected, dtype=float)
     if expression.shape != (int(adata.n_obs), len(selected_genes)) or not bool(np.isfinite(expression).all()):
         raise ValueError(f"{operation} selected expression values must be finite and axis-aligned.")
-    if isinstance(n_bins, bool) or not isinstance(n_bins, int) or not 3 <= n_bins <= 100:
-        raise ValueError(f"{operation} n_bins must be an integer between 3 and 100.")
-    codes = np.minimum(np.floor(np.clip(pseudotime, 0.0, 1.0) * n_bins).astype(int), n_bins - 1)
+    if isinstance(n_bins, bool) or not isinstance(n_bins, int) or not 1 <= n_bins <= 100:
+        raise ValueError(f"{operation} n_bins must be an integer between 1 and 100.")
+    reachable = np.isfinite(pseudotime)
+    codes = np.full(len(pseudotime), -1, dtype=int)
+    codes[reachable] = np.minimum(
+        np.floor(np.clip(pseudotime[reachable], 0.0, 1.0) * n_bins).astype(int), n_bins - 1
+    )
     present = [index for index in range(n_bins) if bool(np.any(codes == index))]
-    if len(present) < 2:
-        raise ValueError(f"{operation} pseudotime occupies fewer than two nonempty display bins.")
+    plot_warnings = []
+    if not bool(reachable.all()):
+        plot_warnings.append(
+            f"Excluded {int((~reachable).sum()):,} unreachable cells with positive-infinite pseudotime from display bins."
+        )
+    if len(present) == 1:
+        plot_warnings.append("One display bin contains all reachable cells; no across-bin trend is shown.")
     centers = []
     counts = []
     means = []
@@ -646,8 +657,11 @@ def _standalone_dpt_gene_trend_plot(
         "bin_q1": q1.tolist(),
         "bin_q3": q3.tolist(),
         "plotted_gene_bin_marks": int(len(present) * len(selected_genes)),
-        "pseudotime_min": float(pseudotime.min()),
-        "pseudotime_max": float(pseudotime.max()),
+        "pseudotime_min": float(pseudotime[reachable].min()),
+        "pseudotime_max": float(pseudotime[reachable].max()),
+        "reachable_cells": int(reachable.sum()),
+        "unreachable_cells": int((~reachable).sum()),
+        "warnings": plot_warnings,
         "root_cell_id": provenance["root"]["root_cell_id"],
         "root_mode": provenance["root"]["mode"],
         "neighbors_key": graph["neighbors_key"],

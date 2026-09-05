@@ -266,8 +266,8 @@ def binarize_scenic_activity(
     import scipy
     import sklearn
 
-    if isinstance(random_seed, bool) or not isinstance(random_seed, int) or not 1 <= random_seed <= 2**31 - 1:
-        raise ValueError("SCENIC binarization random_seed must be an integer in [1, 2^31-1].")
+    if isinstance(random_seed, bool) or not isinstance(random_seed, int) or not 0 <= random_seed <= 2**31 - 1:
+        raise ValueError("SCENIC binarization random_seed must be an integer in [0, 2^31-1].")
     if isinstance(max_dense_bytes, bool) or not isinstance(max_dense_bytes, int) or max_dense_bytes < 1:
         raise TypeError("SCENIC binarization max_dense_bytes must be a positive integer.")
     if isinstance(scenic_result, SCENICResultArtifact):
@@ -409,6 +409,8 @@ def binarize_scenic_activity(
         "A cell is active only when AUC is strictly greater than the threshold; equality is off.",
         "Thresholds depend on the complete included-cell composition and may change when cells are added or removed.",
     ]
+    if random_seed == 0:
+        warnings.append("Seed zero leaves pySCENIC dip-test sampling unseeded; derived thresholds may vary between runs.")
     if low_information:
         warnings.append(
             f"{len(low_information)} regulon(s) had at most four distinct AUC values and therefore followed the "

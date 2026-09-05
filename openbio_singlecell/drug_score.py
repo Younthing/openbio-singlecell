@@ -448,8 +448,8 @@ def _standalone_run_drug_score(
                 "kind": "software",
             },
             {
-                "citation": f"{resource_metadata['name']} {resource_metadata['version']}: {resource_metadata['citation']}",
-                "url": resource_metadata["download_url"],
+                "citation": resource_metadata["citation"] or resource_metadata["name"] or "Local drug-gene resource; citation not supplied.",
+                "url": resource_metadata["download_url"] or f"urn:sha256:{resource_artifact_metadata['raw_file_sha256']}",
                 "doi": None,
                 "kind": "resource_snapshot",
             },

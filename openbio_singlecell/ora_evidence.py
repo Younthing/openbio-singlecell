@@ -224,8 +224,9 @@ def _standalone_marker_ora_summary(diagnostics):
         },
         {
             "citation": (
-                f"{resource_metadata['name']} {resource_metadata['version']} "
-                f"({resource_metadata['date']}): {resource_metadata['citation']}"
+                f"{resource_metadata.get('name', 'Gene-set resource')} {resource_metadata.get('version', '')} "
+                f"({resource_metadata.get('date', 'date not supplied')}): "
+                f"{resource_metadata.get('citation', 'citation not supplied')}"
             ),
             "url": f"urn:sha256:{resource['sha256']}",
             "kind": "practice",
@@ -678,23 +679,23 @@ def _standalone_marker_ora_evidence(
         "license",
         "citation",
     }
-    if not isinstance(resource_metadata, dict) or set(resource_metadata) != required_metadata:
-        missing = sorted(required_metadata - set(resource_metadata)) if isinstance(resource_metadata, dict) else []
-        unknown = sorted(set(resource_metadata) - required_metadata) if isinstance(resource_metadata, dict) else []
-        raise ValueError(
-            f"{operation} resource metadata must contain exactly the required fields; "
-            f"missing={missing}, unknown={unknown}."
-        )
+    if not isinstance(resource_metadata, dict):
+        raise TypeError(f"{operation} resource metadata must be a JSON object.")
     for key, value in list(resource_metadata.items()):
-        if not isinstance(value, str) or not value.strip():
-            raise TypeError(f"{operation} resource metadata field {key!r} must be a nonblank string.")
-        resource_metadata[key] = value.strip()
+        if not isinstance(value, str):
+            raise TypeError(f"{operation} resource metadata field {key!r} must be a string.")
+    missing_metadata_fields = sorted(
+        field for field in required_metadata if not resource_metadata.get(field, "").strip()
+    )
+    resource_warnings = []
     for optional_identity in ("organism", "identifier_namespace"):
         upstream_identity = upstream_parameters.get(optional_identity)
-        if upstream_identity is not None and upstream_identity != resource_metadata[optional_identity]:
-            raise ValueError(
+        resource_identity = resource_metadata.get(optional_identity)
+        if upstream_identity is not None and resource_identity and upstream_identity != resource_identity:
+            resource_warnings.append(
                 f"{operation} resource {optional_identity} conflicts with marker provenance: "
-                f"{resource_metadata[optional_identity]!r} != {upstream_identity!r}."
+                f"{resource_identity!r} != {upstream_identity!r}. Exact identifier matching "
+                "was used, but biological compatibility is a caller responsibility."
             )
 
     if not isinstance(resource_path, str) or not resource_path.strip():
@@ -1118,6 +1119,7 @@ def _standalone_marker_ora_evidence(
         "unmatched_selected_counts_by_group_preview": {group: dict(unmatched_pairs)[group] for group in preview_groups},
         "universe_count": universe_count,
         "resource": {
+            "missing_metadata_fields": missing_metadata_fields,
             "resolved_path": resource_path,
             "size_bytes": resource_size,
             "sha256": resource_sha256,
@@ -1196,10 +1198,13 @@ def _standalone_marker_ora_evidence(
         "table_content_fingerprint_sha256": marker_ora_table_fingerprint(evidence),
     }
     warnings = [
+        *resource_warnings,
         "Marker ORA results are exploratory Cluster marker evidence for annotation review, not cell-type probabilities or Curated annotation.",
         "Resource organism, identifier namespace, scope, license, and citation are caller declarations; the file hash identifies bytes but not biological suitability.",
         "Marker selection and ORA reuse the same cells and are not independent confirmatory tests.",
     ]
+    if missing_metadata_fields:
+        warnings.append(f"Resource documentation was not supplied for: {', '.join(missing_metadata_fields)}.")
     if "organism" not in upstream_parameters or "identifier_namespace" not in upstream_parameters:
         warnings.append(
             "Upstream marker artifacts do not declare organism and identifier namespace, so compatibility with the resource could not be independently verified."

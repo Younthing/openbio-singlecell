@@ -436,22 +436,46 @@ def test_dgidb_loader_is_strict_tamper_evident_and_generated_equivalent(tmp_path
 
 
 @pytest.mark.parametrize(
-    ("updates", "message"),
+    "updates",
     [
-        ({"organism": "Mus musculus"}, "Homo sapiens"),
-        ({"gene_identifier_namespace": "Ensembl"}, "HGNC symbol"),
-        ({"release_date": "2026/08/28"}, "ISO 8601"),
-        ({"download_url": "latest"}, "absolute HTTP"),
+        {"organism": "Mus musculus"},
+        {"gene_identifier_namespace": "Ensembl"},
+        {"release_date": "2026/08/28"},
+        {"download_url": "latest"},
+        {"name": "locally curated targets"},
     ],
 )
-def test_dgidb_loader_rejects_invalid_scientific_metadata(tmp_path, updates, message):
+def test_dgidb_loader_preserves_caller_metadata_without_format_or_species_policy(tmp_path, updates):
     path = _write_resource(tmp_path / "dgidb.tsv")
-    with pytest.raises(ValueError, match=message):
-        load_dgidb_resource(
-            str(path),
-            requested_path=path.name,
-            resource_metadata_json=_metadata_json(**updates),
-        )
+    resource, summary = load_dgidb_resource(
+        str(path), requested_path=path.name, resource_metadata_json=_metadata_json(**updates)
+    )
+    table, metadata, _, _ = validate_dgidb_resource(resource)
+    assert len(table) == 10
+    for field, value in updates.items():
+        assert metadata[field] == value
+    assert any("caller attestations" in warning for warning in summary["warnings"])
+
+
+@pytest.mark.parametrize("metadata", [{}, {"name": "My targets", "notes": "local expert curation"}])
+def test_dgidb_loader_accepts_optional_release_metadata_with_generated_parity(tmp_path, metadata):
+    path = _write_resource(tmp_path / "dgidb.tsv")
+    metadata_json = json.dumps(metadata)
+    resource, report, code = load_dgidb_resource_owned(
+        str(path), requested_path=path.name, resource_metadata_json=metadata_json,
+        max_file_bytes=1_000_000, max_rows=1_000,
+    )
+    summary = report.summary
+    table, stored_metadata, _, _ = validate_dgidb_resource(resource)
+    assert len(table) == 10
+    for field, value in metadata.items():
+        assert stored_metadata[field] == value
+    assert any("not supplied" in warning for warning in summary["warnings"])
+    namespace = {}
+    exec(code, namespace)
+    reproduced, generated_summary = namespace["load_dgidb_resource"](str(path))
+    assert reproduced.equals(table)
+    assert generated_summary == summary
 
 
 @pytest.mark.parametrize(
@@ -1016,15 +1040,16 @@ def test_drug_enrichment_cell_level_is_cautious_but_cross_pair_and_resource_tamp
         )
 
 
+@pytest.mark.parametrize("metadata_json", [_metadata_json(), "{}"])
 def test_drug_nodes_expose_atomic_typed_contracts_and_hash_resource(
-    science, comfy_directories, monkeypatch
+    science, comfy_directories, monkeypatch, metadata_json
 ):
     input_dir, _, _ = comfy_directories
     path = _write_resource(input_dir / "dgidb.tsv")
     resource_output = load_dgidb_resource_owned(
         str(resolve_input_path(path.name, extensions=(".csv", ".tsv"))),
         requested_path=path.name,
-        resource_metadata_json=_metadata_json(),
+        resource_metadata_json=metadata_json,
         max_file_bytes=1_000_000,
         max_rows=1_000,
     )

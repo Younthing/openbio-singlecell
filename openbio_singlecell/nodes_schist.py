@@ -19,7 +19,7 @@ class OpenBioSingleCellSchistNestedModel(io.ComfyNode):
                 io.Int.Input("random_seed", default=123, min=1, max=2**31 - 1, advanced=True),
                 io.String.Input("neighbors_key", default="neighbors", advanced=True),
                 io.String.Input("key_added", default="nsbm", advanced=True),
-                io.Int.Input("posterior_samples", default=100, min=100, max=2**31 - 1, advanced=True),
+                io.Int.Input("posterior_samples", default=100, min=1, max=2**31 - 1, advanced=True),
                 io.Boolean.Input("degree_correction", default=True, advanced=True),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
                 io.Float.Input("max_working_memory_gib", default=8.0, min=0.001, step=0.5, advanced=True),

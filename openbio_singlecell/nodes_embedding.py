@@ -58,7 +58,7 @@ class OpenBioSingleCellPCALoadingsPlot(io.ComfyNode):
             inputs=[
                 AnnDataType.Input("adata"),
                 io.Int.Input("component", default=1, min=1),
-                io.Int.Input("n_genes", default=20, min=1, max=50),
+                io.Int.Input("n_genes", default=20, min=1, max=2**31 - 1),
             ],
             outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
         )

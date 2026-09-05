@@ -445,7 +445,7 @@ def _standalone_build_drug_ora_summary(diagnostics):
             {"citation": "Cannon M, et al. DGIdb 5.0. Nucleic Acids Research. 2024;52:D1227-D1235.", "url": "https://doi.org/10.1093/nar/gkad1040", "doi": "10.1093/nar/gkad1040", "kind": "resource"},
             {"citation": "Heumos L, et al. pertpy: an end-to-end framework for perturbation analysis. Nature Methods. 2025.", "url": "https://doi.org/10.1038/s41592-025-02909-7", "doi": "10.1038/s41592-025-02909-7", "kind": "software"},
             {"citation": "decoupler mt.query_set official documentation.", "url": "https://decoupler.readthedocs.io/en/stable/api/generated/decoupler.mt.query_set.html", "doi": None, "kind": "software_documentation"},
-            {"citation": f"{metadata['name']} {metadata['version']}: {metadata['citation']}", "url": metadata["download_url"], "doi": None, "kind": "resource_snapshot"},
+            {"citation": metadata["citation"] or metadata["name"] or "Local drug-gene resource; citation not supplied.", "url": metadata["download_url"] or f"urn:sha256:{resource['canonical_content_fingerprint_sha256']}", "doi": None, "kind": "resource_snapshot"},
         ],
         "software_versions": plain(diagnostics["software_versions"]),
     }
@@ -790,7 +790,7 @@ def _standalone_build_drug_gsea_summary(diagnostics):
             {"citation": "Cannon M, et al. DGIdb 5.0. Nucleic Acids Research. 2024;52:D1227-D1235.", "url": "https://doi.org/10.1093/nar/gkad1040", "doi": "10.1093/nar/gkad1040", "kind": "resource"},
             {"citation": "Heumos L, et al. pertpy: an end-to-end framework for perturbation analysis. Nature Methods. 2025.", "url": "https://doi.org/10.1038/s41592-025-02909-7", "doi": "10.1038/s41592-025-02909-7", "kind": "software"},
             {"citation": "decoupler mt.gsea official documentation.", "url": "https://decoupler.readthedocs.io/en/stable/api/generated/decoupler.mt.gsea.html", "doi": None, "kind": "software_documentation"},
-            {"citation": f"{metadata['name']} {metadata['version']}: {metadata['citation']}", "url": metadata["download_url"], "doi": None, "kind": "resource_snapshot"},
+            {"citation": metadata["citation"] or metadata["name"] or "Local drug-gene resource; citation not supplied.", "url": metadata["download_url"] or f"urn:sha256:{resource['canonical_content_fingerprint_sha256']}", "doi": None, "kind": "resource_snapshot"},
         ],
         "software_versions": plain(diagnostics["software_versions"]),
     }

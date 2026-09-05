@@ -550,10 +550,6 @@ def test_milo_rejects_ambiguous_nuisance_json_before_backend(science, parameter,
 
 
 def test_milo_rejects_pseudoreplication_and_confounded_design_before_backend(science):
-    too_few = _milo_adata(science, samples_per_condition=2, include_other=False)
-    with pytest.raises(ValueError, match="at least 3 independent Samples"):
-        _execute_milo(too_few)
-
     ambiguous = _milo_adata(science, include_other=False)
     ambiguous.obs.loc[ambiguous.obs.index[-1], "sample"] = "sample_1"
     with pytest.raises(ValueError, match="maps to multiple Conditions"):
@@ -563,6 +559,22 @@ def test_milo_rejects_pseudoreplication_and_confounded_design_before_backend(sci
     confounded.obs["batch"] = confounded.obs["condition"].map({"control": "batch_a", "treated": "batch_b"})
     with pytest.raises(ValueError, match="rank deficient"):
         _execute_milo(confounded)
+
+
+def test_milo_preserves_two_samples_per_condition_in_runtime_and_generated_code(science, monkeypatch):
+    adata = _milo_adata(science, samples_per_condition=2, include_other=False)
+    _install_fake_milo_backend(science, monkeypatch)
+
+    _, table, report, code = _execute_milo(adata)
+
+    assert report.summary["design_evidence"]["samples_by_condition"] == {"control": 2, "treated": 2}
+    assert report.summary["design_evidence"]["residual_degrees_of_freedom"] == 1
+    assert any("fewer than three" in warning for warning in report.summary["warnings"])
+    namespace = {}
+    exec(code, namespace)
+    reproduced_table, reproduced_summary, _ = namespace["run_milo_differential_abundance"](adata)
+    science.pd.testing.assert_frame_equal(reproduced_table, table.table)
+    assert reproduced_summary == report.summary
 
 
 def test_milo_encodes_valid_sample_level_nuisance_covariates_deterministically(science, monkeypatch):

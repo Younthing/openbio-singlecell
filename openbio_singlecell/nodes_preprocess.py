@@ -159,7 +159,7 @@ class OpenBioSingleCellScale(io.ComfyNode):
                 cls.EXPRESSION_SOURCE.input(),
                 io.Boolean.Input("zero_center", default=True),
                 io.Combo.Input("clipping_mode", options=["custom", "none"], default="custom"),
-                io.Float.Input("custom_max_value", default=10.0, min=0.0, step=1.0, advanced=True),
+                io.Float.Input("custom_max_value", default=10.0, step=1.0, advanced=True),
                 io.String.Input("output_layer", default="scaled", advanced=True),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
                 io.Float.Input("max_dense_gib", default=2.0, step=0.25, advanced=True),

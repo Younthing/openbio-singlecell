@@ -411,6 +411,7 @@ def _liana_validate_input(
     source_kind: str,
     layer_name: str | None,
     min_cells: int,
+    method: str,
     numpy: Any,
     pandas: Any,
     sparse: Any,
@@ -489,7 +490,7 @@ def _liana_validate_input(
     identity_values = _liana_canonical_labels(adata.obs[identity_key], label="identity", pandas=pandas)
     sample_order = list(dict.fromkeys(sample_values))
     if len(sample_order) < 2:
-        raise ValueError("LIANA Communication requires at least two biological Samples.")
+        warnings_list.append("One declared Sample was analyzed; this descriptive result does not estimate between-Sample variation.")
     condition_map: dict[str, str] = {}
     for sample, condition in zip(sample_values, condition_values, strict=True):
         previous = condition_map.setdefault(sample, condition)
@@ -520,8 +521,12 @@ def _liana_validate_input(
                     "eligible": eligible,
                 }
             )
-        if len(eligible_by_sample[sample]) < 2:
-            raise ValueError(f"LIANA Sample {sample!r} has fewer than two identities with at least {min_cells} cells.")
+        required_identities = 2 if method == "rank_aggregate" else 1
+        if len(eligible_by_sample[sample]) < required_identities:
+            raise ValueError(
+                f"LIANA {method} Sample {sample!r} requires at least {required_identities} eligible identities; "
+                "rank aggregation includes a group-versus-rest log-fold-change calculation."
+            )
     expression_sha256 = _liana_matrix_sha256(
         matrix,
         observations=observations,
@@ -953,19 +958,19 @@ def _liana_run_impl(
     min_cells_per_identity_sample = _liana_integer(
         min_cells_per_identity_sample,
         label="LIANA min_cells_per_identity_sample",
-        minimum=2,
+        minimum=1,
         maximum=2**31 - 1,
     )
     permutations = _liana_integer(
         permutations,
         label="LIANA permutations",
-        minimum=1000,
+        minimum=1,
         maximum=10_000_000,
     )
     random_seed = _liana_integer(
         random_seed,
         label="LIANA random_seed",
-        minimum=1,
+        minimum=0,
         maximum=2**32 - 1,
     )
     jobs = _liana_integer(jobs, label="LIANA jobs", minimum=1, maximum=1)
@@ -1008,10 +1013,15 @@ def _liana_run_impl(
         source_kind=source_kind,
         layer_name=layer_name,
         min_cells=min_cells_per_identity_sample,
+        method=method,
         numpy=numpy,
         pandas=pandas,
         sparse=sparse,
     )
+    if permutations < 1000:
+        warnings_list.append(
+            "Fewer than 1000 permutations were selected; the choice was retained, with reduced specificity-score resolution."
+        )
     resource, resource_provenance = _liana_resolve_resource(
         liana_module,
         resource_mode=resource_mode,

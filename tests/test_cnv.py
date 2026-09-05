@@ -428,9 +428,26 @@ def test_cnv_rejects_invalid_sources_coordinates_and_reference_design(science, m
     with pytest.raises(ValueError, match="duplicate chromosome/start/end"):
         analyze_infer_cnv(adata, **parameters)
 
+
+
+@pytest.mark.parametrize("reference_choice", ["below_threshold", "all_cells", "one_cell"])
+def test_cnv_preserves_explicit_reference_choices_and_generated_code(science, monkeypatch, reference_choice):
+    _install_fake_backend(monkeypatch, science, patch_installed_module=True)
     adata = _cnv_adata(science)
-    with pytest.raises(ValueError, match="at least 30 reference cells"):
-        analyze_infer_cnv(adata, **(parameters | {"minimum_reference_cells": 30}))
+    parameters = _infer_parameters() | {"minimum_reference_cells": 30}
+    if reference_choice == "all_cells":
+        parameters["reference_categories"] = "normal,target"
+    elif reference_choice == "one_cell":
+        adata.obs["cell_type"] = ["normal", *(["target"] * (adata.n_obs - 1))]
+    state, summary = analyze_infer_cnv(adata, **parameters)
+    assert summary["key_results"]["reference"]["reference_cells"] == {
+        "below_threshold": 24, "all_cells": 48, "one_cell": 1
+    }[reference_choice]
+    namespace = {}
+    exec(infer_cnv_code(**parameters), namespace)
+    reproduced_state, reproduced_summary = namespace["run_infer_cnv"](adata)
+    assert reproduced_state.fingerprint == state.fingerprint
+    assert reproduced_summary == summary
 
 
 def test_cnv_artifact_and_downstream_fingerprint_tampering_fail_closed(science, monkeypatch):
@@ -525,3 +542,31 @@ def test_real_infercnvpy_061_smoke(science, monkeypatch):
     pca, pca_summary = analyze_cnv_pca(state, n_comps=2)
     assert pca.obsm["X_cnv_pca"].shape == (48, 2)
     assert pca_summary["key_results"]["output"]["independent_scientific_validation"]
+
+
+@pytest.mark.parametrize(("cells", "window_size", "windows"), [(48, 100, 1), (1, 1, 4)])
+def test_real_cnv_accepts_short_chromosomes_and_single_group_with_code_parity(science, monkeypatch, cells, window_size, windows):
+    pytest.importorskip("infercnvpy")
+    import infercnvpy.tl._infercnv as infer_module
+
+    monkeypatch.setattr(infer_module, "process_map", lambda function, *iterables, **_kwargs: list(map(function, *iterables)))
+    adata = _cnv_adata(science)[:cells, :20].copy()
+    parameters = _infer_parameters() | {"window_size": window_size}
+    state, summary = analyze_infer_cnv(adata, **parameters)
+    assert state.to_adata().obsm["X_cnv"].shape == (cells, windows)
+    namespace = {}
+    exec(infer_cnv_code(**parameters), namespace)
+    reproduced_state, reproduced_summary = namespace["run_infer_cnv"](adata)
+    assert reproduced_state.fingerprint == state.fingerprint
+    assert reproduced_summary == summary
+
+    downstream = state.to_adata()
+    downstream.obs["one_group"] = "all"
+    score_parameters = {"groupby": "one_group", "output_key": "cnv_score", "overwrite_existing": False}
+    output, table, score_summary = analyze_cnv_score(state, downstream, **score_parameters)
+    assert table["cell_count"].tolist() == [cells]
+    exec(cnv_score_code(**score_parameters), namespace)
+    reproduced_output, reproduced_table, reproduced_score_summary = namespace["run_cnv_score"](state, downstream)
+    science.pd.testing.assert_frame_equal(reproduced_table, table)
+    science.np.testing.assert_array_equal(reproduced_output.obs["cnv_score"], output.obs["cnv_score"])
+    assert reproduced_score_summary == score_summary

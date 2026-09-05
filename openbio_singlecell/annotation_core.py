@@ -637,6 +637,7 @@ def _standalone_celltypist_annotation(
     import hashlib
     import importlib
     import math
+    import warnings as runtime_warnings
     from collections.abc import Mapping as RuntimeMapping
     from importlib import metadata as importlib_metadata
 
@@ -746,22 +747,17 @@ def _standalone_celltypist_annotation(
     stale_obsm_keys = []
     stale_annotation_keys = []
     prior_artifact_verified = False
-    if obs_collisions or obsm_collisions or uns_collisions:
-        if not overwrite_existing:
-            raise ValueError(
-                "CellTypist output keys already exist; enable overwrite_existing to replace them: "
-                f"obs={obs_collisions}, obsm={obsm_collisions}, uns={uns_collisions}."
-            )
-        prior_provenance = adata.uns.get(metadata_key)
-        if (
-            not isinstance(prior_provenance, RuntimeMapping)
-            or prior_provenance.get("schema_version") != 1
-            or prior_provenance.get("operation") != "celltypist_annotation"
-        ):
-            raise ValueError(
-                "CellTypist overwrite_existing requires prior schema-version-1 CellTypist provenance at "
-                f"uns[{metadata_key!r}]; ownership of existing outputs could not be verified."
-            )
+    if (obs_collisions or obsm_collisions or uns_collisions) and not overwrite_existing:
+        raise ValueError(
+            "CellTypist output keys already exist; enable overwrite_existing to replace them: "
+            f"obs={obs_collisions}, obsm={obsm_collisions}, uns={uns_collisions}."
+        )
+    prior_provenance = adata.uns.get(metadata_key)
+    if (
+        isinstance(prior_provenance, RuntimeMapping)
+        and prior_provenance.get("schema_version") == 1
+        and prior_provenance.get("operation") == "celltypist_annotation"
+    ):
         prior_columns = prior_provenance.get("columns")
         prior_matrices = prior_provenance.get("matrices")
         required_column_roles = {
@@ -883,13 +879,6 @@ def _standalone_celltypist_annotation(
             raise ValueError(
                 "CellTypist overwrite_existing found a prior decision matrix whose shape does not match provenance."
             )
-        unowned_obs_collisions = sorted(set(obs_collisions) - set(prior_owned_obs_keys))
-        unowned_obsm_collisions = sorted(set(obsm_collisions) - set(prior_owned_obsm_keys))
-        if unowned_obs_collisions or unowned_obsm_collisions:
-            raise ValueError(
-                "CellTypist overwrite_existing refuses to replace outputs not owned by the verified prior "
-                f"artifact: obs={unowned_obs_collisions}, obsm={unowned_obsm_collisions}."
-            )
         stale_obs_keys = [
             key for key in prior_owned_obs_keys if key in adata.obs and key not in obs_output_keys
         ]
@@ -940,19 +929,24 @@ def _standalone_celltypist_annotation(
     if stored_values.size and bool((stored_values < 0).any()):
         raise ValueError(f"CellTypist source {source_label} contains negative values.")
     cell_totals = np.asarray(matrix.sum(axis=1)).ravel()
+    expression_warnings = []
     if bool((cell_totals <= 0).any()):
-        raise ValueError(f"CellTypist source {source_label} contains cells with zero total expression.")
+        expression_warnings.append(
+            f"CellTypist source {source_label} contains cells with zero total expression; "
+            "their labels were retained but have no measured expression support."
+        )
     transform = "none"
     if expression_state == "verified_counts":
         if stored_values.size and not bool(np.allclose(stored_values, np.rint(stored_values), rtol=0.0, atol=1e-8)):
-            raise ValueError(
-                f"CellTypist source {source_label} was declared verified_counts but contains non-integer values."
+            expression_warnings.append(
+                f"CellTypist source {source_label} was declared verified_counts but contains non-integer values; "
+                "the requested normalization and log1p transform were retained."
             )
         transform = "normalize_total_10000_then_log1p"
     else:
         max_value = float(stored_values.max()) if stored_values.size else 0.0
-        if max_value > math.log1p(10_000.0) + 1e-5:
-            raise ValueError(f"CellTypist source {source_label} exceeds the possible CP10K/log1p maximum.")
+        if max_value > 9.22:
+            raise ValueError(f"CellTypist source {source_label} exceeds the backend log-expression maximum of 9.22.")
         if sparse.issparse(matrix):
             restored = matrix.astype(float).tocsr(copy=True)
             restored.data = np.expm1(restored.data)
@@ -962,10 +956,11 @@ def _standalone_celltypist_annotation(
         if not bool(np.allclose(restored_totals, 10_000.0, rtol=0.0, atol=1.0)):
             observed = [float(restored_totals.min()), float(restored_totals.max())]
             maximum_absolute_deviation = float(np.max(np.abs(restored_totals - 10_000.0)))
-            raise ValueError(
+            expression_warnings.append(
                 f"CellTypist source {source_label} was declared verified_cp10k_log1p, but inverse-transformed "
                 f"cell totals span {observed} with maximum absolute deviation "
-                f"{maximum_absolute_deviation:.6g}; every cell must be within 1 count of 10,000."
+                f"{maximum_absolute_deviation:.6g} from 10,000. The selected expression was retained; "
+                "incomplete features or a different normalization can affect predictions."
             )
 
     over_values = None
@@ -1082,8 +1077,11 @@ def _standalone_celltypist_annotation(
         var=pd.DataFrame(index=pd.Index(query_features)),
     )
     if expression_state == "verified_counts":
-        sc.pp.normalize_total(prediction_input, target_sum=10_000.0, inplace=True)
-        sc.pp.log1p(prediction_input)
+        with runtime_warnings.catch_warnings(record=True) as caught:
+            runtime_warnings.simplefilter("always")
+            sc.pp.normalize_total(prediction_input, target_sum=10_000.0, inplace=True)
+            sc.pp.log1p(prediction_input)
+        expression_warnings.extend(str(warning.message) for warning in caught)
     transformed_values = (
         prediction_input.X.data if sparse.issparse(prediction_input.X) else np.asarray(prediction_input.X).ravel()
     )
@@ -1257,6 +1255,7 @@ def _standalone_celltypist_annotation(
         for label in model_classes
     }
     warnings = [
+        *expression_warnings,
         "CellTypist predictions are Provisional annotation and require marker, tissue, and study-context review before curation.",
         "CellTypist class scores are independent sigmoid outputs, are not multiclass probabilities summing to one, and are not calibrated biological certainty.",
         "The closed model vocabulary can force novel, low-quality, doublet, or out-of-domain cells to a known class.",

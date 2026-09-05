@@ -20,7 +20,7 @@ def test_pca_loadings_plot_schema_and_known_component(science):
     schema = OpenBioSingleCellPCALoadingsPlot.define_schema()
     assert schema.category == "openbio/single-cell/dimension-reduction"
     assert [item.id for item in schema.inputs] == ["adata", "component", "n_genes"]
-    assert schema.inputs[2].max == 50
+    assert schema.inputs[2].max == 2**31 - 1
     assert [item.display_name for item in schema.outputs] == ["plot", "summary", "code"]
 
     adata = science.ad.AnnData(
@@ -62,12 +62,18 @@ def test_pca_loadings_plot_rejects_invalid_component_evidence(science, mutation,
         pca_loadings_plot_owned(adata, component=2, n_genes=2)
 
 
-def test_pca_loadings_plot_enforces_readable_static_gene_limit(science):
+def test_pca_loadings_plot_preserves_expert_gene_count_with_generated_parity(science):
     adata = science.ad.AnnData(science.np.zeros((2, 51)))
     adata.varm["PCs"] = science.np.ones((51, 1))
 
-    with pytest.raises(ValueError, match="at most 50"):
-        pca_loadings_plot_owned(adata, component=1, n_genes=51)
+    plotted, report, code = pca_loadings_plot_owned(adata, component=1, n_genes=51)
+
+    assert plotted.png.startswith(PNG_SIGNATURE)
+    assert report.summary["key_results"]["requested_genes"] == 51
+    assert report.summary["key_results"]["plotted_genes"] == 51
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_pca_loadings"](adata) == plotted.png
 
 
 def test_neighbor_graph_diagnostics_plot_schema_and_stored_graph(science):

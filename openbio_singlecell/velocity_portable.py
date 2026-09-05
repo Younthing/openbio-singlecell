@@ -1103,6 +1103,7 @@ def prepare_velocity_abundances(
         "spliced": adata.layers[spliced_layer],
         "unspliced": adata.layers[unspliced_layer],
     }
+    noninteger_source_layers = []
     for name, matrix in source_matrices.items():
         values = _vs_matrix_values(
             matrix, label=f"raw {name} layer", shape=(int(adata.n_obs), int(adata.n_vars))
@@ -1110,9 +1111,7 @@ def prepare_velocity_abundances(
         if values.size and bool((values < 0).any()):
             raise ValueError(f"Velocity raw {name} layer contains negative values.")
         if values.size and not bool(numpy.allclose(values, numpy.rint(values), rtol=0.0, atol=1e-8)):
-            raise ValueError(f"Velocity raw {name} layer must contain integer-like molecule counts.")
-        if not values.size or not bool((values > 0).any()):
-            raise ValueError(f"Velocity raw {name} layer contains no positive counts.")
+            noninteger_source_layers.append(name)
 
     spliced = source_matrices["spliced"]
     unspliced = source_matrices["unspliced"]
@@ -1152,13 +1151,7 @@ def prepare_velocity_abundances(
     before_totals = {
         key: _vs_row_sums(output.layers[key]) for key in ("spliced", "unspliced")
     }
-    for key, totals in before_totals.items():
-        zero = numpy.flatnonzero(totals <= 0)
-        if zero.size:
-            examples = [str(output.obs_names[index]) for index in zero[:10]]
-            raise ValueError(
-                f"Velocity filtered {key} layer has {zero.size} zero-library cell(s): {examples}."
-            )
+    zero_library_cells = {key: int(numpy.count_nonzero(totals == 0)) for key, totals in before_totals.items()}
     # scVelo 0.3.4 normalizes X and writes temporary obs state even when only
     # velocity layers are requested. Preserve those specific scientific slots;
     # a whole-AnnData defensive copy is unnecessary inside a one-shot worker.
@@ -1194,6 +1187,7 @@ def prepare_velocity_abundances(
         raise RuntimeError("Velocity preparation failed to restore expression X exactly.")
 
     after_totals = {}
+    effective_normalization_targets = {}
     for key in ("spliced", "unspliced"):
         values = _vs_matrix_values(
             output.layers[key], label=f"normalized {key}", shape=(int(output.n_obs), int(output.n_vars))
@@ -1201,8 +1195,10 @@ def prepare_velocity_abundances(
         if values.size and bool((values < 0).any()):
             raise RuntimeError(f"scVelo returned negative normalized {key} values.")
         totals = _vs_row_sums(output.layers[key])
-        target = float(numpy.median(before_totals[key]))
-        if not bool(numpy.allclose(totals, target, rtol=1e-6, atol=1e-7)):
+        target = float(numpy.median(before_totals[key])) or 1.0
+        effective_normalization_targets[key] = target
+        expected_totals = numpy.where(before_totals[key] == 0, 0.0, target)
+        if not bool(numpy.allclose(totals, expected_totals, rtol=1e-6, atol=1e-7)):
             raise RuntimeError(f"scVelo normalized {key} library totals do not match the declared median target.")
         after_totals[key] = totals
 
@@ -1231,9 +1227,10 @@ def prepare_velocity_abundances(
         node_id="OpenBioSingleCellVelocityFilterAndNormalize",
         status="prepared_velocity_abundances",
         methods=(
-            "Validated aligned raw integer-like spliced and unspliced molecule-count layers, retained genes "
+            "Validated aligned nonnegative spliced and unspliced abundance layers, retained genes "
             "meeting explicit shared-count/cell thresholds, and normalized only the persistent canonical velocity "
-            "layers to their layer-specific median pre-normalization library size with scVelo 0.3.4."
+            "layers to their layer-specific median pre-normalization library size with scVelo 0.3.4. "
+            "When the median is zero, scVelo uses target 1; zero-library cells remain zero."
         ),
         results=(
             f"Prepared {output.n_obs:,} cells and retained {output.n_vars:,} of {adata.n_vars:,} genes for "
@@ -1243,6 +1240,9 @@ def prepare_velocity_abundances(
             "input_cells": int(adata.n_obs),
             "input_genes": int(adata.n_vars),
             "retained_genes": int(output.n_vars),
+            "noninteger_source_layers": noninteger_source_layers,
+            "zero_library_cells": zero_library_cells,
+            "effective_normalization_targets": effective_normalization_targets,
             "removed_genes": int((~retained).sum()),
             "removed_gene_examples": removed_names[:100],
             "removed_gene_identity_fingerprint_sha256": _vs_json_sha256(removed_names),
@@ -1265,7 +1265,11 @@ def prepare_velocity_abundances(
         parameters=parameters,
         references=VELOCITY_REFERENCES,
         software_versions=_vs_versions(scvelo_version),
-        report_warnings=[f"scVelo warning: {item.message}" for item in caught],
+        report_warnings=[
+            *([f"Explicit noninteger abundance layers were retained: {noninteger_source_layers}."] if noninteger_source_layers else []),
+            *([f"Zero-library cells were preserved as zero by scVelo normalization: {zero_library_cells}."] if any(zero_library_cells.values()) else []),
+            *[f"scVelo warning: {item.message}" for item in caught],
+        ],
         limitations=[
             "Layer names and integer-like values support but cannot independently prove correct molecule quantification.",
             "This preparation stage does not estimate velocity, temporal order, lineage, transition probability, or fate.",
@@ -1485,8 +1489,8 @@ def estimate_rna_velocity(
         if not isinstance(recover_record, Mapping):
             raise ValueError("Dynamical velocity requires verified recover_dynamics parameters.")
         successful = velocity_adata.var["openbio_dynamics_fit_success"].to_numpy(dtype=bool)
-        if int(successful.sum()) < 10:
-            raise ValueError("Dynamical velocity requires at least 10 successfully recovered genes.")
+        if not bool(successful.any()):
+            raise ValueError("Dynamical velocity requires at least one successfully recovered gene.")
         for key in required_fit - {"openbio_dynamics_selected", "openbio_dynamics_fit_success"}:
             values = velocity_adata.var[key].to_numpy(dtype=float)
             if bool(numpy.isinf(values).any()):
@@ -1582,10 +1586,8 @@ def estimate_rna_velocity(
         raise RuntimeError("scVelo velocity-gene mask must be complete and boolean.")
     selected = mask_series.to_numpy(dtype=bool)
     selected_count = int(selected.sum())
-    if selected_count < 10:
-        raise ValueError(
-            f"Velocity estimation selected only {selected_count} genes; at least 10 are required for reviewable evidence."
-        )
+    if selected_count == 0:
+        raise ValueError("Velocity estimation did not select any genes.")
     layer = output.layers[vkey]
     all_values = _vs_matrix_values(
         layer, label=f"velocity layer {vkey}", shape=(int(output.n_obs), int(output.n_vars)), finite=False
@@ -1676,6 +1678,7 @@ def estimate_rna_velocity(
         references=DYNAMICS_REFERENCES if mode == "dynamical" else VELOCITY_REFERENCES,
         software_versions=_vs_versions(scvelo_version),
         report_warnings=[
+            *([f"Only {selected_count} velocity genes were selected; directional evidence may be unstable."] if selected_count < 10 else []),
             *(
                 [
                     "Applied and restored the audited scVelo 0.3.4 writable-divergence-input "
@@ -1745,8 +1748,8 @@ def recover_velocity_dynamics(
         order = numpy.lexsort((selected_positions, -totals))
         selected_positions = selected_positions[order[:n_top_genes]]
     selected_positions = numpy.sort(selected_positions)
-    if selected_positions.size < 5:
-        raise ValueError("Recover Dynamics requires at least five explicitly selected genes.")
+    if selected_positions.size == 0:
+        raise ValueError("Recover Dynamics requires at least one explicitly selected gene.")
     selected_genes = [str(velocity_adata.var_names[position]) for position in selected_positions]
     dense_bytes = int(velocity_adata.n_obs) * int(velocity_adata.n_vars) * 3 * 8
     if dense_bytes > int(max_dense_gib * 1024**3):
@@ -2069,8 +2072,8 @@ def build_velocity_graph(
     if not (mask.dtype == bool or str(mask.dtype) == "boolean") or bool(mask.isna().any()):
         raise ValueError("Velocity graph requires a complete boolean velocity-gene mask.")
     selected = mask.to_numpy(dtype=bool)
-    if int(selected.sum()) < 10:
-        raise ValueError("Velocity graph requires at least 10 selected velocity genes.")
+    if not bool(selected.any()):
+        raise ValueError("Velocity graph requires at least one selected velocity gene.")
     velocity_layer = velocity_adata.layers[vkey]
     selected_velocity = (
         velocity_layer[:, selected].toarray()

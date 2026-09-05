@@ -116,8 +116,10 @@ def _standalone_pathway_score_contrast(
     for role, key in role_keys.items():
         if not isinstance(key, str) or not key or key != key.strip():
             raise ValueError(f"{operation} {role} must be a nonblank, whitespace-canonical column name.")
-    if len(set(role_keys.values())) != len(role_keys):
-        raise ValueError(f"{operation} Sample, Condition, annotation, and Technical batch roles must be distinct.")
+    roles_by_key = {}
+    for role, key in role_keys.items():
+        roles_by_key.setdefault(key, []).append(role)
+    role_aliases = {key: roles for key, roles in roles_by_key.items() if len(roles) > 1}
     missing_columns = [key for key in role_keys.values() if key not in adata.obs]
     if missing_columns:
         raise ValueError(f"{operation} observation columns not found: {missing_columns}.")
@@ -466,6 +468,8 @@ def _standalone_pathway_score_contrast(
     ]
 
     warnings = []
+    if role_aliases:
+        warnings.append(f"Observation keys were explicitly reused for multiple roles: {role_aliases}.")
     if annotation_status == "unknown":
         warnings.append("Population annotation status is unknown; interpretation requires annotation review.")
     elif annotation_status == "provisional":
@@ -561,6 +565,7 @@ def _standalone_pathway_score_contrast(
             support["technical_batches"] = sample_batches[sample]
         retained_sample_support.append(support)
     key_results = {
+        "role_aliases": role_aliases,
         "inference_unit": "Sample",
         "population": population,
         "annotation_status": annotation_status,

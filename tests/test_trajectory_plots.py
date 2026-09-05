@@ -172,6 +172,74 @@ def test_diffusion_spectrum_plot_uses_graph_bound_stored_eigenvalues(science):
     science.np.testing.assert_array_equal(output.uns["diffmap_evals"], eigenvalues_before)
 
 
+def test_diffusion_spectrum_plot_accepts_native_scanpy_bundle_with_generated_parity(science):
+    adata = _trajectory_input(science)
+    science.sc.tl.diffmap(adata, n_comps=6, random_state=17)
+    coordinates = adata.obsm["X_diffmap"].copy()
+
+    plotted, report, code = diffusion_spectrum_plot_owned(adata)
+
+    assert plotted.png.startswith(PNG_SIGNATURE)
+    assert report.summary["key_results"]["source_provenance_available"] is False
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_diffusion_spectrum"](adata) == plotted.png
+    science.np.testing.assert_array_equal(adata.obsm["X_diffmap"], coordinates)
+    assert "openbio_diffusion_map" not in adata.uns
+
+
+def test_dpt_gene_trend_plot_reports_unreachable_cells_without_binning_infinity(science):
+    adata = science.ad.AnnData(science.np.arange(48, dtype=float).reshape(12, 4))
+    adata.obs_names = [f"d{index}" for index in range(12)]
+    adata.var_names = [f"gene_{index}" for index in range(4)]
+    chain = science.sparse.diags([science.np.ones(5), science.np.ones(5)], [-1, 1], shape=(6, 6))
+    graph = science.sparse.block_diag([chain, chain], format="csr")
+    adata.obsp["connectivities"] = graph.copy()
+    adata.obsp["distances"] = graph.copy()
+    adata.uns["neighbors"] = {
+        "connectivities_key": "connectivities", "distances_key": "distances",
+        "params": {"n_neighbors": 2, "method": "manual_test"},
+    }
+    diffmapped, _, _ = diffusion_map_owned(adata, n_comps=5)
+    output, _, _ = dpt_owned(
+        diffmapped, root_mode={"root_mode": "cell_id", "root_cell_id": "d0"}, n_dcs=4,
+    )
+    before = output.obs["dpt_pseudotime"].copy()
+
+    plotted, report, code = dpt_gene_trend_plot_owned(
+        output, genes="gene_0", source={"source": "X"}, n_bins=5,
+    )
+
+    assert plotted.png.startswith(PNG_SIGNATURE)
+    assert report.summary["key_results"]["unreachable_cells"] == 6
+    assert sum(report.summary["key_results"]["bin_cell_counts"]) == 6
+    assert any("unreachable" in warning for warning in report.summary["warnings"])
+    json.dumps(report.summary, allow_nan=False)
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_dpt_gene_trends"](output) == plotted.png
+    science.pd.testing.assert_series_equal(output.obs["dpt_pseudotime"], before)
+
+
+def test_dpt_gene_trend_plot_accepts_one_component_and_one_display_bin(science):
+    diffmapped, _, _ = diffusion_map_owned(_trajectory_input(science), n_comps=5)
+    output, _, _ = dpt_owned(
+        diffmapped, root_mode={"root_mode": "cell_id", "root_cell_id": "cell_000"}, n_dcs=1,
+    )
+
+    plotted, report, code = dpt_gene_trend_plot_owned(
+        output, genes="gene_0", source={"source": "X"}, n_bins=1,
+    )
+
+    assert plotted.png.startswith(PNG_SIGNATURE)
+    assert report.summary["key_results"]["nonempty_bins"] == 1
+    assert report.summary["key_results"]["bin_cell_counts"] == [36]
+    assert any("one display bin" in warning.lower() for warning in report.summary["warnings"])
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_dpt_gene_trends"](output) == plotted.png
+
+
 def test_dpt_gene_trend_plot_bins_explicit_expression_along_verified_pseudotime(science):
     diffmapped, _report, _code = diffusion_map_owned(_trajectory_input(science), n_comps=6, random_seed=17)
     output, _report, _code = dpt_owned(

@@ -85,14 +85,12 @@ def _validate_positive_float(value: Any, *, name: str, np: Any) -> float:
     return normalized
 
 
-def _validate_finite_threshold(value: Any, *, name: str, np: Any, unit_interval: bool = False) -> float:
+def _validate_finite_threshold(value: Any, *, name: str, np: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"{name} must be a finite number.")
     normalized = float(value)
     if not bool(np.isfinite(normalized)):
         raise ValueError(f"{name} must be finite.")
-    if unit_interval and not 0.0 <= normalized <= 1.0:
-        raise ValueError(f"{name} must be between 0 and 1 inclusive.")
     return normalized
 
 
@@ -386,7 +384,11 @@ def _rank_marker_evidence_impl(
         raise ValueError(f"Marker groupby column not found in obs: {groupby!r}")
     grouping = adata.obs[groupby]
     if not isinstance(grouping.dtype, pd.CategoricalDtype):
-        raise TypeError("Marker Genes grouping must be categorical with explicit category order.")
+        group_frame = grouping.to_frame().copy()
+        adata.strings_to_categoricals(group_frame)
+        grouping = group_frame[groupby]
+        if not isinstance(grouping.dtype, pd.CategoricalDtype):
+            raise TypeError("Marker Genes grouping must be categorical or repeated string labels.")
     category_codes = np.asarray(grouping.cat.codes.to_numpy(copy=False), dtype=np.int64)
     if category_codes.size and int(category_codes.min()) < 0:
         raise ValueError("Marker Genes grouping cannot contain missing labels.")
@@ -423,13 +425,9 @@ def _rank_marker_evidence_impl(
         raise ValueError(f"Unsupported Marker Genes method: {method!r}; expected one of {list(MARKER_METHODS)}.")
     if not isinstance(tie_correct, bool):
         raise TypeError("Marker Genes tie_correct must be a boolean.")
-    if method != "wilcoxon" and tie_correct:
-        raise ValueError("Marker Genes tie_correct is only applicable to the Wilcoxon method; set it to false.")
     n_genes = _validate_integer(n_genes, name="Marker Genes n_genes", allow_zero=True)
-    if n_genes > int(adata.n_vars):
-        raise ValueError("Marker Genes n_genes cannot exceed the selected-source gene count.")
     max_output_rows = _validate_integer(max_output_rows, name="Marker Genes max_output_rows")
-    actual_n_genes = int(adata.n_vars) if n_genes == 0 else n_genes
+    actual_n_genes = int(adata.n_vars) if n_genes == 0 else min(n_genes, int(adata.n_vars))
     expected_marker_rows = len(group_labels) * actual_n_genes
     expected_universe_rows = int(adata.n_vars)
     expected_output_rows = expected_marker_rows + expected_universe_rows
@@ -710,6 +708,10 @@ def _rank_marker_evidence_impl(
     table_content_fingerprint = _marker_table_content_fingerprint(table)
     universe_content_fingerprint = _universe_content_fingerprint(universe)
     warnings_list = []
+    if method != "wilcoxon" and tie_correct:
+        warnings_list.append(f"tie_correct applies only to Wilcoxon and was ignored for {method!r}.")
+    if n_genes > n_vars:
+        warnings_list.append(f"Requested {n_genes} marker genes per group; capped the result at {n_vars} available genes.")
     if count_like_values and not contains_negative_values:
         warnings_list.append(
             "The selected expression is integer-like/count-like. Marker statistics remain calculable, but library "
@@ -1026,19 +1028,16 @@ def _filter_marker_table_impl(
         min_fraction_in_group,
         name="min_fraction_in_group",
         np=np,
-        unit_interval=True,
     )
     max_fraction_reference = _validate_finite_threshold(
         max_fraction_reference,
         name="max_fraction_reference",
         np=np,
-        unit_interval=True,
     )
     max_p_adjusted = _validate_finite_threshold(
         max_p_adjusted,
         name="max_p_adjusted",
         np=np,
-        unit_interval=True,
     )
     _validate_canonical_marker_table(frame, np=np, pd=pd)
     logfc_mask = frame["log2_fold_change_approx"].to_numpy(dtype=float) >= min_log2_fold_change

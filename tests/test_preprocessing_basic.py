@@ -451,7 +451,7 @@ def test_normalize_to_layer_builds_one_derived_layer_and_generated_code_matches(
         ({"target_sum": float("nan")}, "finite and greater than zero"),
         ({"transform": "bogus"}, "Unsupported"),
         ({"output_layer": "  "}, "cannot be empty"),
-        ({"output_layer": "counts"}, "reserved canonical counts"),
+        ({"output_layer": "counts"}, "already exists"),
     ],
 )
 def test_normalize_to_layer_rejects_invalid_configuration(science, kwargs, message):
@@ -467,9 +467,9 @@ def test_normalize_to_layer_rejects_invalid_configuration(science, kwargs, messa
         _normalize_to_layer(_adata(science), **values)
 
 
-def test_normalize_to_layer_rejects_same_source_and_unauthorized_collision(science):
+def test_normalize_to_layer_rejects_unauthorized_output_collisions(science):
     adata = _adata(science)
-    with pytest.raises(ValueError, match="must differ"):
+    with pytest.raises(ValueError, match="already exists"):
         _normalize_to_layer(
             adata,
             {"source": "layer", "source_layer": "alternate"},

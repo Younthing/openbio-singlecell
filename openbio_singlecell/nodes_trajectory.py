@@ -138,7 +138,7 @@ class OpenBioSingleCellDPT(io.ComfyNode):
                         ),
                     ],
                 ),
-                io.Int.Input("n_dcs", default=10, min=2, max=4096),
+                io.Int.Input("n_dcs", default=10, min=1, max=4096),
                 io.Boolean.Input("overwrite_existing", default=False, advanced=True),
             ],
             outputs=analysis_outputs(AnnDataType.Output(display_name="adata")),
@@ -190,7 +190,7 @@ class OpenBioSingleCellDPTGeneTrendPlot(io.ComfyNode):
                 AnnDataType.Input("adata"),
                 io.String.Input("genes", default=""),
                 cls.EXPRESSION_SOURCE.input(),
-                io.Int.Input("n_bins", default=20, min=3, max=100),
+                io.Int.Input("n_bins", default=20, min=1, max=100),
             ],
             outputs=analysis_outputs(PlotResultType.Output(display_name="plot")),
         )

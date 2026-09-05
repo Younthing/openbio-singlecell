@@ -262,7 +262,10 @@ def _validate_scvi_counts(
     zero_cells = int((cell_totals <= 0).sum())
     zero_genes = int((gene_totals <= 0).sum())
     if zero_cells:
-        raise ValueError(f"scVI count source contains {zero_cells} cells with zero total counts.")
+        count_warnings.append(
+            f"scVI count source contains {zero_cells} cells with zero total counts; retaining the selected cells, "
+            "whose latent coordinates have no observed expression support."
+        )
     values = matrix.data if science.sparse.issparse(matrix) else science.np.asarray(matrix).ravel()
     values = science.np.asarray(values)
     integer_like = bool(science.np.allclose(values, science.np.rint(values), rtol=0.0, atol=1e-8))
@@ -807,6 +810,15 @@ def _scvi_code(parameters: Mapping[str, Any]) -> str:
             continuous_keys = {parameters["continuous_covariates"]!r}
             size_factor_key = {parameters["size_factor_key"]!r}
             output_key = {parameters["output_key"]!r}
+            all_roles = [technical_batch_key, *categorical_keys, *continuous_keys, *([size_factor_key] if size_factor_key else [])]
+            reused_roles = sorted({{key for key in all_roles if all_roles.count(key) > 1}})
+            if reused_roles:
+                warnings.warn(
+                    f"scVI observation columns are reused across model roles: {{reused_roles}}; "
+                    "the explicit design is retained, but duplicated information can be redundant or confounded.",
+                    UserWarning,
+                    stacklevel=2,
+                )
             if adata.isbacked or adata.n_obs < 2 or adata.n_vars < 1:
                 raise ValueError("scVI requires an in-memory nonempty AnnData with at least two cells.")
             if not adata.obs_names.is_unique or not adata.var_names.is_unique:
@@ -832,7 +844,12 @@ def _scvi_code(parameters: Mapping[str, Any]) -> str:
             zero_cells = int((cell_totals <= 0).sum())
             zero_genes = int((gene_totals <= 0).sum())
             if zero_cells:
-                raise ValueError(f"scVI count source contains {{zero_cells}} cells with zero total counts.")
+                warnings.warn(
+                    f"scVI count source contains {{zero_cells}} cells with zero total counts; retaining the selected "
+                    "cells, whose latent coordinates have no observed expression support.",
+                    UserWarning,
+                    stacklevel=2,
+                )
             if zero_genes:
                 warnings.warn(
                     f"The selected scVI source contains {{zero_genes}} all-zero gene(s); the audited backend can "
@@ -1386,10 +1403,7 @@ class OpenBioSingleCellSCVIIntegration:
             *continuous_keys,
             *([size_factor_key] if size_factor_key else []),
         ]
-        if len(all_roles) != len(set(all_roles)):
-            raise ValueError(
-                "scVI observation columns cannot be reused across Technical-batch, covariate, and size-factor roles."
-            )
+        reused_roles = sorted({key for key in all_roles if all_roles.count(key) > 1})
         level_counts = _categorical_levels(
             adata,
             [technical_batch_key, *categorical_keys],
@@ -1593,6 +1607,11 @@ class OpenBioSingleCellSCVIIntegration:
             "The trained scVI model is a session-only native artifact bound to the producing Python Worker.",
             "A fixed seed does not guarantee bitwise equality across devices, hardware, or software versions.",
         ]
+        if reused_roles:
+            warnings.append(
+                f"scVI observation columns are reused across model roles: {reused_roles}; the explicit design "
+                "is retained, but duplicated information can be redundant or confounded."
+            )
         if zero_genes:
             warnings.append(
                 f"The selected scVI source contains {zero_genes} all-zero gene(s); the audited backend can retain them, "
@@ -1674,12 +1693,14 @@ class OpenBioSingleCellSCVIIntegration:
                 "features": genes,
                 "count_source": _source_label(expression),
                 "count_source_integer_like": integer_like,
+                "zero_total_cells": int((cell_totals <= 0).sum()),
                 "zero_total_genes": zero_genes,
                 "count_nonzero": nonzero,
                 "total_counts": float(cell_totals.sum()),
                 "cell_totals": summarize_numeric(cell_totals),
                 "gene_totals": summarize_numeric(gene_totals),
                 "technical_nuisance_levels": level_counts,
+                "reused_observation_roles": reused_roles,
                 "continuous_nuisance_summaries": continuous_summaries,
                 "training": diagnostics,
                 "latent_shape": [cells, n_latent],

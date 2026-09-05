@@ -44,7 +44,7 @@ class OpenBioSingleCellAugur(io.ComfyNode):
                 io.Int.Input("subsample_size", default=20, min=2, max=2**31 - 1, advanced=True),
                 io.Int.Input("folds", default=3, min=2, max=2**31 - 1, advanced=True),
                 io.Int.Input("n_threads", default=1, min=1, max=1024, advanced=True),
-                io.Int.Input("random_seed", default=123, min=1, max=2**31 - 1, advanced=True),
+                io.Int.Input("random_seed", default=123, min=0, max=2**31 - 1, advanced=True),
                 io.Int.Input(
                     "max_result_rows",
                     default=10_000_000,

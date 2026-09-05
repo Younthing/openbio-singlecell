@@ -649,10 +649,6 @@ def _standalone_composition_model_impl(
         )
     samples_per_condition = sample_metadata.groupby("condition", observed=True)["sample_internal"].nunique()
     insufficient = {condition: int(samples_per_condition.get(condition, 0)) for condition in declared_conditions}
-    if any(count < 2 for count in insufficient.values()):
-        raise ValueError(
-            f"{operation} requires at least two biological Samples per Condition; observed {insufficient}."
-        )
 
     def ordered_levels(series, values, label):
         observed = set(values)
@@ -752,26 +748,6 @@ def _standalone_composition_model_impl(
             values = sample_values.to_numpy(dtype=float)
             if not bool(np.isfinite(values).all()):
                 raise ValueError(f"{operation} numeric adjustment covariate {key!r} must be finite.")
-            if bool(np.allclose(values, values[0])):
-                raise ValueError(f"{operation} numeric adjustment covariate {key!r} is constant.")
-            unique_values = np.unique(values)
-            paired_numeric = len(unique_values) * 2 == len(values) and all(
-                {
-                    sample_condition[sample_internal_order[index]]
-                    for index, observed in enumerate(values)
-                    if observed == value
-                }
-                == declared_conditions
-                for value in unique_values
-            )
-            identifier_name = any(
-                token in key.casefold() for token in ["subject", "patient", "donor", "pair", "individual"]
-            )
-            if paired_numeric and (len(unique_values) >= 3 or identifier_name):
-                raise ValueError(
-                    f"{operation} adjustment covariate {key!r} encodes a paired/repeated-Sample pattern. "
-                    "This one-row-per-biological-Sample model has no random-effect or repeated-measures contract."
-                )
             center = float(values.mean())
             column = safe_column(f"__openbio_adjustment_{position}", occupied)
             encoded = values - center
@@ -790,34 +766,13 @@ def _standalone_composition_model_impl(
                 }
             )
             continue
-        if not isinstance(original.dtype, pd.CategoricalDtype) or not bool(original.cat.ordered):
+        if not isinstance(original.dtype, pd.CategoricalDtype):
             raise TypeError(
-                f"{operation} categorical adjustment covariate {key!r} must be an ordered pandas Categorical; "
+                f"{operation} categorical adjustment covariate {key!r} must be a pandas Categorical; "
                 "the first declared category is the reference."
             )
         categories = [canonical_text(value, f"{key} category") for value in original.cat.categories.tolist()]
-        observed_adjustment = string_values(original, key)
-        unused = [value for value in categories if value not in set(observed_adjustment)]
-        if unused:
-            raise ValueError(f"{operation} adjustment covariate {key!r} has unused categories: {unused}.")
         sample_strings = [canonical_text(value, f"{key} Sample value") for value in sample_values.tolist()]
-        if len(set(sample_strings)) < 2:
-            raise ValueError(f"{operation} categorical adjustment covariate {key!r} is constant.")
-        level_conditions = {}
-        for level in categories:
-            indices = [index for index, value in enumerate(sample_strings) if value == level]
-            level_conditions[level] = {sample_condition[sample_internal_order[index]] for index in indices}
-        paired_categorical = len(categories) * 2 == len(sample_internal_order) and all(
-            conditions == declared_conditions for conditions in level_conditions.values()
-        )
-        identifier_name = any(
-            token in key.casefold() for token in ["subject", "patient", "donor", "pair", "individual"]
-        )
-        if paired_categorical and (len(categories) >= 3 or identifier_name):
-            raise ValueError(
-                f"{operation} adjustment covariate {key!r} encodes a paired/repeated-Sample pattern. "
-                "This one-row-per-biological-Sample model has no random-effect or repeated-measures contract."
-            )
         created = []
         for level_position, level in enumerate(categories[1:], start=1):
             column = safe_column(f"__openbio_adjustment_{position}_{level_position}", occupied)
@@ -840,17 +795,10 @@ def _standalone_composition_model_impl(
         )
     design_matrix = np.column_stack([np.ones(len(sample_internal_order), dtype=float), *design_values])
     design_rank = int(np.linalg.matrix_rank(design_matrix))
-    if design_rank != design_matrix.shape[1]:
-        raise ValueError(
-            f"{operation} design is rank deficient or perfectly confounded "
-            f"(rank {design_rank}, {design_matrix.shape[1]} columns)."
-        )
     residual_df = int(design_matrix.shape[0] - design_rank)
-    if residual_df < 1:
-        raise ValueError(f"{operation} design has no residual degrees of freedom after Sample-level adjustment.")
     condition_number = float(np.linalg.cond(design_matrix))
     if not math.isfinite(condition_number):
-        raise ValueError(f"{operation} design has a non-finite condition number.")
+        condition_number = None
     design_formula = "1 + " + " + ".join(design_columns)
 
     relative_counts = count_matrix / sample_totals[:, None]
@@ -1163,6 +1111,16 @@ def _standalone_composition_model_impl(
 
     contrast = f"{comparison_condition} vs {reference_condition}"
     warnings = []
+    if design_rank != design_matrix.shape[1]:
+        warnings.append(
+            "The selected design is rank deficient or perfectly confounded; the Bayesian model remains "
+            "computable, but separate coefficient estimates depend on the priors."
+        )
+    if residual_df < 1:
+        warnings.append(
+            "The selected design has no residual degrees of freedom; the Bayesian model remains computable, "
+            "but the posterior is sensitive to prior assumptions and limited replication."
+        )
     if annotation_status == "provisional":
         warnings.append("Annotation status is provisional; treat the composition result as exploratory.")
     if reference_cell_type == "automatic":
@@ -1171,7 +1129,8 @@ def _standalone_composition_model_impl(
         )
     if min(insufficient.values()) < 3:
         warnings.append(
-            "Only two biological Samples are available in at least one Condition; power and stability are limited."
+            "Fewer than three declared biological Samples are available in at least one Condition; "
+            "power and stability are limited."
         )
     if diagnostic_status == "warning":
         warnings.append("Pertpy's mean NUTS acceptance rate is outside the audited [0.6, 0.95] range.")
@@ -1648,7 +1607,7 @@ def _standalone_composition_model_impl(
             "rank": design_rank,
             "residual_degrees_of_freedom": residual_df,
             "condition_number": condition_number,
-            "full_rank": True,
+            "full_rank": design_rank == design_matrix.shape[1],
             "expected_count_baseline": {
                 "condition": reference_condition,
                 "continuous_adjustments": "mean-centered value 0",

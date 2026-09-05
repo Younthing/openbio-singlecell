@@ -167,6 +167,28 @@ def test_qc_count_source_is_explicit_and_validated(adata, science):
     assert report.summary["parameters"]["source_layer"] == "counts"
 
 
+def test_cell_filter_preserves_explicit_mitochondrial_threshold_outside_percentage_range(science):
+    value = science.ad.AnnData(
+        science.np.asarray([[2.0, -1.0], [-1.0, 2.0], [3.0, -1.0]]),
+        obs=science.pd.DataFrame(index=["a", "b", "c"]),
+        var=science.pd.DataFrame(index=["MT-G", "G"]),
+    )
+    qc, _, _ = calculate_qc_owned(
+        value, include_ribosomal=False, include_hemoglobin=False, percent_top="", log1p=False
+    )
+    science.np.testing.assert_allclose(qc.obs["pct_counts_mt"], [200.0, -100.0, 150.0])
+
+    filtered, report, code = filter_cells_owned(qc, max_pct_mito=150.0, enable_max_pct_mito=True)
+
+    assert filtered.obs_names.tolist() == ["b", "c"]
+    assert report.summary["parameters"]["max_pct_mito"] == 150.0
+    assert any("outside" in warning for warning in report.warnings)
+    namespace = {}
+    exec(code, namespace)
+    generated = namespace["filter_cells"](qc.copy())
+    assert generated.obs_names.equals(filtered.obs_names)
+
+
 def test_qc_signed_all_feature_percentages_preserve_math_and_disclose_zero_denominators(science):
     value = science.ad.AnnData(
         science.np.asarray(
@@ -275,14 +297,15 @@ def test_qc_expression_threshold_enable_controls_accept_signed_fractional_and_ze
     exec(disabled_code, namespace)
     assert namespace["filter_cells"](value).obs_names.equals(value.obs_names)
 
-    with pytest.raises(ValueError, match="minimum cannot exceed"):
-        filter_genes_owned(
-            value,
-            min_counts=1.0,
-            max_counts=0.0,
-            enable_min_counts=True,
-            enable_max_counts=True,
-        )
+    empty, empty_report, _ = filter_genes_owned(
+        value,
+        min_counts=1.0,
+        max_counts=0.0,
+        enable_min_counts=True,
+        enable_max_counts=True,
+    )
+    assert empty.n_vars == 0
+    assert empty_report.summary["parameters"]["max_counts"] == 0.0
 
 
 def test_qc_sparse_explicit_zeros_are_not_counted_as_detected(science):
@@ -366,11 +389,36 @@ def test_qc_sparse_duplicate_storage_is_not_mutated(science):
     assert equivalent_cells.X.has_canonical_format is runtime_cells.X.has_canonical_format
 
 
-def test_qc_filters_reject_contradictory_bounds_and_report_empty_results(adata):
-    with pytest.raises(ValueError, match="minimum cannot exceed"):
-        filter_cells_owned(adata, min_genes=10, max_genes=5)
-    with pytest.raises(ValueError, match="minimum cannot exceed"):
-        filter_genes_owned(adata, min_cells=10, max_cells=5)
+@pytest.mark.parametrize(
+    ("operation", "function_name", "parameters", "axis"),
+    [
+        (filter_cells_owned, "filter_cells", {"min_genes": 10, "max_genes": 5}, "obs"),
+        (filter_genes_owned, "filter_genes", {"min_cells": 10, "max_cells": 5}, "var"),
+        (
+            filter_cells_owned,
+            "filter_cells",
+            {"min_counts": 10.0, "max_counts": 5.0, "enable_min_counts": True, "enable_max_counts": True},
+            "obs",
+        ),
+        (
+            filter_genes_owned,
+            "filter_genes",
+            {"min_counts": 10.0, "max_counts": 5.0, "enable_min_counts": True, "enable_max_counts": True},
+            "var",
+        ),
+    ],
+)
+def test_qc_filters_preserve_empty_interval_selection(adata, operation, function_name, parameters, axis):
+    output, report, code = operation(adata, **parameters)
+    assert len(getattr(output, axis + "_names")) == 0
+    assert any("removed every" in warning for warning in report.warnings)
+    namespace = {}
+    exec(code, namespace)
+    generated = namespace[function_name](adata.copy())
+    assert generated.shape == output.shape
+
+
+def test_qc_filters_report_empty_results(adata):
     empty_cells, cell_report, _ = filter_cells_owned(
         adata,
         min_genes=1_000_000,

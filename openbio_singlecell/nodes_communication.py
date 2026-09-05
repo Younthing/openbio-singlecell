@@ -92,9 +92,9 @@ class OpenBioSingleCellLianaCommunication(io.ComfyNode):
                 ),
                 cls.EXPRESSION_SOURCE.input(),
                 io.Float.Input("expression_proportion", default=0.1, min=0.0, max=1.0, step=0.05),
-                io.Int.Input("min_cells_per_identity_sample", default=5, min=2, max=2**31 - 1),
-                io.Int.Input("permutations", default=1000, min=1000, max=10_000_000),
-                io.Int.Input("random_seed", default=1337, min=1, max=2**32 - 1),
+                io.Int.Input("min_cells_per_identity_sample", default=5, min=1, max=2**31 - 1),
+                io.Int.Input("permutations", default=1000, min=1, max=10_000_000),
+                io.Int.Input("random_seed", default=1337, min=0, max=2**32 - 1),
                 io.Int.Input("jobs", default=1, min=1, max=1, advanced=True),
                 io.Int.Input("max_output_rows", default=2_000_000, min=1, max=2**31 - 1, advanced=True),
                 io.Float.Input(

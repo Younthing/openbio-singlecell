@@ -183,8 +183,6 @@ def _display_number(value: int | float | None) -> str:
 def _validate_bounds(minimum: int, maximum: int, *, label: str) -> None:
     if minimum < 0 or maximum < 0:
         raise ValueError(f"{label} bounds cannot be negative.")
-    if minimum > 0 and maximum > 0 and minimum > maximum:
-        raise ValueError(f"{label} minimum cannot exceed its maximum.")
 
 
 def _resolve_numeric_threshold(value: float, enabled: bool, *, label: str) -> float | None:
@@ -193,11 +191,6 @@ def _resolve_numeric_threshold(value: float, enabled: bool, *, label: str) -> fl
     if not math.isfinite(value):
         raise ValueError(f"{label} must be a finite number when enabled.")
     return value
-
-
-def _validate_numeric_interval(minimum: float | None, maximum: float | None, *, label: str) -> None:
-    if minimum is not None and maximum is not None and minimum > maximum:
-        raise ValueError(f"{label} minimum cannot exceed its maximum.")
 
 
 def _comma_separated_prefixes(value: str, name: str) -> tuple[str, ...]:
@@ -650,10 +643,6 @@ def filter_cells_owned(
         enable_max_pct_mito,
         label="Maximum mitochondrial percentage threshold",
     )
-    _validate_numeric_interval(minimum_expression, maximum_expression, label="Total-expression")
-    if maximum_mitochondrial_percent is not None and not 0.0 <= maximum_mitochondrial_percent <= 100.0:
-        raise ValueError("Cell mitochondrial percentage threshold must be between 0 and 100 when enabled.")
-
     science = dependencies.require_scientific_dependencies()
     mito_values = None
     if maximum_mitochondrial_percent is not None:
@@ -677,6 +666,11 @@ def filter_cells_owned(
     source_label = _expression_source_label(expression)
     matrix = expression.matrix(adata)
     warnings = validate_count_expression(matrix, source_label=source_label, require_nonnegative=False)
+    if maximum_mitochondrial_percent is not None and not 0.0 <= maximum_mitochondrial_percent <= 100.0:
+        warnings.append(
+            "The mitochondrial percentage threshold is outside the conventional [0, 100] range; "
+            "the explicit threshold was retained."
+        )
     started_at = time.perf_counter()
     counts, detected = matrix_totals_and_nonzero(matrix, axis=1)
     mask = science.np.ones(cells, dtype=bool)
@@ -952,7 +946,6 @@ def filter_genes_owned(
         enable_max_counts,
         label="Maximum total-expression threshold",
     )
-    _validate_numeric_interval(minimum_expression, maximum_expression, label="Total-expression")
     cells, genes = int(adata.n_obs), int(adata.n_vars)
     if cells == 0 or genes == 0:
         raise ValueError("Gene filtering requires at least one cell and one gene.")

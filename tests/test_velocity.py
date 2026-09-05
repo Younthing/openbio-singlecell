@@ -50,7 +50,7 @@ from openbio_singlecell.worker_protocol import OperationContext
 def _row_normalize(matrix):
     totals = np.asarray(matrix.sum(axis=1), dtype=float).ravel()
     target = float(np.median(totals))
-    factors = target / totals
+    factors = np.divide(target or 1.0, totals, out=np.ones_like(totals), where=totals != 0)
     if sparse.issparse(matrix):
         return (sparse.diags(factors) @ sparse.csr_matrix(matrix)).astype(np.float32)
     return (np.asarray(matrix, dtype=np.float32) * factors[:, None]).astype(np.float32)
@@ -647,6 +647,63 @@ def test_prepare_is_sparse_safe_strict_and_does_not_mutate_input(matrix_kind):
     assert _matrix_equal(payload.X, before.X)
     assert _matrix_equal(payload.layers["protected"], before.layers["protected"])
     json.dumps(summary, allow_nan=False)
+
+
+def test_velocity_preserves_fractional_abundances_with_generated_code_parity():
+    source = _adata()
+    source.layers["spliced"] = source.layers["spliced"].astype(float) + 0.25
+    source.layers["unspliced"] = source.layers["unspliced"].astype(float) + 0.75
+    state = run_velocity_prepare(source, min_shared_counts=0, scvelo_module=_fake_scvelo())
+    payload, summary, _, _ = validate_velocity_state(state)
+    assert summary["key_results"]["noninteger_source_layers"] == ["spliced", "unspliced"]
+    assert any("noninteger" in warning for warning in summary["warnings"])
+    namespace = {}
+    exec(velocity_code("prepare", min_shared_counts=0), namespace)
+    reproduced, reproduced_summary = namespace["run_velocity_filter_and_normalize"](source, scvelo_module=_fake_scvelo())
+    assert _matrix_equal(reproduced.layers["spliced"], payload.layers["spliced"])
+    assert reproduced_summary == summary
+
+
+@pytest.mark.parametrize("zero_cells", [1, 13])
+def test_velocity_preserves_zero_library_cells_like_scvelo_with_code_parity(zero_cells):
+    source = _adata()
+    source.layers["spliced"][:zero_cells, :] = 0
+    state = run_velocity_prepare(source, min_shared_counts=0, scvelo_module=_fake_scvelo())
+    payload, summary, _, _ = validate_velocity_state(state)
+    assert np.asarray(payload.layers["spliced"])[0].sum() == 0
+    assert summary["key_results"]["zero_library_cells"] == {"spliced": zero_cells, "unspliced": 0}
+    if zero_cells == 13:
+        assert summary["key_results"]["effective_normalization_targets"]["spliced"] == 1.0
+        assert summary["key_results"]["library_totals_before"]["spliced"]["median"] == 0.0
+        np.testing.assert_allclose(np.asarray(payload.layers["spliced"])[zero_cells:].sum(axis=1), 1.0)
+        assert "median is zero" in summary["methods"]
+    namespace = {}
+    exec(velocity_code("prepare", min_shared_counts=0), namespace)
+    reproduced, reproduced_summary = namespace["run_velocity_filter_and_normalize"](source, scvelo_module=_fake_scvelo())
+    assert _matrix_equal(reproduced.layers["spliced"], payload.layers["spliced"])
+    assert reproduced_summary == summary
+
+
+def test_velocity_small_gene_selection_runs_all_stages_with_generated_code_parity():
+    fake = _fake_scvelo()
+    prepared = run_velocity_prepare(_adata()[:, :3].copy(), min_shared_counts=0, scvelo_module=fake)
+    moments = run_velocity_moments(prepared, neighbors_key="vel_neighbors", scvelo_module=fake)
+    steady = run_velocity_estimate(moments, mode="deterministic", scvelo_module=fake)
+    recovered = run_velocity_recover(steady, gene_selection="all", scvelo_module=fake)
+    dynamical = run_velocity_estimate(recovered, mode="dynamical", scvelo_module=fake)
+    graph = run_velocity_graph(dynamical, scvelo_module=fake)
+    assert steady.summary["key_results"]["selected_velocity_genes"] == 3
+    for operation, before, parameters, function_name, expected in [
+        ("estimate", moments, {"mode": "deterministic"}, "run_velocity_estimation", steady),
+        ("recover", steady, {"gene_selection": "all"}, "run_velocity_dynamics_recovery", recovered),
+        ("estimate", recovered, {"mode": "dynamical"}, "run_velocity_estimation", dynamical),
+        ("graph", dynamical, {}, "run_velocity_graph", graph),
+    ]:
+        namespace = {}
+        exec(velocity_code(operation, **parameters), namespace)
+        reproduced, summary = namespace[function_name](before.portable_adata(), scvelo_module=fake)
+        assert summary == expected.summary
+        assert reproduced.uns[VELOCITY_STATE_KEY]["state_fingerprint_sha256"] == expected.portable_adata().uns[VELOCITY_STATE_KEY]["state_fingerprint_sha256"]
 
 
 def test_complete_fake_chain_has_atomic_stages_views_and_private_plotting():

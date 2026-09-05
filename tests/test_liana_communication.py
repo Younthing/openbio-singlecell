@@ -551,8 +551,35 @@ def test_exact_version_signature_and_parameter_guards_fail_before_backend():
 
     fake, backend, _selector = _fake_liana("rank_aggregate")
     with pytest.raises(ValueError, match="permutations"):
-        run_liana_communication(_adata(), **_parameters("rank_aggregate", fake, permutations=999))
+        run_liana_communication(_adata(), **_parameters("rank_aggregate", fake, permutations=0))
     assert backend.calls == []
+
+
+@pytest.mark.parametrize("method", ["rank_aggregate", "cellphonedb"])
+def test_liana_preserves_one_sample_low_permutations_and_seed_zero_with_code_parity(method):
+    adata = _adata()[:4].copy()
+
+    def selected_rows(table):
+        selected = table[table["sample"] == "S1"].copy()
+        if method == "cellphonedb":
+            selected["target"] = "A"
+        return selected
+
+    backend = _FakeRankAggregate(transform=selected_rows) if method == "rank_aggregate" else _FakeCellPhoneDB(transform=selected_rows)
+    if method == "cellphonedb":
+        adata.obs["cell_type"] = "A"
+    fake, _, _ = _fake_liana(method, backend)
+    parameters = _parameters(method, fake, permutations=10, random_seed=0, min_cells_per_identity_sample=1)
+    artifact, summary = run_liana_communication(adata, **parameters)
+    assert artifact.table["sample"].unique().tolist() == ["S1"]
+    assert backend.calls[0][-1]["n_perms"] == 10
+    assert backend.calls[0][-1]["seed"] == 0
+    parameters.pop("liana_module")
+    namespace = {}
+    exec(liana_communication_code(parameters=parameters), namespace)
+    generated_table, generated_summary = namespace["run_liana_communication"](adata, liana_module=fake)
+    pd.testing.assert_frame_equal(generated_table, artifact.table)
+    assert generated_summary == summary
 
 
 def test_sample_condition_and_memory_guards():

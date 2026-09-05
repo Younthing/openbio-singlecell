@@ -143,15 +143,16 @@ def _standalone_score_gene_sets(
         nonzero_per_observation = np.count_nonzero(dense_view, axis=1)
         semantic_values = dense_view.ravel()
     zero_observations = int(np.count_nonzero(nonzero_per_observation == 0))
+    warnings = []
     if zero_observations:
-        raise ValueError(f"{operation} selected expression contains {zero_observations} all-zero observations.")
-    if semantic_values.size == 0:
-        raise ValueError(f"{operation} selected expression contains no nonzero values.")
-    value_min = float(np.min(semantic_values))
-    value_max = float(np.max(semantic_values))
+        warnings.append(
+            f"{operation} retained {zero_observations} all-zero observations; their scores can reflect "
+            "ties or background values rather than expression evidence."
+        )
+    value_min = float(np.min(semantic_values)) if semantic_values.size else 0.0
+    value_max = float(np.max(semantic_values)) if semantic_values.size else 0.0
     integer_like = bool(np.allclose(semantic_values, np.rint(semantic_values), rtol=0.0, atol=1e-8))
 
-    warnings = []
     if method == "gsva" and kernel == "poisson_counts":
         if value_min < 0.0 or not integer_like:
             raise ValueError("Poisson GSVA requires finite nonnegative integer count values.")
@@ -215,6 +216,7 @@ def _standalone_score_gene_sets(
         expected_sha256=expected_resource_sha256,
         operation=operation,
     )
+    warnings.extend(resource["warnings"])
     if not isinstance(requested_resource_path, str) or not requested_resource_path.strip():
         raise ValueError(f"{operation} requested_resource_path must be a nonblank string.")
     retained_sources = list(resource["retained_sources"])
@@ -724,8 +726,10 @@ def _standalone_score_gene_sets(
             },
             {
                 "citation": (
-                    f"{resource['metadata']['name']} {resource['metadata']['version']} "
-                    f"({resource['metadata']['date']}): {resource['metadata']['citation']}"
+                    f"{resource['metadata'].get('name', 'Gene-set resource')} "
+                    f"{resource['metadata'].get('version', '')} "
+                    f"({resource['metadata'].get('date', 'date not supplied')}): "
+                    f"{resource['metadata'].get('citation', 'citation not supplied')}"
                 ),
                 "url": f"urn:sha256:{resource['sha256']}",
                 "kind": "resource",
@@ -815,8 +819,8 @@ def _standalone_score_gene_sets(
     mean_preview = ", ".join(f"{name} ({float(value):.3g})" for name, value in highest.items())
     results = (
         f"Scored {len(observation_names):,} observations across {score_frame.shape[1]:,} named score columns "
-        f"using {len(feature_names):,} measured features and resource {resource['metadata']['name']!r} "
-        f"version {resource['metadata']['version']!r}. Scores ranged from {quantiles[0]:.4g} to "
+        f"using {len(feature_names):,} measured features and resource {resource['metadata'].get('name', requested_resource_path)!r} "
+        f"version {resource['metadata'].get('version', 'not supplied')!r}. Scores ranged from {quantiles[0]:.4g} to "
         f"{quantiles[4]:.4g}; leading columns by mean score were {mean_preview or 'none'}. "
         "These are observation-level descriptive results, not a replicate-aware Condition contrast."
     )

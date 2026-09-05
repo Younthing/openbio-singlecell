@@ -409,6 +409,11 @@ def diffusion_spectrum_plot_owned(adata: Any) -> tuple[Any, Any, str]:
     warnings = [
         "The stationary component is displayed for completeness but is not an informative diffusion coordinate."
     ]
+    if not details["source_provenance_available"]:
+        warnings.append(
+            "OpenBio Diffusion Map provenance was unavailable; graph eigenpairs were validated, "
+            "but the original computation settings are unverified."
+        )
     plotted = make_plot_result(
         png=png,
         title=details["title"],
@@ -425,9 +430,9 @@ def diffusion_spectrum_plot_owned(adata: Any) -> tuple[Any, Any, str]:
         title="Diffusion spectrum plot summary",
         operation="diffusion_spectrum_plot",
         methods=(
-            "Validated the exact OpenBio Diffusion Map producer, named graph and observation fingerprints, "
-            "component axis, coordinate/eigenvalue output fingerprint, non-increasing spectrum, orthonormality, "
-            "and graph eigenpair residuals before read-only Matplotlib rendering."
+            "Validated the selected named graph, component axis, non-increasing spectrum, orthonormality, "
+            "and graph eigenpair residuals before read-only Matplotlib rendering; checked recorded OpenBio "
+            "provenance when available."
         ),
         results=description,
         key_results={key: value for key, value in details.items() if key != "title"},
@@ -480,7 +485,8 @@ def dpt_gene_trend_plot_owned(
         f"across {details['nonempty_bins']:,} nonempty bins of stored root-dependent diffusion pseudotime."
     )
     warnings = [
-        "Displayed bin means and interquartile ranges are descriptive cell-level summaries, not a fitted temporal model."
+        "Displayed bin means and interquartile ranges are descriptive cell-level summaries, not a fitted temporal model.",
+        *details["warnings"],
     ]
     plotted = make_plot_result(
         png=png,

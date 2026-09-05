@@ -24,7 +24,7 @@ class OpenBioSingleCellMarkMADOutliers(io.ComfyNode):
                     default="total_counts,n_genes_by_counts,pct_counts_in_top_20_genes",
                 ),
                 io.String.Input("batch_key", default="sample"),
-                io.Float.Input("nmads", default=5.0, min=0.1, max=100.0, step=0.1),
+                io.Float.Input("nmads", default=5.0, min=0.0, step=0.1),
                 io.Combo.Input("direction", options=["both", "upper", "lower"], default="both"),
                 io.String.Input("output_column", default="outlier", advanced=True),
                 io.Boolean.Input("scale_mad", default=False, advanced=True),

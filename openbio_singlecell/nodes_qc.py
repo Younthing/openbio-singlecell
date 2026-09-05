@@ -56,7 +56,7 @@ class OpenBioSingleCellFilterCells(io.ComfyNode):
                 io.Int.Input("max_genes", default=0, min=0, max=MAX_THRESHOLD),
                 io.Float.Input("min_counts", default=0.0, step=1.0),
                 io.Float.Input("max_counts", default=0.0, step=1.0),
-                io.Float.Input("max_pct_mito", default=0.0, min=0.0, max=100.0, step=1.0),
+                io.Float.Input("max_pct_mito", default=0.0, step=1.0),
                 io.String.Input("mito_column", default="pct_counts_mt", advanced=True),
                 cls.EXPRESSION_SOURCE.input(),
                 io.Boolean.Input("enable_min_counts", default=False),

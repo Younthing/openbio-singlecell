@@ -149,10 +149,10 @@ def test_milo_plot_renders_tamper_evident_neighborhood_evidence_without_reanalys
     assert after["metadata"] == before["metadata"]
 
 
-def _sccoda_result():
+def _sccoda_result(*, effect_center=0.4):
     table = pd.DataFrame(
         [
-            ["treated_vs_control", "condition", "control", "treated", "B", "T", 0.4, 0.2, 0.6, 0.1, 0.95, True, 0.05, 0.9, 0.03, 10.0, 12.0, 0.2, False],
+            ["treated_vs_control", "condition", "control", "treated", "B", "T", effect_center, 0.2, 0.6, 0.1, 0.95, True, 0.05, 0.9, 0.03, 10.0, 12.0, 0.2, False],
             ["treated_vs_control", "condition", "control", "treated", "T", "T", 0.0, 0.0, 0.0, 0.0, 0.0, False, 0.05, 0.9, 0.03, 8.0, 6.0, -0.4, True],
         ],
         columns=SCCODA_RESULT_COLUMNS,
@@ -221,6 +221,19 @@ def test_sccoda_plot_preserves_relative_compositional_effect_semantics_and_poste
     for name in before["posterior"]:
         np.testing.assert_array_equal(after["posterior"][name], before["posterior"][name])
     assert after["metadata"] == before["metadata"]
+
+
+def test_composition_effect_forest_allows_posterior_center_outside_hdi():
+    result = _sccoda_result(effect_center=0.8)
+    before = result.portable()["table"]
+
+    plotted, _report, code = sccoda_differential_composition_plot_owned(result, view={"view": "effect_forest"})
+
+    assert plotted.png.startswith(PNG_SIGNATURE)
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["plot_sccoda_differential_composition"](result) == plotted.png
+    pd.testing.assert_frame_equal(result.portable()["table"], before)
 
 
 def _tasccoda_result():

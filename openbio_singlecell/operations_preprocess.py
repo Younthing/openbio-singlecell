@@ -291,12 +291,12 @@ def _validate_count_source(
     return matrix, totals, warnings
 
 
-def _validate_strict_count_source(
+def _validate_count_model_source(
     adata: Any,
     expression: ExpressionSource,
     *,
     operation: str,
-    reject_zero_genes: bool,
+    require_nonzero_totals: bool,
 ) -> tuple[Any, Any, Any, list[str]]:
     science = dependencies.require_scientific_dependencies()
     matrix = expression.matrix(adata)
@@ -305,10 +305,11 @@ def _validate_strict_count_source(
     values = _validate_finite_numeric_matrix(matrix, source_label=f"{operation} source")
     warnings: list[str] = []
     if values.size and bool((values < 0).any()):
-        raise ValueError(f"{operation} source contains negative values outside the non-negative count-model domain.")
-    if values.size == 0 or not bool((values > 0).any()):
-        raise ValueError(f"{operation} source contains no positive expression values.")
-    if not _matrix_is_integer_like(matrix):
+        warnings.append(
+            f"{operation} source contains negative values; the selected expression is retained, but it is not "
+            "a conventional non-negative count representation."
+        )
+    elif not _matrix_is_integer_like(matrix):
         warnings.append(
             f"{operation} source contains fractional non-negative values. The selected count-based method is "
             "executable, but the input cannot be described as verified integer UMI counts."
@@ -317,11 +318,13 @@ def _validate_strict_count_source(
     gene_totals, _ = matrix_totals_and_nonzero(matrix, axis=0)
     cell_totals = science.np.asarray(cell_totals, dtype=float)
     gene_totals = science.np.asarray(gene_totals, dtype=float)
-    zero_cells = int((cell_totals <= 0).sum())
+    zero_cells = int((cell_totals == 0).sum())
     if zero_cells:
-        raise ValueError(f"{operation} source contains {zero_cells} cells with zero total counts; filter them first.")
-    zero_genes = int((gene_totals <= 0).sum())
-    if reject_zero_genes and zero_genes:
+        if require_nonzero_totals:
+            raise ValueError(f"{operation} source contains {zero_cells} cells with zero total counts; filter them first.")
+        warnings.append(f"{operation} source contains {zero_cells} cells with zero total expression; they were retained.")
+    zero_genes = int((gene_totals == 0).sum())
+    if require_nonzero_totals and zero_genes:
         raise ValueError(f"{operation} source contains {zero_genes} genes with zero total counts; filter them first.")
     return matrix, cell_totals, gene_totals, warnings
 
@@ -331,22 +334,24 @@ def _validate_logged_source(
     expression: ExpressionSource,
     *,
     operation: str,
-) -> tuple[Any, Any]:
+) -> tuple[Any, Any, list[str]]:
     science = dependencies.require_scientific_dependencies()
     matrix = expression.matrix(adata)
     if tuple(matrix.shape) != tuple(adata.shape):
         raise ValueError(f"{operation} source must align to the current AnnData shape.")
     values = _validate_finite_numeric_matrix(matrix, source_label=f"{operation} source")
+    warnings: list[str] = []
     if values.size and bool((values < 0).any()):
-        raise ValueError(f"{operation} normalized log source contains negative expression values.")
-    if values.size == 0 or not bool((values > 0).any()):
-        raise ValueError(f"{operation} normalized log source contains no positive expression values.")
+        warnings.append(
+            f"{operation} source contains negative expression values; the selected expression is retained, "
+            "but it is not a conventional normalized log count representation."
+        )
     totals, _ = matrix_totals_and_nonzero(matrix, axis=1)
     totals = science.np.asarray(totals, dtype=float)
-    zero_cells = int((totals <= 0).sum())
+    zero_cells = int((totals == 0).sum())
     if zero_cells:
-        raise ValueError(f"{operation} source contains {zero_cells} cells with zero total expression.")
-    return matrix, totals
+        warnings.append(f"{operation} source contains {zero_cells} cells with zero total expression; they were retained.")
+    return matrix, totals, warnings
 
 
 def _number(value: JSONValue, *, name: str, positive: bool = False, nonnegative: bool = False) -> float:
@@ -418,7 +423,6 @@ def _records(context: OperationContext, adata: Any, report: Any, code: str) -> l
 
 def _validate_destination_layer(
     adata: Any,
-    expression: ExpressionSource,
     output_layer: JSONValue,
     overwrite_existing: JSONValue,
     *,
@@ -426,10 +430,6 @@ def _validate_destination_layer(
 ) -> tuple[str, bool, bool]:
     output = _string(output_layer, name=f"{operation} output_layer")
     overwrite = _boolean(overwrite_existing, name=f"{operation} overwrite_existing")
-    if output == "counts":
-        raise ValueError(f"{operation} cannot overwrite the reserved canonical counts layer.")
-    if expression.kind == "layer" and output == expression.layer_name:
-        raise ValueError(f"{operation} output_layer must differ from the selected source layer.")
     replaced = output in adata.layers
     if replaced and not overwrite:
         raise ValueError(f"{operation} output layer already exists: {output!r}")
@@ -812,6 +812,7 @@ def _normalize_to_layer_code(
     target_sum: float,
     transform: str,
     output_layer: str,
+    overwrite_existing: bool,
 ) -> str:
     layer_name = expression.layer_name if expression.kind == "layer" else None
     return (
@@ -830,16 +831,15 @@ def _normalize_to_layer_code(
                 target_sum = {target_sum!r}
                 transform = {transform!r}
                 output_layer = {output_layer!r}
+                overwrite_existing = {overwrite_existing!r}
                 if not np.isfinite(target_sum) or target_sum <= 0:
                     raise ValueError(f"{{operation}} target_sum must be finite and greater than zero.")
                 if transform not in {{"none", "log1p", "sqrt"}}:
                     raise ValueError(f"Unsupported Normalize to Layer transform: {{transform!r}}")
                 if not output_layer:
                     raise ValueError("Normalize to Layer output_layer cannot be empty.")
-                if output_layer == "counts":
-                    raise ValueError("Normalize to Layer cannot write the reserved canonical counts layer.")
-                if source_kind == "layer" and output_layer == source_layer:
-                    raise ValueError("Normalize to Layer output_layer must differ from the selected source layer.")
+                if output_layer in adata.layers and not overwrite_existing:
+                    raise ValueError(f"Normalize to Layer output layer already exists: {{output_layer!r}}")
                 if source_kind == "layer":
                     if source_layer not in adata.layers:
                         raise ValueError(f"{{operation}} source layer not found: {{source_layer!r}}")
@@ -904,7 +904,6 @@ def normalize_to_layer(
         raise ProtocolError(f"Unsupported {operation} transform: {transform!r}")
     output_layer, overwrite_existing, replaced_existing = _validate_destination_layer(
         adata,
-        expression,
         parameters["output_layer"],
         parameters["overwrite_existing"],
         operation=operation,
@@ -919,7 +918,7 @@ def normalize_to_layer(
     cells, genes = int(adata.n_obs), int(adata.n_vars)
     input_description = _matrix_description(matrix)
     raw_present = adata.raw is not None
-    # This matrix-only workspace is scientifically necessary because the source and X must remain unchanged.
+    # Transform a separate matrix before assigning the named output, preserving X and every other layer.
     work = science.ad.AnnData(X=matrix.copy())
     with python_warnings.catch_warnings(record=True) as caught:
         python_warnings.simplefilter("always")
@@ -998,9 +997,10 @@ def normalize_to_layer(
             "output_matrix": _matrix_description(adata.layers[output_layer]),
             "replaced_existing_layer": replaced_existing,
             "x_preserved": True,
+            "source_preserved": expression.kind != "layer" or output_layer != expression.layer_name,
             "raw_preserved": True,
             "raw_present": raw_present,
-            "canonical_counts_preserved": "counts" in adata.layers,
+            "canonical_counts_preserved": "counts" in adata.layers and output_layer != "counts",
         },
         parameters=report_parameters,
         references=(SCANPY_REFERENCE, TRANSFORM_REFERENCE, ANNDATA_REFERENCE),
@@ -1014,7 +1014,7 @@ def normalize_to_layer(
         input_cells=cells,
         input_genes=genes,
         started_at=started_at,
-        code=_normalize_to_layer_code(expression, target_sum, transform, output_layer),
+        code=_normalize_to_layer_code(expression, target_sum, transform, output_layer, overwrite_existing),
     )
     return _records(context, adata, report, code)
 
@@ -1075,14 +1075,15 @@ def _generated_feature_helpers() -> str:
                 return matrix, values
 
 
-            def _openbio_validate_strict_counts(matrix, values, operation, reject_zero_genes):
+            def _openbio_validate_count_model(matrix, values, operation, require_nonzero_totals):
                 if values.size and (values < 0).any():
-                    raise ValueError(
-                        f"{operation} source contains negative values outside the non-negative count-model domain."
+                    warnings.warn(
+                        f"{operation} source contains negative values; the selected expression is retained, but it is "
+                        "not a conventional non-negative count representation.",
+                        UserWarning,
+                        stacklevel=2,
                     )
-                if values.size == 0 or not (values > 0).any():
-                    raise ValueError(f"{operation} source contains no positive expression values.")
-                if not np.allclose(values, np.rint(values), rtol=0.0, atol=1e-8):
+                elif not np.allclose(values, np.rint(values), rtol=0.0, atol=1e-8):
                     warnings.warn(
                         f"{operation} source contains fractional non-negative values. The selected count-based "
                         "method is executable, but the input cannot be described as verified integer UMI counts.",
@@ -1091,13 +1092,19 @@ def _generated_feature_helpers() -> str:
                     )
                 cell_totals = np.asarray(matrix.sum(axis=1), dtype=float).ravel()
                 gene_totals = np.asarray(matrix.sum(axis=0), dtype=float).ravel()
-                zero_cells = int((cell_totals <= 0).sum())
+                zero_cells = int((cell_totals == 0).sum())
                 if zero_cells:
-                    raise ValueError(
-                        f"{operation} source contains {zero_cells} cells with zero total counts; filter them first."
+                    if require_nonzero_totals:
+                        raise ValueError(
+                            f"{operation} source contains {zero_cells} cells with zero total counts; filter them first."
+                        )
+                    warnings.warn(
+                        f"{operation} source contains {zero_cells} cells with zero total expression; they were retained.",
+                        UserWarning,
+                        stacklevel=2,
                     )
-                zero_genes = int((gene_totals <= 0).sum())
-                if reject_zero_genes and zero_genes:
+                zero_genes = int((gene_totals == 0).sum())
+                if require_nonzero_totals and zero_genes:
                     raise ValueError(
                         f"{operation} source contains {zero_genes} genes with zero total counts; filter them first."
                     )
@@ -1105,25 +1112,26 @@ def _generated_feature_helpers() -> str:
 
             def _openbio_validate_logged(matrix, values, operation):
                 if values.size and (values < 0).any():
-                    raise ValueError(f"{operation} normalized log source contains negative expression values.")
-                if values.size == 0 or not (values > 0).any():
-                    raise ValueError(f"{operation} normalized log source contains no positive expression values.")
+                    warnings.warn(
+                        f"{operation} source contains negative expression values; the selected expression is retained, "
+                        "but it is not a conventional normalized log count representation.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
                 cell_totals = np.asarray(matrix.sum(axis=1), dtype=float).ravel()
-                zero_cells = int((cell_totals <= 0).sum())
+                zero_cells = int((cell_totals == 0).sum())
                 if zero_cells:
-                    raise ValueError(f"{operation} source contains {zero_cells} cells with zero total expression.")
+                    warnings.warn(
+                        f"{operation} source contains {zero_cells} cells with zero total expression; they were retained.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
 
 
-            def _openbio_validate_destination(
-                adata, source_kind, source_layer, output_layer, overwrite_existing, operation
-            ):
+            def _openbio_validate_destination(adata, output_layer, overwrite_existing, operation):
                 if not isinstance(output_layer, str) or not output_layer.strip():
                     raise ValueError(f"{operation} output_layer cannot be empty.")
                 output_layer = output_layer.strip()
-                if output_layer == "counts":
-                    raise ValueError(f"{operation} cannot overwrite the reserved canonical counts layer.")
-                if source_kind == "layer" and output_layer == source_layer:
-                    raise ValueError(f"{operation} output_layer must differ from the selected source layer.")
                 if output_layer in adata.layers and not overwrite_existing:
                     raise ValueError(f"{operation} output layer already exists: {output_layer!r}")
                 return output_layer
@@ -1206,16 +1214,14 @@ def _pearson_residuals_code(
                 if not (theta > 0 and (np.isfinite(theta) or theta == float("inf"))):
                     raise ValueError("Pearson Residuals theta must be greater than zero.")
                 matrix, values = _openbio_feature_source(adata, source_kind, source_layer, operation)
-                _openbio_validate_strict_counts(
+                _openbio_validate_count_model(
                     matrix,
                     values,
                     operation,
-                    reject_zero_genes=True,
+                    require_nonzero_totals=True,
                 )
                 output_layer = _openbio_validate_destination(
                     adata,
-                    source_kind,
-                    source_layer,
                     output_layer,
                     overwrite_existing,
                     operation,
@@ -1260,11 +1266,11 @@ def pearson_residuals_to_layer(
     _require_in_memory_nonempty(adata, operation=operation)
     _require_unique_axes(adata, operation=operation)
     expression = _source_parameter(parameters, PEARSON_SOURCE, adata)
-    matrix, cell_totals, gene_totals, report_warnings = _validate_strict_count_source(
+    matrix, cell_totals, gene_totals, report_warnings = _validate_count_model_source(
         adata,
         expression,
         operation=operation,
-        reject_zero_genes=True,
+        require_nonzero_totals=True,
     )
     theta = _number(parameters["theta"], name=f"{operation} theta", positive=True)
     clipping_mode = _string(parameters["clipping_mode"], name=f"{operation} clipping_mode")
@@ -1281,7 +1287,6 @@ def pearson_residuals_to_layer(
         resolved_clip = "infinity"
     output_layer, overwrite_existing, replaced_existing = _validate_destination_layer(
         adata,
-        expression,
         parameters["output_layer"],
         parameters["overwrite_existing"],
         operation=operation,
@@ -1312,7 +1317,7 @@ def pearson_residuals_to_layer(
     cells, genes = int(adata.n_obs), int(adata.n_vars)
     input_description = _matrix_description(matrix)
     raw_present = adata.raw is not None
-    # Scanpy's API consumes an AnnData; this matrix-only workspace avoids mutating the selected source.
+    # Scanpy's API consumes an AnnData; isolate the transform until the named output is assigned.
     work = science.ad.AnnData(X=matrix.copy())
     normalized = science.sc.experimental.pp.normalize_pearson_residuals(
         work,
@@ -1358,10 +1363,10 @@ def pearson_residuals_to_layer(
         title="Analytic Pearson residual transformation summary",
         operation="pearson_residuals_to_layer",
         methods=(
-            f"Computed analytic Pearson residuals from expert-selected non-negative source {source_label!r} with "
+            f"Computed analytic Pearson residuals from expert-selected expression source {source_label!r} with "
             f"scanpy.experimental.pp.normalize_pearson_residuals using theta {theta!r} and clipping mode "
             f"{clipping_mode!r} (resolved bound {resolved_clip!r}). The dense residual matrix was stored in "
-            f"layer {output_layer!r}; X, the source, and Raw were preserved."
+            f"layer {output_layer!r}; X, every other layer, and Raw were preserved."
         ),
         results=(
             f"Created residual representation {output_layer!r} for {cells:,} cells and {genes:,} genes. "
@@ -1391,7 +1396,7 @@ def pearson_residuals_to_layer(
             "sparse_to_dense": input_sparse,
             "replaced_existing_layer": replaced_existing,
             "x_preserved": True,
-            "source_preserved": True,
+            "source_preserved": expression.kind != "layer" or output_layer != expression.layer_name,
             "raw_preserved": True,
             "raw_present": raw_present,
         },
@@ -1509,11 +1514,11 @@ def _highly_variable_genes_code(
                 if flavor in {{"seurat", "cell_ranger"}}:
                     _openbio_validate_logged(matrix, values, operation)
                 else:
-                    _openbio_validate_strict_counts(
+                    _openbio_validate_count_model(
                         matrix,
                         values,
                         operation,
-                        reject_zero_genes=False,
+                        require_nonzero_totals=False,
                     )
                 expressed_features = int((np.asarray(matrix.sum(axis=0), dtype=float).ravel() > 0).sum())
                 if expressed_features < n_top_genes:
@@ -1632,19 +1637,20 @@ def highly_variable_genes(
             "at most the eligible feature count."
         )
     if flavor in LOG_HVG_FLAVORS:
-        matrix, cell_totals = _validate_logged_source(
+        matrix, cell_totals, source_warnings = _validate_logged_source(
             adata,
             expression,
             operation=operation,
         )
         gene_totals, gene_nonzero = matrix_totals_and_nonzero(matrix, axis=0)
+        report_warnings.extend(source_warnings)
         count_validation = False
     else:
-        matrix, cell_totals, gene_totals, source_warnings = _validate_strict_count_source(
+        matrix, cell_totals, gene_totals, source_warnings = _validate_count_model_source(
             adata,
             expression,
             operation=operation,
-            reject_zero_genes=False,
+            require_nonzero_totals=False,
         )
         report_warnings.extend(source_warnings)
         _, gene_nonzero = matrix_totals_and_nonzero(matrix, axis=0)
@@ -1916,6 +1922,9 @@ def hvg_selection_plot_owned(adata: Any) -> tuple[Any, Any, str]:
             f"{details['variability_columns']!r} without recomputing feature-selection statistics."
         ),
         results=(
+            f"Classified {counts['selected']:,} selected and {counts['unselected']:,} unselected features; "
+            "the algorithm-selected versus forced breakdown is unavailable."
+            if counts['algorithm_selected'] is None else
             f"Classified {counts['algorithm_selected']:,} algorithm-selected, {counts['forced']:,} forced, "
             f"and {counts['unselected']:,} unselected features."
         ),
@@ -1978,8 +1987,6 @@ def _scale_code(
                 matrix, _ = _openbio_feature_source(adata, source_kind, source_layer, operation)
                 output_layer = _openbio_validate_destination(
                     adata,
-                    source_kind,
-                    source_layer,
                     output_layer,
                     overwrite_existing,
                     operation,
@@ -2031,7 +2038,6 @@ def scale(
     _validate_finite_numeric_matrix(matrix, source_label=f"{operation} source")
     output_layer, overwrite_existing, replaced_existing = _validate_destination_layer(
         adata,
-        expression,
         parameters["output_layer"],
         parameters["overwrite_existing"],
         operation=operation,
@@ -2040,7 +2046,7 @@ def scale(
     if clipping_mode not in {"custom", "none"}:
         raise ProtocolError(f"Unsupported {operation} clipping_mode: {clipping_mode!r}")
     resolved_max_value = (
-        _number(parameters["custom_max_value"], name=f"{operation} custom_max_value", nonnegative=True)
+        _number(parameters["custom_max_value"], name=f"{operation} custom_max_value")
         if clipping_mode == "custom"
         else None
     )
@@ -2049,6 +2055,8 @@ def scale(
     estimated_dense_gib = _dense_array_gib(tuple(adata.shape))
     input_sparse = bool(science.sparse.issparse(matrix))
     report_warnings: list[str] = []
+    if resolved_max_value is not None and resolved_max_value < 0:
+        report_warnings.append("A negative clipping bound was retained; output values follow Scanpy's clipping behavior.")
     if input_sparse and zero_center:
         _validate_dense_budget(tuple(adata.shape), parameters["max_dense_gib"], operation=operation)
         report_warnings.append(
@@ -2057,7 +2065,7 @@ def scale(
         )
     if input_sparse and not zero_center and resolved_max_value is not None:
         report_warnings.append(
-            "With zero_center=False, Scanpy clips only the positive upper tail; negative values are not "
+            "With zero_center=False, Scanpy applies only an upper clipping bound; lower-tail values are not "
             "symmetrically truncated."
         )
     feature_mean, feature_std, constant_mask = _scale_feature_statistics(matrix)
@@ -2065,7 +2073,7 @@ def scale(
     cells, genes = int(adata.n_obs), int(adata.n_vars)
     input_description = _matrix_description(matrix)
     raw_present = adata.raw is not None
-    # Scanpy scales X; this matrix-only workspace keeps X and the selected source unchanged.
+    # Scanpy scales X; isolate the transform until the named output is assigned.
     work = science.ad.AnnData(X=matrix.copy())
     science.sc.pp.scale(work, zero_center=zero_center, max_value=resolved_max_value, copy=False)
     if input_sparse and not zero_center and not science.sparse.issparse(work.X):
@@ -2111,7 +2119,7 @@ def scale(
         methods=(
             f"Applied {scaling_method} to source {source_label!r} with scanpy.pp.scale using per-gene sample "
             f"standard deviations (ddof=1); clipping was {clipping_text}. The result was written to layer "
-            f"{output_layer!r}, preserving X, the selected source, other layers, and Raw."
+            f"{output_layer!r}, preserving X, every other layer, and Raw."
         ),
         results=(
             f"Created scaled layer {output_layer!r} for {cells:,} cells and {genes:,} genes. "
@@ -2139,7 +2147,7 @@ def scale(
             "sparse_preserved": input_sparse and not zero_center and science.sparse.issparse(scaled),
             "replaced_existing_layer": replaced_existing,
             "x_preserved": True,
-            "source_preserved": True,
+            "source_preserved": expression.kind != "layer" or output_layer != expression.layer_name,
             "raw_preserved": True,
             "raw_present": raw_present,
         },
