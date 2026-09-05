@@ -1,0 +1,32 @@
+{
+  "python": "D:\\learn\\ComfyUI\\.venv\\Scripts\\python.exe",
+  "rscript": "C:\\Users\\admin\\.cache\\openbio-r-prototype\\lib\\R\\bin\\x64\\Rscript.exe",
+  "evidence_directory": "D:\\learn\\openbio-singlecell-r-prototype\\.scratch\\r-worker-prototype\\results\\lifecycle-evidence-eboiy_bs",
+  "success": {
+    "r_pid": 96628,
+    "published_content": "complete R output",
+    "published": true,
+    "released_run_removed": true
+  },
+  "failure": {
+    "r_pid": 74660,
+    "error": {
+      "type": "RProcessError",
+      "message": "Rscript exited with code 1: During startup - Warning messages:\r\n1: Setting LC_COLLATE=C.UTF-8 failed \r\n2: Setting LC_CTYPE=C.UTF-8 failed \r\n3: Setting LC_MONETARY=C.UTF-8 failed \r\n4: Setting LC_TIME=C.UTF-8 failed \r\nError: Intentional R lifecycle failure after writing a partial output.\r\nExecution halted"
+    },
+    "published": false,
+    "partial_removed": true
+  },
+  "cancellation": {
+    "r_pid": 86876,
+    "r_alive_before_cancel": true,
+    "r_alive_after_cancel": false,
+    "cancellation_seconds": 0.005,
+    "late_marker_absent": true,
+    "late_marker_observation_seconds": 4.25,
+    "partial_removed": true,
+    "published": false
+  },
+  "r_version": "R version 4.5.3 (2026-03-11 ucrt)",
+  "all_assertions_passed": true
+}

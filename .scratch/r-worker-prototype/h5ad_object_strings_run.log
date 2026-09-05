@@ -1,0 +1,9 @@
+
+STDERR:
+During startup - Warning messages:
+1: Setting LC_COLLATE=C.UTF-8 failed 
+2: Setting LC_CTYPE=C.UTF-8 failed 
+3: Setting LC_MONETARY=C.UTF-8 failed 
+4: Setting LC_TIME=C.UTF-8 failed 
+Mingw-w64 runtime failure:
+32 bit pseudo relocation at 00007FFB8D1B9874 out of range, targeting 00007FFA5D7E91C0, yielding the value FFFFFFFED062F948.

@@ -1,0 +1,82 @@
+R: 4.5.3 anndataR: 1.0.2 rhdf5: 2.54.1 
+Reticulate Python initialized before: FALSE 
+HDF5 obs attributes:
+$`_index`
+[1] "cell_id"
+
+$`column-order`
+[1] "group"          "selected"       "n_counts"       "nullable_count"
+
+$`encoding-type`
+[1] "dataframe"
+
+$`encoding-version`
+[1] "0.2.0"
+
+InMemoryAnnData object with n_obs <U+00D7> n_vars = 4 <U+00D7> 3
+    uns: '__openbio_json_uns_v1__', 'a_second', 'z_first'
+    obsm: 'X_pca'
+    varm: 'PCs'
+    layers: 'counts'
+    obsp: 'connectivities'
+    varp: 'gene_links'
+'data.frame':	4 obs. of  0 variables
+raw binding exposed: FALSE 
+List of 3
+ $ __openbio_json_uns_v1__:List of 4
+  ..$ 0: chr "[\"z_first\",\"steps\"]"
+  ..$ 1: chr "{\"mapping\":[],\"keys\":[\"z_first\",\"a_second\"]}"
+  ..$ 2: chr "{\"mapping\":[\"z_first\"],\"keys\":[\"steps\",\"mapping\"]}"
+  ..$ 3: chr "{\"mapping\":[\"z_first\",\"mapping\"],\"keys\":[\"zeta\",\"alpha\"]}"
+ $ a_second               : chr "opaque provenance preserved by the project codec"
+ $ z_first                :List of 2
+  ..$ mapping:List of 2
+  .. ..$ alpha: logi TRUE
+  .. ..$ zeta : int 2
+  ..$ steps  : chr "[{\"method\":\"fixture\",\"parameters\":{\"seed\":3}},null]"
+Unmodified whole-object roundtrip written
+R-modified whole-object roundtrip written
+Reticulate Python initialized after: FALSE 
+
+STDERR:
+During startup - Warning messages:
+1: Setting LC_COLLATE=C.UTF-8 failed 
+2: Setting LC_CTYPE=C.UTF-8 failed 
+3: Setting LC_MONETARY=C.UTF-8 failed 
+4: Setting LC_TIME=C.UTF-8 failed 
+Warning: Error reading element obs of type <dataframe>
+i No function for reading H5AD encoding <nullable-string-array> for element
+"obs/cell_id"
+Warning: Error reading element obs of type <dataframe>
+i No function for reading H5AD encoding <nullable-string-array> for element
+"obs/cell_id"
+Warning: Error reading element var of type <dataframe>
+i No function for reading H5AD encoding <nullable-string-array> for element
+"var/gene_id"
+Warning: Error reading element var of type <dataframe>
+i No function for reading H5AD encoding <nullable-string-array> for element
+"var/gene_id"
+Warning: Error reading element obs of type <dataframe>
+i No function for reading H5AD encoding <nullable-string-array> for element
+"obs/cell_id"
+Warning: Error reading element var of type <dataframe>
+i No function for reading H5AD encoding <nullable-string-array> for element
+"var/gene_id"
+Warning: Error reading element obs of type <dataframe>
+i No function for reading H5AD encoding <nullable-string-array> for element
+"obs/cell_id"
+Warning: Error reading element var of type <dataframe>
+i No function for reading H5AD encoding <nullable-string-array> for element
+"var/gene_id"
+Warning: Error reading element obs of type <dataframe>
+i No function for reading H5AD encoding <nullable-string-array> for element
+"obs/cell_id"
+Warning: Error reading element obs of type <dataframe>
+i No function for reading H5AD encoding <nullable-string-array> for element
+"obs/cell_id"
+Warning: Error reading element var of type <dataframe>
+i No function for reading H5AD encoding <nullable-string-array> for element
+"var/gene_id"
+Warning: Error reading element var of type <dataframe>
+i No function for reading H5AD encoding <nullable-string-array> for element
+"var/gene_id"

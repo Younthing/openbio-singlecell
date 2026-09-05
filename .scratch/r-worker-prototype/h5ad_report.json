@@ -1,0 +1,1466 @@
+{
+  "pandas_default": {
+    "python": "3.13.5 (main, Jun 12 2025, 12:42:35) [MSC v.1943 64 bit (AMD64)]",
+    "anndata": "0.13.2",
+    "numpy": "2.4.4",
+    "pandas": "3.0.5",
+    "baseline": {
+      "shape": [
+        4,
+        3
+      ],
+      "X": {
+        "shape": [
+          4,
+          3
+        ],
+        "dtype": "float32",
+        "sparse": true,
+        "format": "csr",
+        "values": [
+          [
+            1.0,
+            0.0,
+            2.0
+          ],
+          [
+            0.0,
+            3.0,
+            0.0
+          ],
+          [
+            4.0,
+            0.0,
+            5.0
+          ],
+          [
+            0.0,
+            6.0,
+            7.0
+          ]
+        ]
+      },
+      "obs": {
+        "index": [
+          "cell-d",
+          "cell-b",
+          "cell-a",
+          "cell-c"
+        ],
+        "index_name": "cell_id",
+        "columns": {
+          "group": {
+            "dtype": "category",
+            "values": [
+              "control",
+              null,
+              "treated",
+              "control"
+            ],
+            "categories": [
+              "treated",
+              "control",
+              "unused"
+            ],
+            "ordered": true
+          },
+          "selected": {
+            "dtype": "bool",
+            "values": [
+              true,
+              false,
+              true,
+              false
+            ]
+          },
+          "n_counts": {
+            "dtype": "int64",
+            "values": [
+              1,
+              2,
+              3,
+              4
+            ]
+          },
+          "nullable_count": {
+            "dtype": "Int64",
+            "values": [
+              1,
+              null,
+              3,
+              4
+            ]
+          }
+        }
+      },
+      "var": {
+        "index": [
+          "gene-z",
+          "gene-a",
+          "gene-m"
+        ],
+        "index_name": "gene_id",
+        "columns": {
+          "highly_variable": {
+            "dtype": "bool",
+            "values": [
+              true,
+              false,
+              true
+            ]
+          },
+          "n_cells": {
+            "dtype": "int64",
+            "values": [
+              2,
+              3,
+              4
+            ]
+          }
+        }
+      },
+      "layers": {
+        "counts": {
+          "shape": [
+            4,
+            3
+          ],
+          "dtype": "int32",
+          "sparse": true,
+          "format": "csr",
+          "values": [
+            [
+              1,
+              0,
+              2
+            ],
+            [
+              0,
+              3,
+              0
+            ],
+            [
+              4,
+              0,
+              5
+            ],
+            [
+              0,
+              6,
+              7
+            ]
+          ]
+        }
+      },
+      "obsm": {
+        "X_pca": {
+          "shape": [
+            4,
+            2
+          ],
+          "dtype": "float32",
+          "sparse": false,
+          "format": null,
+          "values": [
+            [
+              0.0,
+              0.3333333432674408
+            ],
+            [
+              0.6666666865348816,
+              1.0
+            ],
+            [
+              1.3333333730697632,
+              1.6666666269302368
+            ],
+            [
+              2.0,
+              2.3333332538604736
+            ]
+          ]
+        }
+      },
+      "obsp": {
+        "connectivities": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "float32",
+          "sparse": true,
+          "format": "csr",
+          "values": [
+            [
+              0.0,
+              0.5,
+              0.0,
+              1.0
+            ],
+            [
+              0.5,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0,
+              0.25
+            ],
+            [
+              1.0,
+              0.0,
+              0.25,
+              0.0
+            ]
+          ]
+        }
+      },
+      "varm": {
+        "PCs": {
+          "shape": [
+            3,
+            2
+          ],
+          "dtype": "float64",
+          "sparse": false,
+          "format": null,
+          "values": [
+            [
+              0.0,
+              0.14285714285714285
+            ],
+            [
+              0.2857142857142857,
+              0.42857142857142855
+            ],
+            [
+              0.5714285714285714,
+              0.7142857142857143
+            ]
+          ]
+        }
+      },
+      "varp": {
+        "gene_links": {
+          "shape": [
+            3,
+            3
+          ],
+          "dtype": "float64",
+          "sparse": true,
+          "format": "csc",
+          "values": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ]
+        }
+      },
+      "raw": {
+        "X": {
+          "shape": [
+            4,
+            5
+          ],
+          "dtype": "int32",
+          "sparse": true,
+          "format": "csr",
+          "values": [
+            [
+              0,
+              1,
+              2,
+              3,
+              4
+            ],
+            [
+              5,
+              6,
+              7,
+              8,
+              9
+            ],
+            [
+              10,
+              11,
+              12,
+              13,
+              14
+            ],
+            [
+              15,
+              16,
+              17,
+              18,
+              19
+            ]
+          ]
+        },
+        "var": {
+          "index": [
+            "raw-e",
+            "gene-a",
+            "raw-d",
+            "gene-z",
+            "gene-m"
+          ],
+          "index_name": "raw_gene_id",
+          "columns": {
+            "source": {
+              "dtype": "category",
+              "values": [
+                "a",
+                "b",
+                "a",
+                "a",
+                "b"
+              ],
+              "categories": [
+                "a",
+                "b"
+              ],
+              "ordered": false
+            }
+          }
+        }
+      },
+      "uns": {
+        "z_first": {
+          "steps": [
+            {
+              "method": "fixture",
+              "parameters": {
+                "seed": 3
+              }
+            },
+            null
+          ],
+          "mapping": {
+            "zeta": 2,
+            "alpha": true
+          }
+        },
+        "a_second": "opaque provenance preserved by the project codec"
+      },
+      "uns_key_order": [
+        "z_first",
+        "a_second"
+      ]
+    },
+    "native_python_baseline": {
+      "shape": [
+        4,
+        3
+      ],
+      "X": {
+        "shape": [
+          4,
+          3
+        ],
+        "dtype": "float32",
+        "sparse": true,
+        "format": "csr",
+        "values": [
+          [
+            1.0,
+            0.0,
+            2.0
+          ],
+          [
+            0.0,
+            3.0,
+            0.0
+          ],
+          [
+            4.0,
+            0.0,
+            5.0
+          ],
+          [
+            0.0,
+            6.0,
+            7.0
+          ]
+        ]
+      },
+      "obs": {
+        "index": [
+          "cell-d",
+          "cell-b",
+          "cell-a",
+          "cell-c"
+        ],
+        "index_name": "cell_id",
+        "columns": {
+          "group": {
+            "dtype": "category",
+            "values": [
+              "control",
+              null,
+              "treated",
+              "control"
+            ],
+            "categories": [
+              "treated",
+              "control",
+              "unused"
+            ],
+            "ordered": true
+          },
+          "selected": {
+            "dtype": "bool",
+            "values": [
+              true,
+              false,
+              true,
+              false
+            ]
+          },
+          "n_counts": {
+            "dtype": "int64",
+            "values": [
+              1,
+              2,
+              3,
+              4
+            ]
+          },
+          "nullable_count": {
+            "dtype": "Int64",
+            "values": [
+              1,
+              null,
+              3,
+              4
+            ]
+          }
+        }
+      },
+      "var": {
+        "index": [
+          "gene-z",
+          "gene-a",
+          "gene-m"
+        ],
+        "index_name": "gene_id",
+        "columns": {
+          "highly_variable": {
+            "dtype": "bool",
+            "values": [
+              true,
+              false,
+              true
+            ]
+          },
+          "n_cells": {
+            "dtype": "int64",
+            "values": [
+              2,
+              3,
+              4
+            ]
+          }
+        }
+      },
+      "layers": {
+        "counts": {
+          "shape": [
+            4,
+            3
+          ],
+          "dtype": "int32",
+          "sparse": true,
+          "format": "csr",
+          "values": [
+            [
+              1,
+              0,
+              2
+            ],
+            [
+              0,
+              3,
+              0
+            ],
+            [
+              4,
+              0,
+              5
+            ],
+            [
+              0,
+              6,
+              7
+            ]
+          ]
+        }
+      },
+      "obsm": {
+        "X_pca": {
+          "shape": [
+            4,
+            2
+          ],
+          "dtype": "float32",
+          "sparse": false,
+          "format": null,
+          "values": [
+            [
+              0.0,
+              0.3333333432674408
+            ],
+            [
+              0.6666666865348816,
+              1.0
+            ],
+            [
+              1.3333333730697632,
+              1.6666666269302368
+            ],
+            [
+              2.0,
+              2.3333332538604736
+            ]
+          ]
+        }
+      },
+      "obsp": {
+        "connectivities": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "float32",
+          "sparse": true,
+          "format": "csr",
+          "values": [
+            [
+              0.0,
+              0.5,
+              0.0,
+              1.0
+            ],
+            [
+              0.5,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0,
+              0.25
+            ],
+            [
+              1.0,
+              0.0,
+              0.25,
+              0.0
+            ]
+          ]
+        }
+      },
+      "varm": {
+        "PCs": {
+          "shape": [
+            3,
+            2
+          ],
+          "dtype": "float64",
+          "sparse": false,
+          "format": null,
+          "values": [
+            [
+              0.0,
+              0.14285714285714285
+            ],
+            [
+              0.2857142857142857,
+              0.42857142857142855
+            ],
+            [
+              0.5714285714285714,
+              0.7142857142857143
+            ]
+          ]
+        }
+      },
+      "varp": {
+        "gene_links": {
+          "shape": [
+            3,
+            3
+          ],
+          "dtype": "float64",
+          "sparse": true,
+          "format": "csc",
+          "values": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ]
+        }
+      },
+      "raw": {
+        "X": {
+          "shape": [
+            4,
+            5
+          ],
+          "dtype": "int32",
+          "sparse": true,
+          "format": "csr",
+          "values": [
+            [
+              0,
+              1,
+              2,
+              3,
+              4
+            ],
+            [
+              5,
+              6,
+              7,
+              8,
+              9
+            ],
+            [
+              10,
+              11,
+              12,
+              13,
+              14
+            ],
+            [
+              15,
+              16,
+              17,
+              18,
+              19
+            ]
+          ]
+        },
+        "var": {
+          "index": [
+            "raw-e",
+            "gene-a",
+            "raw-d",
+            "gene-z",
+            "gene-m"
+          ],
+          "index_name": "raw_gene_id",
+          "columns": {
+            "source": {
+              "dtype": "category",
+              "values": [
+                "a",
+                "b",
+                "a",
+                "a",
+                "b"
+              ],
+              "categories": [
+                "a",
+                "b"
+              ],
+              "ordered": false
+            }
+          }
+        }
+      },
+      "uns": {
+        "__openbio_json_uns_v1__": {
+          "0": "[\"z_first\",\"steps\"]",
+          "1": "{\"mapping\":[],\"keys\":[\"z_first\",\"a_second\"]}",
+          "2": "{\"mapping\":[\"z_first\"],\"keys\":[\"steps\",\"mapping\"]}",
+          "3": "{\"mapping\":[\"z_first\",\"mapping\"],\"keys\":[\"zeta\",\"alpha\"]}"
+        },
+        "a_second": "opaque provenance preserved by the project codec",
+        "z_first": {
+          "mapping": {
+            "alpha": true,
+            "zeta": 2
+          },
+          "steps": "[{\"method\":\"fixture\",\"parameters\":{\"seed\":3}},null]"
+        }
+      },
+      "uns_key_order": [
+        "__openbio_json_uns_v1__",
+        "a_second",
+        "z_first"
+      ]
+    },
+    "r_exit": 3221226505,
+    "r_stdout": "",
+    "r_stderr": "During startup - Warning messages:\n1: Setting LC_COLLATE=C.UTF-8 failed \n2: Setting LC_CTYPE=C.UTF-8 failed \n3: Setting LC_MONETARY=C.UTF-8 failed \n4: Setting LC_TIME=C.UTF-8 failed \nMingw-w64 runtime failure:\n32 bit pseudo relocation at 00007FFB8D169874 out of range, targeting 00007FFA5D7E91C0, yielding the value FFFFFFFED067F948.\n",
+    "outputs": {
+      "h5ad_pandas_default_roundtrip": {
+        "missing_output": true
+      },
+      "h5ad_pandas_default_r_modified": {
+        "missing_output": true
+      }
+    }
+  },
+  "object_strings": {
+    "python": "3.13.5 (main, Jun 12 2025, 12:42:35) [MSC v.1943 64 bit (AMD64)]",
+    "anndata": "0.13.2",
+    "numpy": "2.4.4",
+    "pandas": "3.0.5",
+    "baseline": {
+      "shape": [
+        4,
+        3
+      ],
+      "X": {
+        "shape": [
+          4,
+          3
+        ],
+        "dtype": "float32",
+        "sparse": true,
+        "format": "csr",
+        "values": [
+          [
+            1.0,
+            0.0,
+            2.0
+          ],
+          [
+            0.0,
+            3.0,
+            0.0
+          ],
+          [
+            4.0,
+            0.0,
+            5.0
+          ],
+          [
+            0.0,
+            6.0,
+            7.0
+          ]
+        ]
+      },
+      "obs": {
+        "index": [
+          "cell-d",
+          "cell-b",
+          "cell-a",
+          "cell-c"
+        ],
+        "index_name": "cell_id",
+        "columns": {
+          "group": {
+            "dtype": "category",
+            "values": [
+              "control",
+              null,
+              "treated",
+              "control"
+            ],
+            "categories": [
+              "treated",
+              "control",
+              "unused"
+            ],
+            "ordered": true
+          },
+          "selected": {
+            "dtype": "bool",
+            "values": [
+              true,
+              false,
+              true,
+              false
+            ]
+          },
+          "n_counts": {
+            "dtype": "int64",
+            "values": [
+              1,
+              2,
+              3,
+              4
+            ]
+          },
+          "nullable_count": {
+            "dtype": "Int64",
+            "values": [
+              1,
+              null,
+              3,
+              4
+            ]
+          }
+        }
+      },
+      "var": {
+        "index": [
+          "gene-z",
+          "gene-a",
+          "gene-m"
+        ],
+        "index_name": "gene_id",
+        "columns": {
+          "highly_variable": {
+            "dtype": "bool",
+            "values": [
+              true,
+              false,
+              true
+            ]
+          },
+          "n_cells": {
+            "dtype": "int64",
+            "values": [
+              2,
+              3,
+              4
+            ]
+          }
+        }
+      },
+      "layers": {
+        "counts": {
+          "shape": [
+            4,
+            3
+          ],
+          "dtype": "int32",
+          "sparse": true,
+          "format": "csr",
+          "values": [
+            [
+              1,
+              0,
+              2
+            ],
+            [
+              0,
+              3,
+              0
+            ],
+            [
+              4,
+              0,
+              5
+            ],
+            [
+              0,
+              6,
+              7
+            ]
+          ]
+        }
+      },
+      "obsm": {
+        "X_pca": {
+          "shape": [
+            4,
+            2
+          ],
+          "dtype": "float32",
+          "sparse": false,
+          "format": null,
+          "values": [
+            [
+              0.0,
+              0.3333333432674408
+            ],
+            [
+              0.6666666865348816,
+              1.0
+            ],
+            [
+              1.3333333730697632,
+              1.6666666269302368
+            ],
+            [
+              2.0,
+              2.3333332538604736
+            ]
+          ]
+        }
+      },
+      "obsp": {
+        "connectivities": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "float32",
+          "sparse": true,
+          "format": "csr",
+          "values": [
+            [
+              0.0,
+              0.5,
+              0.0,
+              1.0
+            ],
+            [
+              0.5,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0,
+              0.25
+            ],
+            [
+              1.0,
+              0.0,
+              0.25,
+              0.0
+            ]
+          ]
+        }
+      },
+      "varm": {
+        "PCs": {
+          "shape": [
+            3,
+            2
+          ],
+          "dtype": "float64",
+          "sparse": false,
+          "format": null,
+          "values": [
+            [
+              0.0,
+              0.14285714285714285
+            ],
+            [
+              0.2857142857142857,
+              0.42857142857142855
+            ],
+            [
+              0.5714285714285714,
+              0.7142857142857143
+            ]
+          ]
+        }
+      },
+      "varp": {
+        "gene_links": {
+          "shape": [
+            3,
+            3
+          ],
+          "dtype": "float64",
+          "sparse": true,
+          "format": "csc",
+          "values": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ]
+        }
+      },
+      "raw": {
+        "X": {
+          "shape": [
+            4,
+            5
+          ],
+          "dtype": "int32",
+          "sparse": true,
+          "format": "csr",
+          "values": [
+            [
+              0,
+              1,
+              2,
+              3,
+              4
+            ],
+            [
+              5,
+              6,
+              7,
+              8,
+              9
+            ],
+            [
+              10,
+              11,
+              12,
+              13,
+              14
+            ],
+            [
+              15,
+              16,
+              17,
+              18,
+              19
+            ]
+          ]
+        },
+        "var": {
+          "index": [
+            "raw-e",
+            "gene-a",
+            "raw-d",
+            "gene-z",
+            "gene-m"
+          ],
+          "index_name": "raw_gene_id",
+          "columns": {
+            "source": {
+              "dtype": "category",
+              "values": [
+                "a",
+                "b",
+                "a",
+                "a",
+                "b"
+              ],
+              "categories": [
+                "a",
+                "b"
+              ],
+              "ordered": false
+            }
+          }
+        }
+      },
+      "uns": {
+        "z_first": {
+          "steps": [
+            {
+              "method": "fixture",
+              "parameters": {
+                "seed": 3
+              }
+            },
+            null
+          ],
+          "mapping": {
+            "zeta": 2,
+            "alpha": true
+          }
+        },
+        "a_second": "opaque provenance preserved by the project codec"
+      },
+      "uns_key_order": [
+        "z_first",
+        "a_second"
+      ]
+    },
+    "native_python_baseline": {
+      "shape": [
+        4,
+        3
+      ],
+      "X": {
+        "shape": [
+          4,
+          3
+        ],
+        "dtype": "float32",
+        "sparse": true,
+        "format": "csr",
+        "values": [
+          [
+            1.0,
+            0.0,
+            2.0
+          ],
+          [
+            0.0,
+            3.0,
+            0.0
+          ],
+          [
+            4.0,
+            0.0,
+            5.0
+          ],
+          [
+            0.0,
+            6.0,
+            7.0
+          ]
+        ]
+      },
+      "obs": {
+        "index": [
+          "cell-d",
+          "cell-b",
+          "cell-a",
+          "cell-c"
+        ],
+        "index_name": "cell_id",
+        "columns": {
+          "group": {
+            "dtype": "category",
+            "values": [
+              "control",
+              null,
+              "treated",
+              "control"
+            ],
+            "categories": [
+              "treated",
+              "control",
+              "unused"
+            ],
+            "ordered": true
+          },
+          "selected": {
+            "dtype": "bool",
+            "values": [
+              true,
+              false,
+              true,
+              false
+            ]
+          },
+          "n_counts": {
+            "dtype": "int64",
+            "values": [
+              1,
+              2,
+              3,
+              4
+            ]
+          },
+          "nullable_count": {
+            "dtype": "Int64",
+            "values": [
+              1,
+              null,
+              3,
+              4
+            ]
+          }
+        }
+      },
+      "var": {
+        "index": [
+          "gene-z",
+          "gene-a",
+          "gene-m"
+        ],
+        "index_name": "gene_id",
+        "columns": {
+          "highly_variable": {
+            "dtype": "bool",
+            "values": [
+              true,
+              false,
+              true
+            ]
+          },
+          "n_cells": {
+            "dtype": "int64",
+            "values": [
+              2,
+              3,
+              4
+            ]
+          }
+        }
+      },
+      "layers": {
+        "counts": {
+          "shape": [
+            4,
+            3
+          ],
+          "dtype": "int32",
+          "sparse": true,
+          "format": "csr",
+          "values": [
+            [
+              1,
+              0,
+              2
+            ],
+            [
+              0,
+              3,
+              0
+            ],
+            [
+              4,
+              0,
+              5
+            ],
+            [
+              0,
+              6,
+              7
+            ]
+          ]
+        }
+      },
+      "obsm": {
+        "X_pca": {
+          "shape": [
+            4,
+            2
+          ],
+          "dtype": "float32",
+          "sparse": false,
+          "format": null,
+          "values": [
+            [
+              0.0,
+              0.3333333432674408
+            ],
+            [
+              0.6666666865348816,
+              1.0
+            ],
+            [
+              1.3333333730697632,
+              1.6666666269302368
+            ],
+            [
+              2.0,
+              2.3333332538604736
+            ]
+          ]
+        }
+      },
+      "obsp": {
+        "connectivities": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "float32",
+          "sparse": true,
+          "format": "csr",
+          "values": [
+            [
+              0.0,
+              0.5,
+              0.0,
+              1.0
+            ],
+            [
+              0.5,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0,
+              0.25
+            ],
+            [
+              1.0,
+              0.0,
+              0.25,
+              0.0
+            ]
+          ]
+        }
+      },
+      "varm": {
+        "PCs": {
+          "shape": [
+            3,
+            2
+          ],
+          "dtype": "float64",
+          "sparse": false,
+          "format": null,
+          "values": [
+            [
+              0.0,
+              0.14285714285714285
+            ],
+            [
+              0.2857142857142857,
+              0.42857142857142855
+            ],
+            [
+              0.5714285714285714,
+              0.7142857142857143
+            ]
+          ]
+        }
+      },
+      "varp": {
+        "gene_links": {
+          "shape": [
+            3,
+            3
+          ],
+          "dtype": "float64",
+          "sparse": true,
+          "format": "csc",
+          "values": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ]
+        }
+      },
+      "raw": {
+        "X": {
+          "shape": [
+            4,
+            5
+          ],
+          "dtype": "int32",
+          "sparse": true,
+          "format": "csr",
+          "values": [
+            [
+              0,
+              1,
+              2,
+              3,
+              4
+            ],
+            [
+              5,
+              6,
+              7,
+              8,
+              9
+            ],
+            [
+              10,
+              11,
+              12,
+              13,
+              14
+            ],
+            [
+              15,
+              16,
+              17,
+              18,
+              19
+            ]
+          ]
+        },
+        "var": {
+          "index": [
+            "raw-e",
+            "gene-a",
+            "raw-d",
+            "gene-z",
+            "gene-m"
+          ],
+          "index_name": "raw_gene_id",
+          "columns": {
+            "source": {
+              "dtype": "category",
+              "values": [
+                "a",
+                "b",
+                "a",
+                "a",
+                "b"
+              ],
+              "categories": [
+                "a",
+                "b"
+              ],
+              "ordered": false
+            }
+          }
+        }
+      },
+      "uns": {
+        "__openbio_json_uns_v1__": {
+          "0": "[\"z_first\",\"steps\"]",
+          "1": "{\"mapping\":[],\"keys\":[\"z_first\",\"a_second\"]}",
+          "2": "{\"mapping\":[\"z_first\"],\"keys\":[\"steps\",\"mapping\"]}",
+          "3": "{\"mapping\":[\"z_first\",\"mapping\"],\"keys\":[\"zeta\",\"alpha\"]}"
+        },
+        "a_second": "opaque provenance preserved by the project codec",
+        "z_first": {
+          "mapping": {
+            "alpha": true,
+            "zeta": 2
+          },
+          "steps": "[{\"method\":\"fixture\",\"parameters\":{\"seed\":3}},null]"
+        }
+      },
+      "uns_key_order": [
+        "__openbio_json_uns_v1__",
+        "a_second",
+        "z_first"
+      ]
+    },
+    "r_exit": 3221226505,
+    "r_stdout": "",
+    "r_stderr": "During startup - Warning messages:\n1: Setting LC_COLLATE=C.UTF-8 failed \n2: Setting LC_CTYPE=C.UTF-8 failed \n3: Setting LC_MONETARY=C.UTF-8 failed \n4: Setting LC_TIME=C.UTF-8 failed \nMingw-w64 runtime failure:\n32 bit pseudo relocation at 00007FFB8D1B9874 out of range, targeting 00007FFA5D7E91C0, yielding the value FFFFFFFED062F948.\n",
+    "outputs": {
+      "h5ad_object_strings_roundtrip": {
+        "missing_output": true
+      },
+      "h5ad_object_strings_r_modified": {
+        "missing_output": true
+      }
+    }
+  }
+}

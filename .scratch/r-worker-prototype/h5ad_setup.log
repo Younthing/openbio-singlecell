@@ -1,0 +1,51 @@
+During startup - Warning messages:
+1: Setting LC_COLLATE=C.UTF-8 failed 
+2: Setting LC_CTYPE=C.UTF-8 failed 
+3: Setting LC_MONETARY=C.UTF-8 failed 
+4: Setting LC_TIME=C.UTF-8 failed 
+also installing the dependencies 'glue', 'rprojroot', 'magrittr', 'vctrs', 'Rcpp', 'RcppTOML', 'here', 'png', 'rappdirs', 'withr', 'cli', 'lifecycle', 'purrr', 'reticulate', 'rlang', 'Rhdf5lib', 'rhdf5filters'
+
+trying URL 'https://cloud.r-project.org/bin/windows/contrib/4.5/glue_1.8.1.zip'
+trying URL 'https://cloud.r-project.org/bin/windows/contrib/4.5/rprojroot_2.1.1.zip'
+trying URL 'https://cloud.r-project.org/bin/windows/contrib/4.5/magrittr_2.0.5.zip'
+trying URL 'https://cloud.r-project.org/bin/windows/contrib/4.5/vctrs_0.7.3.zip'
+trying URL 'https://cloud.r-project.org/bin/windows/contrib/4.5/Rcpp_1.1.2.zip'
+trying URL 'https://cloud.r-project.org/bin/windows/contrib/4.5/RcppTOML_0.2.3.zip'
+trying URL 'https://cloud.r-project.org/bin/windows/contrib/4.5/here_1.0.2.zip'
+trying URL 'https://cloud.r-project.org/bin/windows/contrib/4.5/png_0.1-9.zip'
+trying URL 'https://cloud.r-project.org/bin/windows/contrib/4.5/rappdirs_0.3.4.zip'
+trying URL 'https://cloud.r-project.org/bin/windows/contrib/4.5/withr_3.0.3.zip'
+trying URL 'https://cloud.r-project.org/bin/windows/contrib/4.5/cli_3.6.6.zip'
+trying URL 'https://cloud.r-project.org/bin/windows/contrib/4.5/lifecycle_1.0.5.zip'
+trying URL 'https://cloud.r-project.org/bin/windows/contrib/4.5/purrr_1.2.2.zip'
+trying URL 'https://cloud.r-project.org/bin/windows/contrib/4.5/reticulate_1.46.0.zip'
+trying URL 'https://cloud.r-project.org/bin/windows/contrib/4.5/rlang_1.3.0.zip'
+trying URL 'https://bioconductor.org/packages/3.22/bioc/bin/windows/contrib/4.5/Rhdf5lib_1.32.0.zip'
+trying URL 'https://bioconductor.org/packages/3.22/bioc/bin/windows/contrib/4.5/rhdf5filters_1.22.0.zip'
+trying URL 'https://bioconductor.org/packages/3.22/bioc/bin/windows/contrib/4.5/anndataR_1.0.2.zip'
+trying URL 'https://bioconductor.org/packages/3.22/bioc/bin/windows/contrib/4.5/rhdf5_2.54.1.zip'
+package 'glue' successfully unpacked and MD5 sums checked
+package 'rprojroot' successfully unpacked and MD5 sums checked
+package 'magrittr' successfully unpacked and MD5 sums checked
+package 'vctrs' successfully unpacked and MD5 sums checked
+package 'Rcpp' successfully unpacked and MD5 sums checked
+package 'RcppTOML' successfully unpacked and MD5 sums checked
+package 'here' successfully unpacked and MD5 sums checked
+package 'png' successfully unpacked and MD5 sums checked
+package 'rappdirs' successfully unpacked and MD5 sums checked
+package 'withr' successfully unpacked and MD5 sums checked
+package 'cli' successfully unpacked and MD5 sums checked
+package 'lifecycle' successfully unpacked and MD5 sums checked
+package 'purrr' successfully unpacked and MD5 sums checked
+package 'reticulate' successfully unpacked and MD5 sums checked
+package 'rlang' successfully unpacked and MD5 sums checked
+package 'Rhdf5lib' successfully unpacked and MD5 sums checked
+package 'rhdf5filters' successfully unpacked and MD5 sums checked
+package 'anndataR' successfully unpacked and MD5 sums checked
+package 'rhdf5' successfully unpacked and MD5 sums checked
+
+The downloaded binary packages are in
+	C:\Users\admin\AppData\Local\Temp\Rtmp8ekL1r\downloaded_packages
+Loading required namespace: anndataR
+Mingw-w64 runtime failure:
+32 bit pseudo relocation at 00007FFBC43C9874 out of range, targeting 00007FFA5ED191C0, yielding the value FFFFFFFE9A94F948.

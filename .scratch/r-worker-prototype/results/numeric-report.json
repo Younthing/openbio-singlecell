@@ -1,0 +1,59 @@
+{
+  "prototype": "Python Artifact node -> real Rscript -> Artifact node",
+  "cases": [
+    {
+      "storage": "dense",
+      "shape": [
+        6,
+        3
+      ],
+      "raw_shape": [
+        6,
+        4
+      ],
+      "r_versions": {
+        "R": "4.5.3",
+        "Matrix": "1.7.6",
+        "jsonlite": "2.0.0"
+      },
+      "r_pid": 8652,
+      "wire_values_are_tickets": true,
+      "input_file_unchanged": true,
+      "numeric_matches_numpy": true,
+      "axes_and_metadata_preserved": true,
+      "raw_layers_graphs_nested_uns_preserved": true,
+      "native_rds_roundtrip": true,
+      "standard_python_downstream_cells": 3,
+      "r_warnings": [
+        "During startup - Warning messages:\r\n1: Setting LC_COLLATE=C.UTF-8 failed \r\n2: Setting LC_CTYPE=C.UTF-8 failed \r\n3: Setting LC_MONETARY=C.UTF-8 failed \r\n4: Setting LC_TIME=C.UTF-8 failed \r\n"
+      ]
+    },
+    {
+      "storage": "csr",
+      "shape": [
+        6,
+        3
+      ],
+      "raw_shape": [
+        6,
+        4
+      ],
+      "r_versions": {
+        "R": "4.5.3",
+        "Matrix": "1.7.6",
+        "jsonlite": "2.0.0"
+      },
+      "r_pid": 69908,
+      "wire_values_are_tickets": true,
+      "input_file_unchanged": true,
+      "numeric_matches_numpy": true,
+      "axes_and_metadata_preserved": true,
+      "raw_layers_graphs_nested_uns_preserved": true,
+      "native_rds_roundtrip": true,
+      "standard_python_downstream_cells": 3,
+      "r_warnings": [
+        "During startup - Warning messages:\r\n1: Setting LC_COLLATE=C.UTF-8 failed \r\n2: Setting LC_CTYPE=C.UTF-8 failed \r\n3: Setting LC_MONETARY=C.UTF-8 failed \r\n4: Setting LC_TIME=C.UTF-8 failed \r\n"
+      ]
+    }
+  ]
+}

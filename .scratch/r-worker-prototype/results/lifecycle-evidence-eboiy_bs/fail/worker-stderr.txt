@@ -1,0 +1,22 @@
+During startup - Warning messages:
+1: Setting LC_COLLATE=C.UTF-8 failed 
+2: Setting LC_CTYPE=C.UTF-8 failed 
+3: Setting LC_MONETARY=C.UTF-8 failed 
+4: Setting LC_TIME=C.UTF-8 failed 
+Error: Intentional R lifecycle failure after writing a partial output.
+Execution halted
+
+Traceback (most recent call last):
+  File "D:\learn\openbio-singlecell-r-prototype\.scratch\r-worker-prototype\lifecycle_entry.py", line 63, in main
+    response = execute_request(request, OperationContext.from_request_path(request_path, request.request_id))
+  File "D:\learn\openbio-singlecell-r-prototype\openbio_singlecell\worker_protocol.py", line 305, in execute_request
+    outputs = operation(context, request.inputs, request.parameters)
+  File "D:\learn\openbio-singlecell-r-prototype\.scratch\r-worker-prototype\lifecycle_entry.py", line 50, in lifecycle
+    raise RProcessError(f"Rscript exited with code {returncode}: {error_tail.strip()}")
+RProcessError: Rscript exited with code 1: During startup - Warning messages:
+1: Setting LC_COLLATE=C.UTF-8 failed 
+2: Setting LC_CTYPE=C.UTF-8 failed 
+3: Setting LC_MONETARY=C.UTF-8 failed 
+4: Setting LC_TIME=C.UTF-8 failed 
+Error: Intentional R lifecycle failure after writing a partial output.
+Execution halted

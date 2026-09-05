@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "request_id": "0827fc9d-f52c-45a6-bb80-f4329ea4450c",
+  "ok": true,
+  "outputs": [
+    {
+      "type": "artifact",
+      "name": "result",
+      "kind": "OPENBIO_R_LIFECYCLE",
+      "codec": "utf8-v1",
+      "payload": "outputs/lifecycle/result.txt"
+    }
+  ]
+}

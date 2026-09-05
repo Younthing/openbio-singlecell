@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "request_id": "dbae4b3b-1fa6-4cab-be9c-e00541426a04",
+  "ok": false,
+  "error": {
+    "type": "RProcessError",
+    "message": "Rscript exited with code 1: During startup - Warning messages:\r\n1: Setting LC_COLLATE=C.UTF-8 failed \r\n2: Setting LC_CTYPE=C.UTF-8 failed \r\n3: Setting LC_MONETARY=C.UTF-8 failed \r\n4: Setting LC_TIME=C.UTF-8 failed \r\nError: Intentional R lifecycle failure after writing a partial output.\r\nExecution halted"
+  }
+}
