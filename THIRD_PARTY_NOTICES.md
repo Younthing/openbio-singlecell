@@ -82,6 +82,19 @@
 - The Milo and edgeR paths also require a separately installed R/Bioconductor environment; pip and Pertpy do not
   install that external runtime
 
+## Monocle 2 / DDRTree and R file exchange
+
+- Monocle project: https://bioconductor.org/packages/monocle/ ; license: Artistic-2.0
+- DDRTree project: https://cran.r-project.org/package=DDRTree ; license: Artistic License 2.0
+- Integration tested with R 4.4.3, Monocle 2.34.0, DDRTree 0.1.6, igraph 2.3.3 and dplyr 1.2.1;
+  unmodified Monocle with igraph 2.0.3 / dplyr 1.1.4 supplies the scientific reference
+- File exchange uses R Matrix (GPL >=2 / its LICENCE) and jsonlite (MIT + LICENSE)
+- These are optional, separately installed R packages. The repository ships its R driver and dependency API adapter.
+  The adapter copies selected installed Monocle functions into a private R environment and translates obsolete calls;
+  it does not modify the installed packages or their namespaces. Upstream algorithm source is not bundled.
+  Monocle source: https://github.com/bioc/monocle/tree/RELEASE_3_20/R ; its source, copyright and Artistic-2.0 license
+  remain with the upstream project. Standalone reproduction includes the same adapter and requires installed Monocle.
+
 ## PyDESeq2
 
 - Project: https://github.com/owkin/PyDESeq2

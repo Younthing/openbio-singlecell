@@ -29,6 +29,7 @@ from openbio_singlecell.node_types import (
     DGIdbResourceType,
     LianaResultType,
     MiloResultType,
+    Monocle2CDSType,
     PlotResultType,
     PseudobulkType,
     SCENICResultArtifactType,
@@ -41,6 +42,16 @@ from openbio_singlecell.node_types import (
 )
 
 EXPECTED_NODE_IDS = {
+    "OpenBioSingleCellMonocle2Runtime",
+    "OpenBioSingleCellMonocle2Prepare",
+    "OpenBioSingleCellMonocle2OrderingGenes",
+    "OpenBioSingleCellMonocle2DDRTree",
+    "OpenBioSingleCellMonocle2OrderCells",
+    "OpenBioSingleCellMonocle2TrajectoryPlot",
+    "OpenBioSingleCellMonocle2DifferentialTest",
+    "OpenBioSingleCellMonocle2BEAM",
+    "OpenBioSingleCellMonocle2GeneTrends",
+    "OpenBioSingleCellMonocle2Export",
     "OpenBioSingleCellPythonWorker",
     "OpenBioSingleCellLoadH5AD",
     "OpenBioSingleCellLoad10xMTX",
@@ -239,7 +250,7 @@ def test_input_extension_loads():
     assert isinstance(extension, OpenBioSingleCellExtension)
     node_ids = [node.GET_SCHEMA().node_id for node in NODE_CLASSES]
     schemas = [node.GET_SCHEMA() for node in NODE_CLASSES]
-    assert len(node_ids) == 145
+    assert len(node_ids) == 155
     assert len(node_ids) == len(set(node_ids))
     assert set(node_ids) == EXPECTED_NODE_IDS
     assert REMOVED_NODE_IDS.isdisjoint(node_ids)
@@ -269,6 +280,7 @@ def test_input_extension_loads():
         "openbio/single-cell/runtime": 1,
         "openbio/single-cell/study": 1,
         "openbio/single-cell/trajectory": 6,
+        "openbio/single-cell/trajectory/monocle2": 10,
         "openbio/single-cell/velocity": 9,
         "openbio/single-cell/visualization": 2,
     }
@@ -371,6 +383,15 @@ def test_node_outputs_use_only_their_concrete_public_contracts():
         "worker": WorkerType.io_type,
     }
     expected_multi_outputs = {
+        "OpenBioSingleCellMonocle2Runtime": [("r_runtime", "STRING"), ("summary", SummaryResultType.io_type), ("code", "STRING")],
+        "OpenBioSingleCellMonocle2Prepare": [("cds", Monocle2CDSType.io_type), ("summary", SummaryResultType.io_type), ("code", "STRING")],
+        "OpenBioSingleCellMonocle2OrderingGenes": [("cds", Monocle2CDSType.io_type), ("table", TableResultType.io_type), ("summary", SummaryResultType.io_type), ("code", "STRING")],
+        "OpenBioSingleCellMonocle2DDRTree": [("cds", Monocle2CDSType.io_type), ("summary", SummaryResultType.io_type), ("code", "STRING")],
+        "OpenBioSingleCellMonocle2OrderCells": [("cds", Monocle2CDSType.io_type), ("table", TableResultType.io_type), ("summary", SummaryResultType.io_type), ("code", "STRING")],
+        "OpenBioSingleCellMonocle2DifferentialTest": [("table", TableResultType.io_type), ("summary", SummaryResultType.io_type), ("code", "STRING")],
+        "OpenBioSingleCellMonocle2BEAM": [("table", TableResultType.io_type), ("summary", SummaryResultType.io_type), ("code", "STRING")],
+        "OpenBioSingleCellMonocle2GeneTrends": [("plot", PlotResultType.io_type), ("summary", SummaryResultType.io_type), ("code", "STRING")],
+        "OpenBioSingleCellMonocle2Export": [("adata", AnnDataType.io_type), ("table", TableResultType.io_type), ("summary", SummaryResultType.io_type), ("code", "STRING")],
         "OpenBioSingleCellCalculateQC": [
             ("adata", AnnDataType.io_type),
             ("summary", SummaryResultType.io_type),
@@ -862,6 +883,7 @@ def test_node_outputs_use_only_their_concrete_public_contracts():
 
 def test_registered_ports_reject_generic_and_legacy_analysis_contracts():
     allowed_openbio_types = {
+        Monocle2CDSType.io_type,
         AnnDataType.io_type,
         AugurResultType.io_type,
         CassiopeiaCharactersType.io_type,
@@ -915,6 +937,7 @@ def test_registered_ports_reject_generic_and_legacy_analysis_contracts():
                 DGIdbResourceType.io_type,
                 LianaResultType.io_type,
                 MiloResultType.io_type,
+                Monocle2CDSType.io_type,
                 PseudobulkType.io_type,
                 SCENICResultArtifactType.io_type,
                 TFActivityArtifactType.io_type,
@@ -938,6 +961,7 @@ def test_registered_ports_reject_generic_and_legacy_analysis_contracts():
             DGIdbResourceType.io_type,
             LianaResultType.io_type,
             MiloResultType.io_type,
+            Monocle2CDSType.io_type,
             PlotResultType.io_type,
             PseudobulkType.io_type,
             SCENICResultArtifactType.io_type,
@@ -945,6 +969,14 @@ def test_registered_ports_reject_generic_and_legacy_analysis_contracts():
             TFActivityArtifactType.io_type,
             VelocityStateType.io_type,
         },
+        ("OpenBioSingleCellMonocle2OrderingGenes", "cds"): {Monocle2CDSType.io_type},
+        ("OpenBioSingleCellMonocle2DDRTree", "cds"): {Monocle2CDSType.io_type},
+        ("OpenBioSingleCellMonocle2OrderCells", "cds"): {Monocle2CDSType.io_type},
+        ("OpenBioSingleCellMonocle2TrajectoryPlot", "cds"): {Monocle2CDSType.io_type},
+        ("OpenBioSingleCellMonocle2DifferentialTest", "cds"): {Monocle2CDSType.io_type},
+        ("OpenBioSingleCellMonocle2BEAM", "cds"): {Monocle2CDSType.io_type},
+        ("OpenBioSingleCellMonocle2GeneTrends", "cds"): {Monocle2CDSType.io_type},
+        ("OpenBioSingleCellMonocle2Export", "cds"): {Monocle2CDSType.io_type},
         ("OpenBioSingleCellAugurResults", "result"): {AugurResultType.io_type},
         ("OpenBioSingleCellAugurPlot", "result"): {AugurResultType.io_type},
         ("OpenBioSingleCellDrugGSEA", "resource"): {DGIdbResourceType.io_type},

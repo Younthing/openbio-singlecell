@@ -69,3 +69,13 @@ _Avoid_: Cell-level cluster marker test
 **Diagnostic evidence**:
 Reusable analysis output retained to assess model fit or result quality without rerunning the scientific analysis.
 _Avoid_: Plot cache, summary-only metric, recomputed analysis
+
+**Trajectory State**:
+A segment assignment on an inferred expression trajectory. It describes graph position rather than a reviewed
+cell-population identity.
+_Avoid_: Cell type, lineage truth, biological state proof
+
+**Pseudotime**:
+An ordering or distance along an inferred trajectory relative to its selected origin. It does not establish elapsed
+physical time, causality, or ancestry.
+_Avoid_: Real time, developmental age, causal ordering

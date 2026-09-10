@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from openbio_singlecell.cache_policy import require_file_artifact_cache
+from openbio_singlecell.cache_policy import check_file_artifact_cache
 
 
 @pytest.mark.parametrize(
@@ -14,18 +14,21 @@ from openbio_singlecell.cache_policy import require_file_artifact_cache
     ],
 )
 def test_file_artifact_cache_accepts_supported_comfy_modes(args, expected):
-    assert require_file_artifact_cache(args) == expected
+    assert check_file_artifact_cache(args) == expected
 
 
-def test_file_artifact_cache_rejects_ram_pressure_default_with_launch_hint():
+def test_file_artifact_cache_allows_ram_pressure_default_with_launch_hint(caplog):
     args = SimpleNamespace(cache_classic=False, cache_none=False, cache_lru=0, cache_ram=[])
 
-    with pytest.raises(RuntimeError, match=r"RAM-pressure.*--cache-classic"):
-        require_file_artifact_cache(args)
+    assert check_file_artifact_cache(args) == "ram_pressure"
+    assert "RAM-pressure" in caplog.text
+    assert "disk space" in caplog.text
+    assert "Consider --cache-classic, --cache-none, or --cache-lru N" in caplog.text
 
 
-def test_file_artifact_cache_rejects_explicit_ram_pressure_too():
+def test_file_artifact_cache_allows_explicit_ram_pressure_with_launch_hint(caplog):
     args = SimpleNamespace(cache_classic=False, cache_none=False, cache_lru=0, cache_ram=[2.0])
 
-    with pytest.raises(RuntimeError, match=r"RAM-pressure.*--cache-classic"):
-        require_file_artifact_cache(args)
+    assert check_file_artifact_cache(args) == "ram_pressure"
+    assert "RAM-pressure" in caplog.text
+    assert "Consider --cache-classic, --cache-none, or --cache-lru N" in caplog.text

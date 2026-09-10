@@ -18,6 +18,7 @@ CassiopeiaCharactersType = io.Custom("OPENBIO_CASSIOPEIA_CHARACTERS")
 CassiopeiaTreeType = io.Custom("OPENBIO_CASSIOPEIA_TREE")
 CNVStateType = io.Custom("OPENBIO_CNV_STATE")
 VelocityStateType = io.Custom("OPENBIO_VELOCITY_STATE")
+Monocle2CDSType = io.Custom("OPENBIO_MONOCLE2_CDS")
 WorkerType = io.Custom("OPENBIO_WORKER")
 
 
@@ -37,6 +38,7 @@ __all__ = [
     "DGIdbResourceType",
     "LianaResultType",
     "MiloResultType",
+    "Monocle2CDSType",
     "PlotResultType",
     "PseudobulkType",
     "SCVIModelType",

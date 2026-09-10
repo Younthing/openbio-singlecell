@@ -1655,11 +1655,140 @@ def _single_cell_best_practice() -> tuple[str, dict[str, Any]]:
     return stem, _workflow(stem, nodes, connections, groups, scale=0.18, offset=(40, 520))
 
 
+def _monocle2_subpopulation() -> tuple[str, dict[str, Any]]:
+    stem = "Monocle 2 Subpopulation Trajectory"
+    nodes = [
+        _node("load", "OpenBioSingleCellLoadH5AD", (40, 40), {"path": SUBPOPULATION_PARENT_PATH}),
+        _node(
+            "subset", "OpenBioSingleCellSubsetObservations", (400, 40),
+            {"column": "cell_type", "values": "", "invert": False, "missing_policy": "exclude"},
+        ),
+        _node("raw_to_adata", "OpenBioSingleCellRawSnapshotToAnnData", (760, 40)),
+        _node("runtime", "OpenBioSingleCellMonocle2Runtime", (1120, -240)),
+        _node("prepare", "OpenBioSingleCellMonocle2Prepare", (1120, 40), wired_inputs=["r_runtime"]),
+        _node("ordering", "OpenBioSingleCellMonocle2OrderingGenes", (1480, 40), wired_inputs=["r_runtime"]),
+        _node(
+            "save_ordering", "OpenBioSingleCellExportCSV", (1480, 400),
+            {"filename_prefix": "monocle2_ordering_gene_evidence"},
+        ),
+        _node("ddrtree", "OpenBioSingleCellMonocle2DDRTree", (1840, 40), wired_inputs=["r_runtime"]),
+        _node("initial_order", "OpenBioSingleCellMonocle2OrderCells", (2200, 40), wired_inputs=["r_runtime"]),
+        _node(
+            "state_plot", "OpenBioSingleCellMonocle2TrajectoryPlot", (2560, -500),
+            {"color_by": "State", "show_state_number": True}, wired_inputs=["r_runtime"],
+        ),
+        _node("state_preview", "OpenBioSingleCellPreviewResult", (2920, -500)),
+        _node(
+            "annotation_plot", "OpenBioSingleCellMonocle2TrajectoryPlot", (2560, 40),
+            {"color_by": "cell_type"}, wired_inputs=["r_runtime"],
+        ),
+        _node("annotation_preview", "OpenBioSingleCellPreviewResult", (2920, 40)),
+        _node(
+            "reroot", "OpenBioSingleCellMonocle2OrderCells", (3320, 40),
+            {"root": "state", "root.state": ""}, wired_inputs=["r_runtime"],
+        ),
+        _node(
+            "pseudotime_plot", "OpenBioSingleCellMonocle2TrajectoryPlot", (3720, -500),
+            {"color_by": "Pseudotime"}, wired_inputs=["r_runtime"],
+        ),
+        _node("pseudotime_preview", "OpenBioSingleCellPreviewResult", (4080, -500)),
+        _node(
+            "save_pseudotime", "OpenBioSingleCellSavePNG", (4440, -500),
+            {"filename_prefix": "monocle2_rooted_pseudotime"},
+        ),
+        _node(
+            "differential", "OpenBioSingleCellMonocle2DifferentialTest", (3720, 40),
+            wired_inputs=["r_runtime"],
+        ),
+        _node(
+            "save_genes", "OpenBioSingleCellExportCSV", (3720, 460),
+            {"filename_prefix": "monocle2_pseudotime_gene_evidence"},
+        ),
+        _node(
+            "trends", "OpenBioSingleCellMonocle2GeneTrends", (4080, 40),
+            {"color_by": "State", "top_n": 6}, wired_inputs=["r_runtime"],
+        ),
+        _node("trends_preview", "OpenBioSingleCellPreviewResult", (4440, 40)),
+        _node(
+            "save_trends", "OpenBioSingleCellSavePNG", (4440, 460),
+            {"filename_prefix": "monocle2_gene_trends"},
+        ),
+        _node("export", "OpenBioSingleCellMonocle2Export", (4840, 40), wired_inputs=["r_runtime"]),
+        _node(
+            "save_h5ad", "OpenBioSingleCellSaveH5AD", (5200, 40),
+            {"filename_prefix": "subpopulation_monocle2"},
+        ),
+        _node(
+            "save_cells", "OpenBioSingleCellExportCSV", (5200, 240),
+            {"filename_prefix": "monocle2_cell_pseudotime_state"},
+        ),
+        _node(
+            "persist_cds", "OpenBioSingleCellPersistArtifact", (4840, 460),
+            {"name": "subpopulation_monocle2_cds"},
+        ),
+    ]
+    connections = [
+        ("load", "adata", "subset", "adata"),
+        ("subset", "adata", "raw_to_adata", "adata"),
+        ("raw_to_adata", "adata", "prepare", "adata"),
+        ("prepare", "cds", "ordering", "cds"),
+        ("ordering", "table", "save_ordering", "table"),
+        ("ordering", "cds", "ddrtree", "cds"),
+        ("ddrtree", "cds", "initial_order", "cds"),
+        ("initial_order", "cds", "state_plot", "cds"),
+        ("state_plot", "plot", "state_preview", "result"),
+        ("initial_order", "cds", "annotation_plot", "cds"),
+        ("annotation_plot", "plot", "annotation_preview", "result"),
+        ("initial_order", "cds", "reroot", "cds"),
+        ("reroot", "cds", "pseudotime_plot", "cds"),
+        ("pseudotime_plot", "plot", "pseudotime_preview", "result"),
+        ("pseudotime_plot", "plot", "save_pseudotime", "plot"),
+        ("reroot", "cds", "differential", "cds"),
+        ("differential", "table", "save_genes", "table"),
+        ("differential", "table", "trends", "table"),
+        ("reroot", "cds", "trends", "cds"),
+        ("trends", "plot", "trends_preview", "result"),
+        ("trends", "plot", "save_trends", "plot"),
+        ("subset", "adata", "export", "adata"),
+        ("reroot", "cds", "export", "cds"),
+        ("export", "adata", "save_h5ad", "adata"),
+        ("export", "table", "save_cells", "table"),
+        ("reroot", "cds", "persist_cds", "artifact"),
+    ]
+    connections.extend(
+        ("runtime", "r_runtime", alias, "r_runtime")
+        for alias in (
+            "prepare", "ordering", "ddrtree", "initial_order", "state_plot", "annotation_plot", "reroot",
+            "pseudotime_plot", "differential", "trends", "export",
+        )
+    )
+    groups = [
+        _group(1, "1 · EDIT parent path, annotation column and population values; verify count Raw", (0, -60, 1100, 500)),
+        _group(2, "2 · Select installed R environment; full-feature subset → native CDS", (1080, -320, 360, 730)),
+        _group(3, "3 · Select ordering genes within this population; recompute DDRTree", (1440, -60, 740, 650)),
+        _group(
+            4, "4 · Inspect initial orientation and known annotations; State is not cell type",
+            (2160, -600, 1100, 1080),
+        ),
+        _group(
+            5, "5 · EDIT root.state from biological evidence before running final outputs",
+            (3280, -60, 360, 500),
+        ),
+        _group(
+            6, "6 · Rooted pseudotime and gene trends; association is not Condition inference",
+            (3680, -600, 1100, 1260),
+        ),
+        _group(7, "7 · Preserve selected AnnData; save H5AD, cell CSV and native CDS", (4800, -60, 780, 720)),
+    ]
+    return stem, _workflow(stem, nodes, connections, groups, scale=0.27, offset=(40, 600))
+
+
 def build_workflows() -> dict[str, dict[str, Any]]:
     workflows = [
         _quality_control(),
         _cell_clustering(),
         _subpopulation_reclustering(),
+        _monocle2_subpopulation(),
         _sample_composition(),
         _scvi_integration(),
         _single_cell_best_practice(),

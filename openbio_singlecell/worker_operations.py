@@ -12,6 +12,7 @@ from . import operations_enrichment as _operations_enrichment  # noqa: F401
 from . import operations_factorization as _operations_factorization  # noqa: F401
 from . import operations_integration as _operations_integration  # noqa: F401
 from . import operations_lineage as _operations_lineage  # noqa: F401
+from . import operations_monocle2 as _operations_monocle2  # noqa: F401
 from . import operations_population as _operations_population  # noqa: F401
 from . import operations_preprocess as _operations_preprocess  # noqa: F401
 from . import operations_qc as _operations_qc  # noqa: F401

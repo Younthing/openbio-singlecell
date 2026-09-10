@@ -85,3 +85,6 @@ select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
 
 [tool.setuptools.packages.find]
 include = ["openbio_singlecell*"]
+
+[tool.setuptools.package-data]
+openbio_singlecell = ["r/*.R"]

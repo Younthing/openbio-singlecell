@@ -143,7 +143,7 @@ def test_every_expression_source_node_uses_the_native_dynamic_combo_contract():
         if item.id == "source"
     ]
 
-    assert len(source_nodes) == 29
+    assert len(source_nodes) == 30
     assert {item.get_io_type() for _, item in source_nodes} == {"COMFY_DYNAMICCOMBO_V3"}
     for node_class, source in source_nodes:
         spec = node_class.EXPRESSION_SOURCE
@@ -159,6 +159,7 @@ def test_every_expression_source_node_uses_the_native_dynamic_combo_contract():
 
 def test_expression_source_defaults_follow_the_project_source_policy():
     count_layer_nodes = {
+        "OpenBioSingleCellMonocle2Prepare",
         "OpenBioSingleCellCalculateQC",
         "OpenBioSingleCellCellTypistAnnotation",
         "OpenBioSingleCellAugur",
@@ -196,7 +197,7 @@ def test_expression_source_defaults_follow_the_project_source_policy():
         for node_class in NODE_CLASSES
         if any(item.id == "source" for item in node_class.GET_SCHEMA().inputs)
     }
-    assert len(source_nodes) == 29
+    assert len(source_nodes) == 30
 
     for node_id, node_class in source_nodes.items():
         spec = node_class.EXPRESSION_SOURCE

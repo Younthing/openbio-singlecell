@@ -73,6 +73,44 @@ distribution; installing OmicVerse does not satisfy that adapter.
 
 All extras remain opt-in and are not installed by ComfyUI Manager's core `requirements.txt` path.
 
+### Monocle 2 / DDRTree
+
+The Monocle 2 nodes use a separately installed Rscript, called inside the existing Python one-shot Worker.
+They require the R package `monocle` and DDRTree, not a Python Monocle wrapper. A validated Linux/WSL setup is:
+
+```sh
+conda create -n openbio-monocle2 --override-channels -c conda-forge -c bioconda \
+  bioconductor-monocle=2.34.0 r-jsonlite
+```
+
+This command's conda dependency resolution was verified with R 4.4.3, DDRTree 0.1.6, igraph 2.3.3 and dplyr 1.2.1.
+Scientific integration was tested with those versions in a separate environment and compared against unmodified
+Monocle 2 using igraph 2.0.3 / dplyr 1.1.4. The local R adapter translates removed `nei`/DFS and dplyr selection/grouping
+calls in private function copies. It preserves native scientific parameters and leaves installed packages and their
+namespaces unchanged. Execution summaries record the adapter and loaded versions; no exact-version policy gate is
+added. See [verification and environment commands](.scratch/monocle2-compat/verification.md).
+In **Monocle 2 Runtime**, select that environment's absolute `Rscript` path. Optional `r_home`,
+`library_paths` and `path_prefix` affect only child R processes; the latter two accept one directory per line.
+
+Python and Rscript must run in the same operating system. The verified WSL route runs both under Linux; a Windows
+Python Worker cannot execute a Linux Rscript path directly. Native Windows Monocle 2 was not validated by this
+release. The core Python requirements and global environment are not changed by these nodes.
+
+Prepare selects X/layer/Raw explicitly and exposes the expression family and preparation steps. Ordering Genes
+marks selected features without discarding the full feature matrix. DDRTree, initial ordering, rerooting, trajectory
+plots, pseudotime differential tests, gene trends and optional BEAM remain separate nodes. Advanced JSON arguments
+override visible native defaults and are recorded; they cannot replace the owned CDS or the DDRTree algorithm.
+The backend fixes DDRTree's seed internally and ignores some parameters in this path, so ineffective seed,
+`relative_expr` and `num_paths` widgets are not exposed there. Gene plots retain native display jitter; set native
+`horizontal_jitter` and `vertical_jitter` explicitly when exact point placement is needed.
+
+Native CellDataSet state is a `OPENBIO_MONOCLE2_CDS` file artifact containing RDS and typed result sidecars.
+The existing Persist Artifact node can save that complete bundle. Export to AnnData aligns cells by ID and adds
+only the requested observation fields and DDRTree coordinates; it preserves the original expression, feature axis,
+Raw and layers. Root State denotes a trajectory segment, not a curated cell type, and pseudotime is not elapsed
+physical time. Pseudotime gene tests and BEAM are exploratory cell-level associations, not replicate-aware
+Condition contrasts. The `code` output includes the Python bridge and bundled R source for standalone reproduction.
+
 CellTypist models are also opt-in. Before running the node, either provide a trusted local `.pkl` path or deliberately
 download one with CellTypist's official API (replace the example model as appropriate):
 
@@ -168,7 +206,7 @@ invalid file requires the explicit force option.
 
 ## Example workflows
 
-Open one of the six production starting-point templates in `example_workflows`:
+Open one of the seven production starting-point templates in `example_workflows`:
 
 - `Quality Control and Clean Counts.json` loads raw counts, calculates and filters QC metrics, previews the
   retained data, and writes a clean H5AD only through the explicit save node.
@@ -181,6 +219,10 @@ Open one of the six production starting-point templates in `example_workflows`:
   snapshot as a fresh full-gene AnnData, recomputes the preprocessing, diagnostics, graph, clustering, embedding,
   and marker evidence, then transfers only the reviewed `cell_subtype` annotation to the parent. It saves the
   annotated subpopulation and updated parent separately.
+- `Monocle 2 Subpopulation Trajectory.json` selects a population, creates a full-feature CDS from the chosen Raw
+  snapshot, selects ordering genes within that population and recomputes DDRTree. It separates initial State/known
+  annotation inspection from explicit rerooting, then plots pseudotime and gene trends, exports native gene-test
+  evidence, and saves both the selected AnnData with attached results and the native CDS bundle.
 - `Sample Composition Comparison.json` loads AnnData that already contains sample metadata and fans reusable
   Sample, Condition, and annotation strings into one descriptive Sample Composition Summary node. Its complete
   Sample-by-population table drives a stacked proportion plot, preview, PNG export, CSV export, and report without
@@ -225,6 +267,11 @@ feature count, grouping columns, labels, comparison groups, and output names. In
 - Merge Observation Annotations applies the chosen value-conflict policy even when source metadata differs.
   Mixed annotation histories remain recorded without assigning one source's curation claim to the whole column.
   Raw Snapshot to AnnData preserves empty axes, as native AnnData does.
+- Before running the Monocle 2 template, configure Rscript, the parent file/population and any annotation column
+  used for coloring. First inspect the initial trajectory and State labels; fill the final Order Cells node's
+  deliberately blank `root.state` using biological evidence. Its initial native orientation is not a biological
+  root choice. The template expects user-verified count Raw for its negative-binomial preparation path; it does not
+  normalize/log that matrix in Python before handing it to Monocle. Recompute ordering after changing DDRTree.
 - The two bundled scVI templates explicitly set `technical_batch_key="batch"`, so their input data require
   `adata.obs["batch"]`; another workflow may declare a different Technical batch key. The downstream contrast
   requires the grouping column and labels shown on that node. Install the optional `scvi-tools` dependency in the
@@ -342,10 +389,10 @@ The start scripts require a built `ComfyUI_frontend/dist/index.html`, then launc
 ```
 
 Additional arguments are forwarded to ComfyUI. The scripts add `--cache-classic` only when no cache mode was
-supplied; `--cache-classic`, `--cache-none`, and `--cache-lru N` are supported. OpenBio rejects ComfyUI's default
-RAM-pressure cache because `ArtifactTicket` values do not measure their retained disk results. ComfyUI's own
-requirements must already be installed. In particular, `--enable-assets` requires ComfyUI's database dependencies
-and a working local database connection.
+supplied. OpenBio supports ComfyUI's default RAM-pressure cache and logs an advisory because RAM pressure does
+not control retained disk artifact usage; `--cache-classic`, `--cache-none`, or `--cache-lru N` are recommended.
+ComfyUI's own requirements must already be installed. In particular, `--enable-assets` requires ComfyUI's
+database dependencies and a working local database connection.
 
 ## Data and output behavior
 

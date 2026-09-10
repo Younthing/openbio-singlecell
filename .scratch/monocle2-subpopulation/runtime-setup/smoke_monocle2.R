@@ -1,0 +1,48 @@
+options(warn = 1)
+suppressPackageStartupMessages(library(monocle))
+args <- commandArgs(trailingOnly = TRUE)
+output_dir <- if (length(args)) args[[1]] else "."
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+set.seed(2026)
+n <- 180L
+g <- 400L
+progression <- rep(seq(0, 1, length.out = n / 3), 3)
+branch <- rep(c("progenitor", "branch_a", "branch_b"), each = n / 3)
+latent <- cbind(
+  progression = progression + rep(c(0, 1, 1), each = n / 3),
+  branch_a = as.numeric(branch == "branch_a") * progression,
+  branch_b = as.numeric(branch == "branch_b") * progression
+)
+loadings <- matrix(rnorm(g * 3, sd = 0.8), ncol = 3)
+means <- exp(1.5 + loadings %*% t(latent))
+counts <- Matrix::Matrix(matrix(rnbinom(g * n, mu = as.vector(means), size = 5), nrow = g), sparse = TRUE)
+rownames(counts) <- paste0("gene_", seq_len(g))
+colnames(counts) <- paste0("cell_", seq_len(n))
+cell_metadata <- data.frame(branch = branch, true_time = latent[, "progression"], row.names = colnames(counts))
+gene_metadata <- data.frame(gene_short_name = rownames(counts), row.names = rownames(counts))
+cds <- newCellDataSet(counts, phenoData = new("AnnotatedDataFrame", data = cell_metadata), featureData = new("AnnotatedDataFrame", data = gene_metadata), expressionFamily = negbinomial.size())
+cds <- estimateSizeFactors(cds)
+cds <- estimateDispersions(cds)
+cds <- detectGenes(cds, min_expr = 0.1)
+cds <- setOrderingFilter(cds, rownames(cds))
+cds <- reduceDimension(cds, max_components = 2, method = "DDRTree")
+cds <- orderCells(cds)
+states <- table(pData(cds)$State[pData(cds)$branch == "progenitor"])
+root_state <- names(states)[which.max(states)]
+cds <- orderCells(cds, root_state = root_state)
+result <- data.frame(cell_id = colnames(cds), pData(cds))
+stopifnot(nrow(result) == n, all(is.finite(result$Pseudotime)))
+stopifnot(nrow(reducedDimS(cds)) == 2)
+test <- differentialGeneTest(cds[1:12, ], fullModelFormulaStr = "~sm.ns(Pseudotime)", cores = 1)
+stopifnot(nrow(test) == 12)
+write.csv(result, file.path(output_dir, "pseudotime.csv"), row.names = FALSE)
+write.csv(test, file.path(output_dir, "differential_genes.csv"), row.names = TRUE)
+saveRDS(cds, file.path(output_dir, "cds.rds"))
+Matrix::writeMM(counts, file.path(output_dir, "counts.mtx"))
+write.csv(cell_metadata, file.path(output_dir, "obs.csv"))
+write.csv(gene_metadata, file.path(output_dir, "var.csv"))
+png(file.path(output_dir, "trajectory.png"), width = 1000, height = 800, res = 120)
+print(plot_cell_trajectory(cds, color_by = "Pseudotime"))
+dev.off()
+writeLines(capture.output(sessionInfo()), file.path(output_dir, "sessionInfo.txt"))
+cat(jsonlite::toJSON(list(monocle_version = as.character(packageVersion("monocle")), DDRTree_version = as.character(packageVersion("DDRTree")), igraph_version = as.character(packageVersion("igraph")), cells = n, genes = g, finite_pseudotime = sum(is.finite(result$Pseudotime)), states = unique(as.character(result$State)), root_state = root_state, tested_genes = nrow(test)), auto_unbox = TRUE), "\n")

@@ -11,6 +11,7 @@ EXPECTED_EXAMPLES = [
     "example_workflows/Quality Control and Clean Counts.json",
     "example_workflows/Cell Clustering and Marker Discovery.json",
     "example_workflows/Subpopulation Reclustering and Annotation.json",
+    "example_workflows/Monocle 2 Subpopulation Trajectory.json",
     "example_workflows/Sample Composition Comparison.json",
     "example_workflows/scVI Batch Integration and Contrast.json",
     "example_workflows/Single-Cell Best Practice.json",
@@ -19,6 +20,7 @@ EXPECTED_COVERS = [
     "example_workflows/Quality Control and Clean Counts.jpg",
     "example_workflows/Cell Clustering and Marker Discovery.jpg",
     "example_workflows/Subpopulation Reclustering and Annotation.jpg",
+    "example_workflows/Monocle 2 Subpopulation Trajectory.jpg",
     "example_workflows/Sample Composition Comparison.jpg",
     "example_workflows/scVI Batch Integration and Contrast.jpg",
     "example_workflows/Single-Cell Best Practice.jpg",
@@ -61,6 +63,7 @@ EXPECTED_ARTIFACT_TICKET_WIRE_TYPES = {
     "cassiopeia_characters": "OPENBIO_CASSIOPEIA_CHARACTERS",
     "cassiopeia_tree": "OPENBIO_CASSIOPEIA_TREE",
     "velocity_state": "OPENBIO_VELOCITY_STATE",
+    "monocle2_cds": "OPENBIO_MONOCLE2_CDS",
 }
 
 
@@ -125,6 +128,14 @@ def test_python_dependency_declarations_match_release_manifest():
     assert runtime_extras == EXPECTED_OPTIONAL_DEPENDENCIES
     assert manifest["optional_python_dependencies"] == EXPECTED_OPTIONAL_DEPENDENCIES
     assert manifest["external_backend_contracts"] == {
+        "monocle2": {
+            "execution_environment": "Rscript-child-of-python-worker",
+            "required_r_packages": ["monocle", "DDRTree", "Matrix", "jsonlite", "Biobase", "VGAM", "igraph", "dplyr", "ggplot2"],
+            "validated_versions": {"R": "4.4.3", "monocle": "2.34.0", "DDRTree": "0.1.6", "igraph": "2.3.3", "dplyr": "1.2.1"},
+            "integration": "monocle2-cds-rds-v1",
+            "packaged_scripts": ["openbio_singlecell/r/probe_runtime.R", "openbio_singlecell/r/monocle2.R",
+                                 "openbio_singlecell/r/monocle2_compat.R"],
+        },
         "schist": {
             "execution_environment": "comfyui-python",
             "requirements": [

@@ -361,7 +361,7 @@
       "title": "文件与缓存生命周期",
       "items": [
         "一个 RunLease 原子发布该次运行的全部 File artifacts",
-        "缓存命中直接复用 ArtifactTicket，不启动 Worker；RAM-pressure cache 被拒绝"
+        "缓存命中直接复用 ArtifactTicket，不启动 Worker；支持 RAM-pressure cache，但会提示其不控制磁盘产物占用，建议使用 Classic、None 或 LRU"
       ]
     },
     {

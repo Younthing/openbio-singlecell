@@ -20,6 +20,7 @@ TEMPLATE_NAMES = (
     "Quality Control and Clean Counts",
     "Cell Clustering and Marker Discovery",
     "Subpopulation Reclustering and Annotation",
+    "Monocle 2 Subpopulation Trajectory",
     "Sample Composition Comparison",
     "scVI Batch Integration and Contrast",
     "Single-Cell Best Practice",
@@ -45,6 +46,7 @@ WIRE_TYPES = {
     "OPENBIO_CASSIOPEIA_CHARACTERS",
     "OPENBIO_CASSIOPEIA_TREE",
     "OPENBIO_VELOCITY_STATE",
+    "OPENBIO_MONOCLE2_CDS",
 }
 NORMALIZE_TO_LAYER_NODE = next(
     node for node in NODE_CLASSES if node.GET_SCHEMA().node_id == "OpenBioSingleCellNormalizeToLayer"
@@ -175,7 +177,7 @@ def test_workflow_generator_cli_resolves_comfyui_before_importing_schemas():
     )
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert "Verified 6 generated workflows." in completed.stdout
+    assert "Verified 7 generated workflows." in completed.stdout
 
 
 def test_packaged_workflows_exclude_removed_node_ids():
@@ -365,6 +367,48 @@ def test_examples_use_only_explicit_data_artifact_and_domain_object_contracts():
     assert "OPENBIO_SC_RESULT" not in serialized
     assert '"name": "dataset"' not in serialized
     assert "OpenBioDatasetSummary" not in serialized
+
+
+def test_monocle2_subpopulation_template_recomputes_trajectory_and_requires_expert_rerooting():
+    workflow = _load_examples()["Monocle 2 Subpopulation Trajectory.json"]
+    assert _widgets(workflow, "OpenBioSingleCellLoadH5AD")["path"].endswith("annotated_parent_with_count_raw.h5ad")
+    assert _widgets(workflow, "OpenBioSingleCellSubsetObservations")["values"] == ""
+    assert _widgets(workflow, "OpenBioSingleCellMonocle2Prepare")["source"] == "X"
+    assert _widgets(workflow, "OpenBioSingleCellMonocle2OrderingGenes")["method"] == "dispersion"
+    _assert_link(workflow, "OpenBioSingleCellSubsetObservations", "adata",
+                 "OpenBioSingleCellRawSnapshotToAnnData", "adata", "OPENBIO_ANNDATA")
+    _assert_link(workflow, "OpenBioSingleCellRawSnapshotToAnnData", "adata",
+                 "OpenBioSingleCellMonocle2Prepare", "adata", "OPENBIO_ANNDATA")
+    _assert_link(workflow, "OpenBioSingleCellMonocle2OrderingGenes", "cds",
+                 "OpenBioSingleCellMonocle2DDRTree", "cds", "OPENBIO_MONOCLE2_CDS")
+
+    initial = _node_with_widget(workflow, "OpenBioSingleCellMonocle2OrderCells", "root", "automatic")
+    rooted = _node_with_widget(workflow, "OpenBioSingleCellMonocle2OrderCells", "root", "state")
+    assert rooted["widgets_values_named"]["root.state"] == ""
+    _assert_node_link(workflow, initial, "cds", rooted, "cds", "OPENBIO_MONOCLE2_CDS")
+    for color in ("State", "cell_type"):
+        plot = _node_with_widget(workflow, "OpenBioSingleCellMonocle2TrajectoryPlot", "color_by", color)
+        _assert_node_link(workflow, initial, "cds", plot, "cds", "OPENBIO_MONOCLE2_CDS")
+    final_plot = _node_with_widget(workflow, "OpenBioSingleCellMonocle2TrajectoryPlot", "color_by", "Pseudotime")
+    _assert_node_link(workflow, rooted, "cds", final_plot, "cds", "OPENBIO_MONOCLE2_CDS")
+    for suffix in ("DifferentialTest", "GeneTrends", "Export"):
+        _assert_node_link(workflow, rooted, "cds", _node(workflow, f"OpenBioSingleCellMonocle2{suffix}"),
+                          "cds", "OPENBIO_MONOCLE2_CDS")
+    _assert_link(workflow, "OpenBioSingleCellMonocle2DifferentialTest", "table",
+                 "OpenBioSingleCellMonocle2GeneTrends", "table", "OPENBIO_SINGLE_CELL_TABLE")
+    _assert_link(workflow, "OpenBioSingleCellSubsetObservations", "adata",
+                 "OpenBioSingleCellMonocle2Export", "adata", "OPENBIO_ANNDATA")
+    _assert_link(workflow, "OpenBioSingleCellMonocle2Export", "adata",
+                 "OpenBioSingleCellSaveH5AD", "adata", "OPENBIO_ANNDATA")
+    _assert_node_link(workflow, rooted, "cds", _node(workflow, "OpenBioSingleCellPersistArtifact"),
+                      "artifact", "OPENBIO_MONOCLE2_CDS")
+    runtime = _node(workflow, "OpenBioSingleCellMonocle2Runtime")
+    for node in workflow["nodes"]:
+        if node["type"].startswith("OpenBioSingleCellMonocle2") and node != runtime:
+            _assert_node_link(workflow, runtime, "r_runtime", node, "r_runtime", "STRING")
+    group_titles = " ".join(group["title"] for group in workflow["groups"])
+    assert "State is not cell type" in group_titles
+    assert "Condition inference" in group_titles
 
 
 def test_quality_control_template_uses_reviewed_production_thresholds():

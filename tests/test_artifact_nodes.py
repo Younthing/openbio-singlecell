@@ -4,8 +4,9 @@ import asyncio
 import inspect
 import sys
 from dataclasses import replace
+from unittest.mock import AsyncMock
 
-import pytest
+import folder_paths
 from comfy_api.latest import io
 
 import openbio_singlecell.extension as extension_module
@@ -107,11 +108,14 @@ def test_removed_scenic_binary_contract_is_not_registered():
         assert all(output.io_type != "OPENBIO_SCENIC_BINARY" for output in schema.outputs)
 
 
-def test_extension_rejects_ram_pressure_cache_before_initializing_workers(monkeypatch):
+def test_extension_loads_with_ram_pressure_cache(monkeypatch):
     monkeypatch.setattr(extension_module.comfy_args, "cache_classic", False)
     monkeypatch.setattr(extension_module.comfy_args, "cache_none", False)
     monkeypatch.setattr(extension_module.comfy_args, "cache_lru", 0)
     monkeypatch.setattr(extension_module.comfy_args, "cache_ram", [])
+    initialize = AsyncMock()
+    monkeypatch.setattr(extension_module, "initialize_artifact_service", initialize)
 
-    with pytest.raises(RuntimeError, match=r"RAM-pressure.*--cache-classic"):
-        asyncio.run(extension_module.OpenBioSingleCellExtension().on_load())
+    asyncio.run(extension_module.OpenBioSingleCellExtension().on_load())
+
+    initialize.assert_awaited_once_with(folder_paths.get_temp_directory(), sys.executable)

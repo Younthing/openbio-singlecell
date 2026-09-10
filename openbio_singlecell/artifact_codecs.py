@@ -339,6 +339,8 @@ def _index_schema(index: Any) -> dict[str, Any]:
 
 
 def _encode_cell(value: Any, schema: Mapping[str, Any], *, location: str) -> Any:
+    from pandas.api.types import is_float_dtype
+
     if schema["kind"] == "json-list":
         if value is None or type(value).__name__ in {"NAType", "NaTType"}:
             return None
@@ -351,6 +353,12 @@ def _encode_cell(value: Any, schema: Mapping[str, Any], *, location: str) -> Any
                 return None
         except (TypeError, ValueError):
             pass
+    if schema["kind"] in {"scalar", "nullable"} and is_float_dtype(schema["dtype"]):
+        scalar = value.item() if hasattr(value, "item") else value
+        if isinstance(scalar, float) and math.isinf(scalar):
+            # The existing dtype-based reader restores these quoted values as floats.
+            # Keep JSON valid without turning native R infinities into missing data.
+            return "Infinity" if scalar > 0 else "-Infinity"
     return _scalar(value, location=location)
 
 
