@@ -132,15 +132,22 @@ ComfyUI Manager/Registry is the production installation path for this pack. Afte
 
 The public Git repository is https://github.com/Younthing/openbio-singlecell. That URL is recorded as `[project.urls].Repository` in `pyproject.toml`. The pack publishes as Registry publisher `open-bio`. Keep the Registry API key in GitHub Actions secret `REGISTRY_ACCESS_TOKEN`, never in this repository.
 
-The [official Registry publish path](https://docs.comfy.org/registry/publishing) is GitHub Actions. `.github/workflows/publish_action.yml` runs on `workflow_dispatch` and on pushes to `main` that change `pyproject.toml`. Bump `[project].version` on `main` to publish a new listing. Manual CLI remains available for a one-off check:
+The [official Registry publish path](https://docs.comfy.org/registry/publishing) is GitHub Actions. `.github/workflows/publish_action.yml` publishes from `main`:
+
+- Bump `[project].version` in `pyproject.toml` on `main`. CI publishes that exact version; git tags are not the Registry version.
+- The workflow also accepts a manual `workflow_dispatch` run.
+- Do not put the API key in the repository. Windows paste into GitHub Secrets should use right-click, not Ctrl+V.
+- Registry archives are built from Git-tracked files. `.comfyignore` keeps tests out of the installed node pack while retaining the example workflows, local demo generator, launch scripts, licenses, and release manifest.
+
+Uploading does not wait for a human editor. Comfy Registry then runs an automated [security scan](https://docs.comfy.org/registry/standards). Version status is `Pending` until that scan finishes, `Active` when it passes, and `Flagged` when it matches prohibited patterns such as `eval`/`exec`, runtime `pip install`, or obfuscation. Flagged versions wait for the Security Review Council; ask in the Comfy Discord `#security-review-council` channel if a listing stays flagged. ComfyUI Manager's stable channel uses the latest `Active` version.
+
+Manual CLI remains available for a one-off check:
 
 ```sh
 comfy node validate
 comfy node pack
 comfy node publish
 ```
-
-Registry archives are built from Git-tracked files. The included `.comfyignore` keeps tests out of the installed node pack while retaining the example workflows, local demo generator, launch scripts, licenses, and release manifest.
 
 ## Local source development
 
