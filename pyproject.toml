@@ -70,7 +70,7 @@ dev = [
 ]
 
 [tool.comfy]
-# Add the exact Registry PublisherId after the publisher account is created.
+PublisherId = "open-bio"
 DisplayName = "openbio-singlecell"
 requires-comfyui = ">=0.33.0"
 web = "web"
