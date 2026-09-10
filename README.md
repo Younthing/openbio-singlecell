@@ -130,12 +130,7 @@ The exact source pairing is recorded in `release_manifest.json`.
 
 ComfyUI Manager/Registry is the production installation path for this pack. After the first Registry release is published, search for `openbio-singlecell` in Manager, install it, and restart ComfyUI. Manager owns the installed copy under `ComfyUI/custom_nodes`; the plugin source does not belong in the ComfyUI source repository. Manager installs `requirements.txt` and then the root `install.py` generates the local demonstration H5AD. That entry point does not install packages or make network requests.
 
-This checkout is not yet claiming a public Registry listing. Formal publication still requires two real values that must not be guessed:
-
-- the Publisher ID created for the project in the Comfy Registry;
-- the public Git repository URL for this independent repository.
-
-Before publishing, add the actual URL as `[project.urls].Repository` in `pyproject.toml` and add the exact `PublisherId` under `[tool.comfy]`. Keep Registry API keys in the publisher's secret store, never in this repository. Once those values exist, validate and inspect the package before publishing:
+The public Git repository is https://github.com/Younthing/openbio-singlecell. That URL is recorded as `[project.urls].Repository` in `pyproject.toml`. This checkout is not yet claiming a public Registry listing. Formal publication still requires the Publisher ID created for the project in the Comfy Registry. Add the exact `PublisherId` under `[tool.comfy]`. Keep Registry API keys in the publisher's secret store, never in this repository. Once that value exists, validate and inspect the package before publishing:
 
 ```sh
 comfy node validate
